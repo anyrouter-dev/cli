@@ -76,6 +76,7 @@ fn known_command(command: &str) -> bool {
             | "opencode"
             | "pool"
             | "poolside"
+            | "pi"
             | "cursor"
             | "cline"
             | "windsurf"
@@ -179,7 +180,7 @@ fn allowed_flags(command: &str) -> Option<&'static [&'static str]> {
         "prompt" => &["base-url", "json"],
         "menu" => &[],
         "upgrade" => &["check", "channel", "fixture", "dry-run", "yes"],
-        "claude" | "codex" | "grok" | "opencode" | "pool" => LAUNCH_FLAGS,
+        "claude" | "codex" | "grok" | "opencode" | "pool" | "pi" => LAUNCH_FLAGS,
         "cursor" | "cline" | "windsurf" => &["profile", "key", "base-url", "config", "yes"],
         "byok" => return None,
         _ => return None,
@@ -276,7 +277,7 @@ fn dispatch(
                 stub(command)
             }
         }
-        "claude" | "codex" | "grok" | "opencode" | "pool" => run_launch(command, parsed, env),
+        "claude" | "codex" | "grok" | "opencode" | "pool" | "pi" => run_launch(command, parsed, env),
         "cursor" | "cline" | "windsurf" => {
             print!("{}", command_help(command).unwrap_or_default());
             Ok(0)

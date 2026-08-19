@@ -39,6 +39,8 @@ Quick start:
   npx @anyr/cli claude          Open the Claude Code launcher (review, then start)
   npx @anyr/cli claude --ok     Start Claude Code now with current settings
   npx @anyr/cli codex           Open the Codex launcher
+  npx @anyr/cli opencode        Open the OpenCode launcher
+  npx @anyr/cli pi              Open the Pi launcher
   npx @anyr/cli cursor          Print the config to paste into Cursor
 
 Usage:
@@ -55,7 +57,7 @@ Commands:
   setup     Save a local profile (paste a key or log in)
   chat      Chat with any model in your terminal (streaming TUI)
   task      Plan with one model, implement with another (plan → implement)
-  delegate  Hand a task to a coding agent headlessly (--to claude|codex|opencode)
+  delegate  Hand a task to a coding agent headlessly (--to claude|codex|opencode|pi)
   relay     Relay: start a local LLM server relay or pair this device
 
 Launch agents (spawn through AnyRouter):
@@ -64,6 +66,7 @@ Launch agents (spawn through AnyRouter):
   codex     Launch Codex routed through AnyRouter
   grok      Launch Grok Build routed through AnyRouter
   opencode  Launch opencode routed through AnyRouter
+  pi        Launch Pi routed through AnyRouter
   pool      Launch Poolside routed through AnyRouter
   poolside  Alias of \"pool\"
 
@@ -148,6 +151,7 @@ pub fn command_help(command: &str) -> Option<String> {
         "codex" => launch_help("codex", "Codex"),
         "grok" => launch_help("grok", "Grok Build"),
         "opencode" => launch_help("opencode", "opencode"),
+        "pi" => launch_help("pi", "Pi"),
         "pool" => launch_help("pool", "Poolside"),
         "cursor" | "cline" | "windsurf" => format!(
             "npx @anyr/cli {canonical} — print the AnyRouter base URL + key to paste into the editor\n"
@@ -306,7 +310,7 @@ Options:
 ";
 
 const DELEGATE: &str = "\
-anyr delegate --to claude|codex|opencode \"<task>\"
+anyr delegate --to claude|codex|opencode|pi \"<task>\"
 
 Options:
   --to <agent>

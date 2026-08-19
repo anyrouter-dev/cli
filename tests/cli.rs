@@ -20,7 +20,7 @@ fn help_lists_login_claude_account_and_spawn_targets() {
     for word in ["login", "claude", "account", "usage", "whoami"] {
         assert!(stdout.contains(word), "missing {word} in:\n{stdout}");
     }
-    for target in ["claude", "cc", "codex", "grok", "opencode", "pool", "poolside"] {
+    for target in ["claude", "cc", "codex", "grok", "opencode", "pi", "pool", "poolside"] {
         assert!(
             stdout.lines().any(|l| l.trim_start().starts_with(target)),
             "missing spawn target {target} in:\n{stdout}"
@@ -79,6 +79,7 @@ fn documented_commands_are_known_not_unknown() {
         "codex",
         "grok",
         "opencode",
+        "pi",
         "pool",
         "poolside",
         "upgrade",
@@ -94,6 +95,76 @@ fn documented_commands_are_known_not_unknown() {
         );
         assert!(!stdout.is_empty(), "{cmd} --help printed nothing");
     }
+}
+
+#[test]
+fn spawn_targets_dry_run_inject_gateway_and_redact_key() {
+    let key = "sk-ar-v1-testkey";
+    let cases: &[(&[&str], &str)] = &[
+        (&["claude", "--dry-run", "--yes", "--key", key], "ANTHROPIC_BASE_URL"),
+        (&["codex", "--dry-run", "--yes", "--key", key], "OPENAI_BASE_URL"),
+        (
+            &["opencode", "--dry-run", "--yes", "--key", key],
+            "OPENCODE_CONFIG_CONTENT",
+        ),
+        (&["pi", "--dry-run", "--yes", "--key", key], "ANYROUTER_API_KEY"),
+    ];
+    for (args, marker) in cases {
+        let out = anyr()
+            .args(*args)
+            .env_remove("ANYROUTER_API_KEY")
+            .output()
+            .expect("dry-run");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(
+            out.status.code().unwrap_or(1),
+            0,
+            "{args:?} stderr={stderr} stdout={stdout}"
+        );
+        assert!(
+            stdout.contains(marker),
+            "{args:?} missing {marker} in:\n{stdout}"
+        );
+        assert!(
+            !stdout.contains(key),
+            "{args:?} leaked full key:\n{stdout}"
+        );
+    }
+}
+
+#[test]
+fn pi_dry_run_uses_anyrouter_provider() {
+    let key = "sk-ar-v1-testkey";
+    let (code, stdout, stderr) = {
+        let out = anyr()
+            .args([
+                "pi",
+                "--dry-run",
+                "--yes",
+                "--key",
+                key,
+                "--model",
+                "z-ai/glm-4.7-flash",
+            ])
+            .env_remove("ANYROUTER_API_KEY")
+            .output()
+            .expect("pi dry-run");
+        (
+            out.status.code().unwrap_or(1),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+    assert_eq!(code, 0, "stderr={stderr}");
+    assert!(stdout.contains("command: pi"), "{stdout}");
+    assert!(stdout.contains("--provider"), "{stdout}");
+    assert!(stdout.contains("anyrouter"), "{stdout}");
+    assert!(stdout.contains("--model"), "{stdout}");
+    assert!(stdout.contains("z-ai/glm-4.7-flash"), "{stdout}");
+    assert!(stdout.contains("PI_MODELS_JSON"), "{stdout}");
+    assert!(stdout.contains("anyrouter.dev/api/v1"), "{stdout}");
+    assert!(!stdout.contains(key), "full key leaked:\n{stdout}");
 }
 
 #[test]

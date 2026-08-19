@@ -82,6 +82,9 @@ npm install -g @anyr/cli@next
 anyr --help
 anyr login
 anyr claude --ok
+anyr codex --ok
+anyr opencode --ok
+anyr pi --ok
 ```
 
 ## Version lock (0.1.x)

@@ -182,12 +182,22 @@ fn builtin(id: &str) -> Option<ToolConfig> {
             shadow_env: Some("OPENAI_API_KEY".into()),
             extra: BTreeMap::new(),
         },
+        "pi" => ToolConfig {
+            command: "pi".into(),
+            base_url_env: "OPENAI_BASE_URL".into(),
+            auth_env: "ANYROUTER_API_KEY".into(),
+            model_env: None,
+            base_suffix: "/v1".into(),
+            enable_gateway_model_discovery: false,
+            shadow_env: None,
+            extra: BTreeMap::new(),
+        },
         _ => return None,
     })
 }
 
 pub fn create_default_tools() -> BTreeMap<String, ToolConfig> {
-    ["claude", "codex", "grok", "opencode", "pool"]
+    ["claude", "codex", "grok", "opencode", "pool", "pi"]
         .into_iter()
         .filter_map(|id| builtin(id).map(|t| (id.to_string(), t)))
         .collect()
@@ -208,7 +218,7 @@ pub fn resolve_tool(
 ) -> Result<ToolConfig, String> {
     let id = canonical_tool(name);
     let fallback = builtin(id).ok_or_else(|| {
-        format!("Unknown tool \"{name}\". Known tools: claude, codex, grok, opencode, pool.")
+        format!("Unknown tool \"{name}\". Known tools: claude, codex, grok, opencode, pool, pi.")
     })?;
     if let Some(over) = config.and_then(|c| c.tools.get(id)) {
         let mut t = fallback;
@@ -316,6 +326,30 @@ pub fn build_tool_env(input: BuildToolEnvInput<'_>) -> BTreeMap<String, String> 
     if let Some(effort) = input.effort {
         env.insert("ANYROUTER_EFFORT".into(), effort.to_string());
     }
+    if input.tool_name == "pi" {
+        env.remove(&input.tool.base_url_env);
+        let base = tool_base_url(input.profile, input.tool);
+        let model_id = if input.model.is_empty() || input.model == "auto" {
+            "anthropic/claude-sonnet-4.6"
+        } else {
+            input.model
+        };
+        let config = serde_json::json!({
+            "providers": {
+                "anyrouter": {
+                    "baseUrl": base,
+                    "api": "openai-completions",
+                    "apiKey": "$ANYROUTER_API_KEY",
+                    "headers": { "X-AnyRouter-App": "pi" },
+                    "models": [{ "id": model_id }]
+                }
+            }
+        });
+        env.insert(
+            "PI_MODELS_JSON".into(),
+            serde_json::to_string(&config).unwrap_or_else(|_| "{}".into()),
+        );
+    }
     if input.tool_name == "opencode" {
         env.remove(&input.tool.base_url_env);
         if let Some(m) = &input.tool.model_env {
@@ -396,13 +430,22 @@ pub fn effort_args_for(tool_name: &str, effort: Option<&str>) -> Vec<String> {
 }
 
 pub fn model_args_for(tool_name: &str, model: &str, model_mode: &str) -> Vec<String> {
-    if tool_name != "codex" || model.is_empty() || model == "auto" || model_mode == "auto" {
+    if model.is_empty() || model == "auto" || model_mode == "auto" {
+        return vec![];
+    }
+    if tool_name == "pi" {
+        return vec!["--model".into(), model.to_string()];
+    }
+    if tool_name != "codex" {
         return vec![];
     }
     vec!["-c".into(), format!("model=\"{model}\"")]
 }
 
 pub fn provider_args_for(tool_name: &str, profile: &Profile) -> Vec<String> {
+    if tool_name == "pi" {
+        return vec!["--provider".into(), "anyrouter".into()];
+    }
     if tool_name != "codex" {
         return vec![];
     }
@@ -462,6 +505,7 @@ pub fn env_command_path(tool: &str, env: &BTreeMap<String, String>) -> Option<St
         "grok" => "ANYROUTER_GROK_PATH",
         "opencode" => "ANYROUTER_OPENCODE_PATH",
         "pool" => "ANYROUTER_POOL_PATH",
+        "pi" => "ANYROUTER_PI_PATH",
         _ => return None,
     };
     env.get(key)
@@ -572,6 +616,38 @@ mod tests {
         let out = render_dry_run("claude", &[], &env);
         assert!(out.contains("ANTHROPIC_BASE_URL"));
         assert!(!out.contains("sk-ar-v1-secret-value"));
+    }
+
+    #[test]
+    fn build_tool_env_pi_sets_models_json_and_auth() {
+        let tool = builtin("pi").unwrap();
+        let env = build_tool_env(BuildToolEnvInput {
+            tool_name: "pi",
+            tool: &tool,
+            profile: &profile(),
+            api_key: "sk-ar-v1-secret",
+            model: "z-ai/glm-4.7-flash",
+            effort: None,
+            context_window: None,
+            model_map: None,
+        });
+        assert_eq!(
+            env.get("ANYROUTER_API_KEY").map(String::as_str),
+            Some("sk-ar-v1-secret")
+        );
+        let json = env.get("PI_MODELS_JSON").expect("PI_MODELS_JSON");
+        assert!(json.contains("anyrouter.dev/api/v1"), "{json}");
+        assert!(json.contains("z-ai/glm-4.7-flash"), "{json}");
+        assert!(json.contains("$ANYROUTER_API_KEY"), "{json}");
+        assert!(!json.contains("sk-ar-v1-secret"), "{json}");
+        assert_eq!(
+            provider_args_for("pi", &profile()),
+            vec!["--provider".to_string(), "anyrouter".to_string()]
+        );
+        assert_eq!(
+            model_args_for("pi", "z-ai/glm-4.7-flash", "concrete"),
+            vec!["--model".to_string(), "z-ai/glm-4.7-flash".to_string()]
+        );
     }
 
     #[test]
