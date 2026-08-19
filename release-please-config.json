@@ -2,15 +2,13 @@
   "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
   "include-v-in-tag": true,
   "include-component-in-tag": false,
-  "bump-minor-pre-major": true,
-  "bump-patch-for-minor-pre-major": true,
+  "versioning": "always-bump-patch",
   "packages": {
     ".": {
       "release-type": "node",
       "package-name": "@anyr/cli",
       "changelog-path": "CHANGELOG.md",
-      "bump-minor-pre-major": true,
-      "bump-patch-for-minor-pre-major": true,
+      "versioning": "always-bump-patch",
       "include-v-in-tag": true,
       "include-component-in-tag": false,
       "extra-files": [

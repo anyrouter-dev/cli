@@ -105,10 +105,17 @@ fn release_please_manifest_has_no_0_2() {
 }
 
 #[test]
-fn release_please_locks_pre_major_bumps() {
+fn release_please_always_bumps_patch() {
     let config = read("release-please-config.json");
-    contains_true(&config, "bump-patch-for-minor-pre-major");
-    contains_true(&config, "bump-minor-pre-major");
+    let compact = config.replace([' ', '\n', '\t', '\r'], "");
+    assert!(
+        compact.contains("\"versioning\":\"always-bump-patch\""),
+        "versioning must be always-bump-patch so tagged releases stay 0.1.x"
+    );
+    assert!(
+        !compact.contains("\"bump-minor-pre-major\":true"),
+        "bump-minor-pre-major:true is a 0.2.0 path (feat! / BREAKING CHANGE)"
+    );
     contains_true(&config, "include-v-in-tag");
     assert!(
         config.contains("\"@anyr/cli\""),
@@ -118,7 +125,6 @@ fn release_please_locks_pre_major_bumps() {
         config.contains("Cargo.toml"),
         "extra-files must include Cargo.toml"
     );
-    let compact = config.replace([' ', '\n', '\t', '\r'], "");
     assert!(
         compact.contains("\"release-type\":\"node\""),
         "node release-type updates CHANGELOG + package.json"

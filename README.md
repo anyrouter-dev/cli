@@ -87,10 +87,8 @@ anyr claude --ok
 ## Version lock (0.1.x)
 
 `Cargo.toml`, `package.json`, and `.release-please-manifest.json` stay on
-`0.1.x`. release-please is configured with:
-
-- `bump-patch-for-minor-pre-major: true` — `feat:` stays 0.1.x
-- `bump-minor-pre-major: true` — breaking changes do not jump to 1.0.0
+`0.1.x`. release-please uses `"versioning": "always-bump-patch"` so `feat`,
+`feat!`, and `BREAKING CHANGE` all stay `0.1.x` (no 0.2.0 / 1.0.0 path).
 
 Do not auto-merge release-please PRs.
 
