@@ -1,0 +1,27 @@
+{
+  "name": "@anyr/cli",
+  "version": "0.1.0",
+  "description": "AnyRouter CLI — native binary",
+  "license": "MIT",
+  "homepage": "https://anyrouter.dev/cli",
+  "repository": "git+https://github.com/anyrouter-dev/cli.git",
+  "bin": {
+    "cli": "scripts/npx-anyr.js",
+    "anyr": "scripts/npx-anyr.js",
+    "anyrouter": "scripts/npx-anyr.js",
+    "ar": "scripts/npx-anyr.js"
+  },
+  "files": [
+    "LICENSE",
+    "README.md",
+    "scripts/npx-anyr.js",
+    "binaries"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public",
+    "tag": "next"
+  }
+}

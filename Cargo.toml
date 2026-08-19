@@ -1,0 +1,17 @@
+[package]
+name = "anyr-cli"
+version = "0.1.0" # x-release-please-version
+edition = "2021"
+description = "AnyRouter CLI — native binary"
+license = "MIT"
+repository = "https://github.com/anyrouter-dev/cli"
+homepage = "https://anyrouter.dev/cli"
+publish = false
+
+[[bin]]
+name = "anyr"
+path = "src/main.rs"
+
+[dependencies]
+serde_json = "1"
+ureq = "2.12"

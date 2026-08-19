@@ -1,0 +1,50 @@
+name: release-binaries
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            asset: anyr-linux-x86_64
+            optional: false
+          - os: ubuntu-24.04-arm
+            asset: anyr-linux-arm64
+            optional: true
+          - os: macos-13
+            asset: anyr-darwin-x86_64
+            optional: true
+          - os: macos-latest
+            asset: anyr-darwin-arm64
+            optional: true
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.optional }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: cargo build --release
+        run: cargo build --release
+
+      - name: package asset
+        run: |
+          bin="target/release/anyr"
+          if [ -f "target/release/anyr.exe" ]; then
+            bin="target/release/anyr.exe"
+          fi
+          strip "$bin" || true
+          cp "$bin" "${{ matrix.asset }}"
+
+      - name: upload ${{ matrix.asset }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ github.event.release.tag_name }}" "${{ matrix.asset }}" --clobber

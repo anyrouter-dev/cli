@@ -1,0 +1,38 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: cargo fmt --check (optional)
+        run: cargo fmt --check
+        continue-on-error: true
+
+      - name: cargo test
+        run: cargo test
+
+      - name: cargo build
+        run: cargo build --release
+
+      - name: installer local-binary mode
+        run: bash tests/setup-sh.test.sh
+
+      - name: check co-author hook
+        run: bash scripts/check-coauthors.sh
+
+      - name: node wrapper syntax
+        run: node --check scripts/npx-anyr.js

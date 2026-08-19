@@ -1,0 +1,38 @@
+#!/bin/sh
+# Append project co-authors unless already present.
+# Skip: ANYR_SKIP_COAUTHORS=1 git commit
+# Enable: ./scripts/install-hooks.sh   (git config core.hooksPath .githooks)
+
+if [ "${ANYR_SKIP_COAUTHORS-}" = "1" ]; then
+  exit 0
+fi
+
+file="$1"
+source="${2-}"
+
+[ "$source" = "merge" ] && exit 0
+[ -n "$file" ] && [ -f "$file" ] || exit 0
+
+a="Co-authored-by: Duyet Le <me@duyet.net>"
+b="Co-authored-by: duyetbot <bot@duyet.net>"
+
+added=0
+append() {
+  if grep -F -q "$1" "$file"; then
+    return 0
+  fi
+  if [ "$added" = 0 ]; then
+    # trailer block is separated from the body by a blank line
+    if [ -s "$file" ]; then
+      last="$(tail -c 1 "$file" 2>/dev/null || true)"
+      [ "$last" = "" ] || printf '\n' >>"$file"
+      printf '\n' >>"$file"
+    fi
+    added=1
+  fi
+  printf '%s\n' "$1" >>"$file"
+}
+
+append "$a"
+append "$b"
+exit 0
