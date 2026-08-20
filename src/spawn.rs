@@ -82,8 +82,8 @@ impl ToolConfig {
                 }
                 "base_suffix" => tool.base_suffix = value.as_string_lossy(),
                 "enable_gateway_model_discovery" => {
-                    tool.enable_gateway_model_discovery = matches!(value, YamlValue::Bool(true))
-                        || value.as_string_lossy() == "true"
+                    tool.enable_gateway_model_discovery =
+                        matches!(value, YamlValue::Bool(true)) || value.as_string_lossy() == "true"
                 }
                 "shadow_env" => {
                     let s = value.as_string_lossy();
@@ -477,7 +477,14 @@ pub fn redact_value(key: &str, value: &str) -> String {
             return "<redacted>".into();
         }
         let prefix: String = value.chars().take(6).collect();
-        let suffix: String = value.chars().rev().take(4).collect::<String>().chars().rev().collect();
+        let suffix: String = value
+            .chars()
+            .rev()
+            .take(4)
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect();
         return format!("{prefix}...{suffix}");
     }
     value.to_string()
@@ -523,7 +530,10 @@ pub fn spawn_child(command: &str, args: &[String], extra_env: &BTreeMap<String, 
         .status()
     {
         Ok(st) => st.code().unwrap_or(1),
-        Err(_) => 1,
+        Err(err) => {
+            eprintln!("Could not start \"{command}\": {err}");
+            1
+        }
     }
 }
 

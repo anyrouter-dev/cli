@@ -51,6 +51,7 @@ pub struct Profile {
     pub base_url: Option<String>,
     pub pinned_preset: Option<String>,
     pub default_model: Option<String>,
+    pub default_tool: Option<String>,
     pub timeout_ms: Option<i64>,
     pub extra: BTreeMap<String, YamlValue>,
 }
@@ -176,6 +177,36 @@ pub fn upsert_profile(mut config: Config, name: &str, profile: Profile) -> Confi
     config
 }
 
+pub fn set_active_profile(mut config: Config, name: &str) -> Result<Config, String> {
+    if !config.profiles.contains_key(name) {
+        let existing = config
+            .profiles
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(format!(
+            "Account \"{name}\" was not found. Existing: {}.",
+            if existing.is_empty() {
+                "(none)".into()
+            } else {
+                existing
+            }
+        ));
+    }
+    config.active_profile = name.to_string();
+    Ok(config)
+}
+
+pub fn valid_account_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    first.is_ascii_alphanumeric()
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
+}
+
 fn parse_yaml_scalar(raw: &str) -> YamlValue {
     match raw {
         "true" => YamlValue::Bool(true),
@@ -266,10 +297,13 @@ fn profile_from_map(map: &BTreeMap<String, YamlValue>) -> Profile {
     for (k, v) in map {
         match k.as_str() {
             "api_key" => p.api_key = Some(v.as_string_lossy()).filter(|s| !s.is_empty()),
-            "management_key" => p.management_key = Some(v.as_string_lossy()).filter(|s| !s.is_empty()),
+            "management_key" => {
+                p.management_key = Some(v.as_string_lossy()).filter(|s| !s.is_empty())
+            }
             "base_url" => p.base_url = Some(v.as_string_lossy()),
             "pinned_preset" => p.pinned_preset = Some(normalize_preset(&v.as_string_lossy())),
             "default_model" => p.default_model = Some(v.as_string_lossy()),
+            "default_tool" => p.default_tool = Some(v.as_string_lossy()).filter(|s| !s.is_empty()),
             "timeout_ms" => {
                 p.timeout_ms = match v {
                     YamlValue::Int(n) => Some(*n),
@@ -321,11 +355,17 @@ pub fn serialize_config(config: &Config) -> String {
         "active_profile: {}",
         yaml_scalar(&config.active_profile)
     )];
+    if let Some(tool) = &config.last_tool {
+        lines.push(format!("last_tool: {}", yaml_scalar(tool)));
+    }
     lines.push("profiles:".into());
     for (name, profile) in &config.profiles {
         lines.push(format!("  {name}:"));
         if let Some(k) = &profile.api_key {
             lines.push(format!("    api_key: {}", yaml_scalar(k)));
+        }
+        if let Some(k) = &profile.management_key {
+            lines.push(format!("    management_key: {}", yaml_scalar(k)));
         }
         if let Some(u) = &profile.base_url {
             lines.push(format!("    base_url: {}", yaml_scalar(u)));
@@ -335,6 +375,9 @@ pub fn serialize_config(config: &Config) -> String {
         }
         if let Some(m) = &profile.default_model {
             lines.push(format!("    default_model: {}", yaml_scalar(m)));
+        }
+        if let Some(t) = &profile.default_tool {
+            lines.push(format!("    default_tool: {}", yaml_scalar(t)));
         }
         if let Some(t) = profile.timeout_ms {
             lines.push(format!("    timeout_ms: {t}"));
@@ -398,5 +441,41 @@ profiles:
             again.profiles.get("default").unwrap().api_key.as_deref(),
             Some("sk-ar-v1-test")
         );
+    }
+
+    #[test]
+    fn serialize_keeps_management_key_and_last_tool() {
+        let src = "\
+active_profile: work
+last_tool: claude
+profiles:
+  work:
+    api_key: sk-ar-v1-test
+    management_key: ak_mgmt
+    default_tool: codex
+    default_model: anthropic/claude-sonnet-4.6
+";
+        let cfg = parse_config(src);
+        assert_eq!(cfg.last_tool.as_deref(), Some("claude"));
+        let p = cfg.profiles.get("work").unwrap();
+        assert_eq!(p.management_key.as_deref(), Some("ak_mgmt"));
+        assert_eq!(p.default_tool.as_deref(), Some("codex"));
+        let again = parse_config(&serialize_config(&cfg));
+        assert_eq!(again.last_tool.as_deref(), Some("claude"));
+        assert_eq!(
+            again
+                .profiles
+                .get("work")
+                .unwrap()
+                .management_key
+                .as_deref(),
+            Some("ak_mgmt")
+        );
+    }
+
+    #[test]
+    fn set_active_profile_rejects_unknown() {
+        let cfg = parse_config("active_profile: default\nprofiles:\n  default:\n    api_key: x\n");
+        assert!(set_active_profile(cfg, "missing").is_err());
     }
 }

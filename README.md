@@ -80,8 +80,14 @@ npm install -g @anyr/cli@next
 
 ```bash
 anyr --help
-anyr login
-anyr claude --ok
+anyr login                  # browser / device code / paste; key saved on this machine
+anyr login --device         # headless / SSH
+anyr usage                  # credit balance
+anyr models use <id>        # persist default model
+anyr keys list              # switch with: anyr keys use
+anyr account use work       # switch saved profiles
+anyr claude --ok            # launch through the gateway
+anyr claude --install --ok  # install Claude Code first if missing
 anyr codex --ok
 anyr opencode --ok
 anyr pi --ok

@@ -145,7 +145,7 @@ pub fn command_help(command: &str) -> Option<String> {
         "logout" => LOGOUT.into(),
         "upgrade" => UPGRADE.into(),
         "transactions" => TRANSACTIONS.into(),
-        "menu" => "anyrouter menu — open the interactive TUI\n".into(),
+        "menu" => "anyrouter menu — open the interactive TUI (launch, switch model, switch key, credits)\n".into(),
         "prompt" => "anyrouter prompt — pull prompts from the AnyRouter hub (get | url | list)\n".into(),
         "claude" => launch_help("claude", "Claude Code"),
         "codex" => launch_help("codex", "Codex"),
@@ -248,11 +248,14 @@ anyrouter models — list catalog model ids
 
 Usage:
   npx @anyr/cli models [options]
+  npx @anyr/cli models use <id>
+  npx @anyr/cli models --pick
 
-Lists every model id usable with --model. Pass --key or set ANYROUTER_API_KEY.
+Lists every model id usable with --model. `use` / `--pick` persist default_model.
 
 Options:
   --json            Print as JSON
+  --pick            Interactive picker (TTY)
   --key sk-ar-v1-…  Optional inference key
 ";
 
@@ -319,7 +322,15 @@ Options:
 ";
 
 const KEYS: &str = "\
-anyr keys — manage API keys (list | create | use | revoke)
+anyr keys — manage API keys
+
+Usage:
+  anyr keys list [--json]
+  anyr keys create [name]
+  anyr keys use [hash]
+  anyr keys revoke <hash> [--yes]
+
+Needs a management key (ak_…) from device/browser login, or --management-key.
 ";
 
 const AUDIT: &str = "\

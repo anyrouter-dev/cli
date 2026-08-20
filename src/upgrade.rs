@@ -131,8 +131,7 @@ fn replace_current_binary(url: &str) -> Result<PathBuf, String> {
             .map_err(|e| format!("stat {}: {e}", tmp.display()))?
             .permissions();
         perms.set_mode(0o755);
-        fs::set_permissions(&tmp, perms)
-            .map_err(|e| format!("chmod {}: {e}", tmp.display()))?;
+        fs::set_permissions(&tmp, perms).map_err(|e| format!("chmod {}: {e}", tmp.display()))?;
     }
     fs::rename(&tmp, &dest).map_err(|e| {
         let _ = fs::remove_file(&tmp);

@@ -20,7 +20,9 @@ fn help_lists_login_claude_account_and_spawn_targets() {
     for word in ["login", "claude", "account", "usage", "whoami"] {
         assert!(stdout.contains(word), "missing {word} in:\n{stdout}");
     }
-    for target in ["claude", "cc", "codex", "grok", "opencode", "pi", "pool", "poolside"] {
+    for target in [
+        "claude", "cc", "codex", "grok", "opencode", "pi", "pool", "poolside",
+    ] {
         assert!(
             stdout.lines().any(|l| l.trim_start().starts_with(target)),
             "missing spawn target {target} in:\n{stdout}"
@@ -101,13 +103,22 @@ fn documented_commands_are_known_not_unknown() {
 fn spawn_targets_dry_run_inject_gateway_and_redact_key() {
     let key = "sk-ar-v1-testkey";
     let cases: &[(&[&str], &str)] = &[
-        (&["claude", "--dry-run", "--yes", "--key", key], "ANTHROPIC_BASE_URL"),
-        (&["codex", "--dry-run", "--yes", "--key", key], "OPENAI_BASE_URL"),
+        (
+            &["claude", "--dry-run", "--yes", "--key", key],
+            "ANTHROPIC_BASE_URL",
+        ),
+        (
+            &["codex", "--dry-run", "--yes", "--key", key],
+            "OPENAI_BASE_URL",
+        ),
         (
             &["opencode", "--dry-run", "--yes", "--key", key],
             "OPENCODE_CONFIG_CONTENT",
         ),
-        (&["pi", "--dry-run", "--yes", "--key", key], "ANYROUTER_API_KEY"),
+        (
+            &["pi", "--dry-run", "--yes", "--key", key],
+            "ANYROUTER_API_KEY",
+        ),
     ];
     for (args, marker) in cases {
         let out = anyr()
@@ -126,10 +137,7 @@ fn spawn_targets_dry_run_inject_gateway_and_redact_key() {
             stdout.contains(marker),
             "{args:?} missing {marker} in:\n{stdout}"
         );
-        assert!(
-            !stdout.contains(key),
-            "{args:?} leaked full key:\n{stdout}"
-        );
+        assert!(!stdout.contains(key), "{args:?} leaked full key:\n{stdout}");
     }
 }
 
@@ -240,7 +248,10 @@ fn upgrade_check_flag_is_known() {
         !combined.contains("Unknown command"),
         "upgrade --check treated as unknown:\n{combined}"
     );
-    assert!(stdout.contains("up to date") || stdout.contains("Already up to date"), "{stdout}");
+    assert!(
+        stdout.contains("up to date") || stdout.contains("Already up to date"),
+        "{stdout}"
+    );
 }
 
 fn fixture_path() -> std::path::PathBuf {
@@ -266,7 +277,10 @@ fn upgrade_check_newer_stable_would_upgrade() {
     assert!(stdout.contains("channel: stable"), "{stdout}");
     assert!(stdout.contains("latest: 0.1.1"), "{stdout}");
     assert!(stdout.contains("update available"), "{stdout}");
-    assert!(stdout.contains("github.com/anyrouter-dev/cli/releases/download/"), "{stdout}");
+    assert!(
+        stdout.contains("github.com/anyrouter-dev/cli/releases/download/"),
+        "{stdout}"
+    );
 }
 
 #[test]
@@ -288,6 +302,143 @@ fn upgrade_check_beta_selects_prerelease() {
     assert!(stdout.contains("channel: beta"), "{stdout}");
     assert!(stdout.contains("latest: 0.1.2-beta.1"), "{stdout}");
     assert!(stdout.contains("update available"), "{stdout}");
+}
+
+#[test]
+fn login_help_describes_device_and_paste() {
+    let (code, stdout, stderr) = run(&["login", "--help"]);
+    assert_eq!(code, 0, "stderr={stderr}");
+    let combined = format!("{stdout}{stderr}");
+    assert!(combined.contains("--device"), "{combined}");
+    assert!(combined.contains("--paste"), "{combined}");
+    assert!(combined.contains("device"), "{combined}");
+}
+
+#[test]
+fn keys_and_account_help_exit_zero() {
+    for cmd in ["keys", "account", "logout", "menu"] {
+        let (code, stdout, stderr) = run(&[cmd, "--help"]);
+        assert_eq!(code, 0, "{cmd} --help failed: {stdout}{stderr}");
+    }
+}
+
+#[test]
+fn account_use_switches_active_profile() {
+    let dir = std::env::temp_dir().join(format!("anyr-cli-account-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("config.yaml");
+    std::fs::write(
+        &path,
+        "\
+active_profile: default
+profiles:
+  default:
+    api_key: sk-ar-v1-one-secret-value
+    default_model: auto
+  work:
+    api_key: sk-ar-v1-two-secret-value
+    default_model: anthropic/claude-sonnet-4.6
+",
+    )
+    .unwrap();
+    let out = anyr()
+        .args(["account", "use", "work", "--config", path.to_str().unwrap()])
+        .output()
+        .expect("account use");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code().unwrap_or(1), 0, "{stdout}{stderr}");
+    assert!(stdout.contains("work"), "{stdout}");
+    let who = anyr()
+        .args(["whoami", "--config", path.to_str().unwrap()])
+        .output()
+        .expect("whoami");
+    let who_out = String::from_utf8_lossy(&who.stdout);
+    assert!(who_out.contains("work"), "{who_out}");
+    assert!(
+        !who_out.contains("sk-ar-v1-two-secret-value"),
+        "full key leaked:\n{who_out}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn models_use_persists_default_without_network_when_unknown() {
+    let dir = std::env::temp_dir().join(format!("anyr-cli-models-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("config.yaml");
+    std::fs::write(
+        &path,
+        "\
+active_profile: default
+profiles:
+  default:
+    api_key: sk-ar-v1-one
+    default_model: auto
+",
+    )
+    .unwrap();
+    // Unknown id is rejected locally after a models fetch; without a live
+    // network this should fail loudly rather than write a guess.
+    let out = anyr()
+        .args([
+            "models",
+            "use",
+            "definitely-not-a-model",
+            "--config",
+            path.to_str().unwrap(),
+            "--base-url",
+            "http://127.0.0.1:9",
+        ])
+        .env_remove("ANYROUTER_API_KEY")
+        .output()
+        .expect("models use");
+    assert_ne!(out.status.code().unwrap_or(1), 0);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn logout_clears_key_and_does_not_print_it() {
+    let dir = std::env::temp_dir().join(format!("anyr-cli-logout-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("config.yaml");
+    std::fs::write(
+        &path,
+        "\
+active_profile: default
+profiles:
+  default:
+    api_key: sk-ar-v1-secret-value
+",
+    )
+    .unwrap();
+    let out = anyr()
+        .args(["logout", "--config", path.to_str().unwrap()])
+        .output()
+        .expect("logout");
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(out.status.code().unwrap_or(1), 0, "{combined}");
+    assert!(!combined.contains("sk-ar-v1-secret-value"), "{combined}");
+    let src = std::fs::read_to_string(&path).unwrap();
+    assert!(!src.contains("sk-ar-v1-secret-value"), "{src}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn install_flag_is_known_on_launch() {
+    let (code, stdout, stderr) = run(&[
+        "claude",
+        "--install",
+        "--dry-run",
+        "--key",
+        "sk-ar-v1-testkey",
+    ]);
+    assert_eq!(code, 0, "{stdout}{stderr}");
+    assert!(stdout.contains("ANTHROPIC_BASE_URL"), "{stdout}");
 }
 
 #[test]

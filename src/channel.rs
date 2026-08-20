@@ -5,8 +5,7 @@ use std::cmp::Ordering;
 
 pub const GITHUB_REPO: &str = "anyrouter-dev/cli";
 pub const GITHUB_RELEASES_API: &str = "https://api.github.com/repos/anyrouter-dev/cli/releases";
-pub const GITHUB_DOWNLOAD_PREFIX: &str =
-    "https://github.com/anyrouter-dev/cli/releases/download/";
+pub const GITHUB_DOWNLOAD_PREFIX: &str = "https://github.com/anyrouter-dev/cli/releases/download/";
 pub const GITHUB_LATEST_DOWNLOAD: &str =
     "https://github.com/anyrouter-dev/cli/releases/latest/download";
 
@@ -21,9 +20,7 @@ impl Channel {
         match s.trim().to_ascii_lowercase().as_str() {
             "" | "stable" | "latest" => Ok(Channel::Stable),
             "beta" | "pre" | "prerelease" => Ok(Channel::Beta),
-            other => Err(format!(
-                "Unknown channel \"{other}\". Use stable or beta."
-            )),
+            other => Err(format!("Unknown channel \"{other}\". Use stable or beta.")),
         }
     }
 
