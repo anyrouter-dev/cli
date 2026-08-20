@@ -371,33 +371,35 @@ pub fn run(argv: Vec<String>, env: HashMap<String, String>) -> i32 {
         }
     };
 
-    #[cfg(feature = "native")]
-    crate::upgrade::on_startup(parsed.command.as_str(), &parsed, &env);
-
     let command = parsed.command.as_str();
     if command == "--version" || command == "-v" {
         println!("{VERSION}");
         return 0;
     }
-    if command == "help" || command == "--help" || command == "-h" {
-        print!("{}", root_help());
-        return 0;
+
+    // parse_cli_args maps empty argv to command "help". Check emptiness first
+    // so a real terminal gets the TUI launcher, not --help.
+    if should_open_launcher(&raw, term::is_interactive()) {
+        #[cfg(feature = "native")]
+        crate::upgrade::on_startup("menu", &parsed, &env);
+        let empty = ParsedArgs {
+            command: "menu".into(),
+            flags: HashMap::new(),
+            passthrough: Vec::new(),
+        };
+        return match run_menu(&empty, &env) {
+            Ok(code) => code,
+            Err(err) => {
+                eprintln!("{err}");
+                1
+            }
+        };
     }
-    if raw.is_empty() {
-        if term::is_interactive() {
-            let empty = ParsedArgs {
-                command: "menu".into(),
-                flags: HashMap::new(),
-                passthrough: Vec::new(),
-            };
-            return match run_menu(&empty, &env) {
-                Ok(code) => code,
-                Err(err) => {
-                    eprintln!("{err}");
-                    1
-                }
-            };
-        }
+
+    #[cfg(feature = "native")]
+    crate::upgrade::on_startup(command, &parsed, &env);
+
+    if raw.is_empty() || command == "help" || command == "--help" || command == "-h" {
         print!("{}", root_help());
         return 0;
     }
@@ -1644,5 +1646,24 @@ fn run_menu(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, 
         3 => run_usage(parsed, env),
         4 => run_login(parsed, env),
         _ => Ok(0),
+    }
+}
+
+/// Bare `ar` / `anyr` opens the TUI on a terminal; pipes still get --help.
+fn should_open_launcher(raw: &[String], interactive: bool) -> bool {
+    raw.is_empty() && interactive
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_open_launcher;
+
+    #[test]
+    fn bare_tty_opens_launcher_not_help() {
+        assert!(should_open_launcher(&[], true));
+        assert!(!should_open_launcher(&[], false));
+        assert!(!should_open_launcher(&["help".into()], true));
+        assert!(!should_open_launcher(&["--help".into()], true));
+        assert!(!should_open_launcher(&["config".into()], true));
     }
 }
