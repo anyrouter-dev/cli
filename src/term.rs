@@ -60,6 +60,91 @@ pub fn model_id(text: &str) -> String {
     paint(TEAL, text)
 }
 
+/// Small AR mark rasterized from the official 32px icon (half-blocks).
+/// Three rows × 11 cells — readable without a graphics protocol.
+pub const MARK_LINES: [&str; 3] = ["    ▄▄ ▄▄▄ ", "  ▄█▀▀█▄▄█▀", " ▀▀    ▀▀▀▀"];
+
+/// Official 32×32 white PNG (Kitty / iTerm2 inline image).
+const MARK_PNG_B64: &str = "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAACXBIWXMAABYlAAAWJQFJUiTwAAABUElEQVRYw2NgGAWjYBSMgqEI/v//rwHEFkC8EIh3Y8GrgTgCiBlp5YDtQHwJiMP/4webgZiV2paHIllQAsQZQFyOhlcA8V+omk5qWs4FxA+RHPAFiOVxqK2GqvkAxOzUckAL1NCfQPwOFsw41MoiOVSDGparAPEPWLACcSKSBcFY1NsgyUtRwwFboIY9BmIeUAoH4r1QsWdAzA9VxwHE5kB8HSp3mhqW+yL5JhRJXA2Iv0PF+4F4Nlou+AZyDKWWg3x0B2rgLizy9VC5P0DsCMQvkdKJOTV8X4NkoDoWeXYgvgFVcwaIY5FCIIZSy+WB+CvUsFY86pyA+B9UXQEQ74SyQaEhRIkD1kINAuV9bgJqFyGVDdZQGgRmk2u5G1JQ+hGhXhSI30DVbwDiCigbFDK25DhgHrRimUSCngikCskAWiSD2BNGq/BRMApGwaAFAIddWov0Aaf6AAAAAElFTkSuQmCC";
+
+enum Graphics {
+    Kitty,
+    Iterm,
+}
+
+fn graphics_kind() -> Option<Graphics> {
+    if !io::stdout().is_terminal() {
+        return None;
+    }
+    if std::env::var_os("TMUX").is_some() {
+        return None;
+    }
+    let term = std::env::var("TERM").unwrap_or_default().to_ascii_lowercase();
+    let program = std::env::var("TERM_PROGRAM").unwrap_or_default();
+    if std::env::var_os("KITTY_WINDOW_ID").is_some()
+        || term.contains("kitty")
+        || term.contains("ghostty")
+        || program.eq_ignore_ascii_case("ghostty")
+    {
+        return Some(Graphics::Kitty);
+    }
+    match program.as_str() {
+        "iTerm.app" | "WezTerm" | "WarpTerminal" => Some(Graphics::Iterm),
+        _ => None,
+    }
+}
+
+/// Best-effort inline PNG. Returns true when a graphics sequence was written.
+fn emit_graphics_mark() -> bool {
+    let Some(kind) = graphics_kind() else {
+        return false;
+    };
+    let seq = match kind {
+        Graphics::Kitty => format!("\x1b_Ga=T,f=100,c=4,r=2,q=2;{MARK_PNG_B64}\x1b\\"),
+        Graphics::Iterm => format!(
+            "\x1b]1337;File=inline=1;width=4;height=2;preserveAspectRatio=1:{MARK_PNG_B64}\x07"
+        ),
+    };
+    let mut out = io::stdout();
+    if out.write_all(seq.as_bytes()).is_err() {
+        return false;
+    }
+    let _ = out.write_all(b"\n");
+    let _ = out.flush();
+    true
+}
+
+/// Three-line AR mark next to up to three caption lines.
+pub fn brand_header(captions: &[&str]) -> String {
+    let mut out = String::new();
+    for i in 0..3 {
+        let mark = paint(WHITE, MARK_LINES[i]);
+        let caption = captions.get(i).copied().unwrap_or("");
+        if caption.is_empty() {
+            out.push_str(&mark);
+        } else {
+            out.push_str(&mark);
+            out.push_str("  ");
+            out.push_str(caption);
+        }
+        out.push('\n');
+    }
+    out
+}
+
+/// Print the mark: Kitty/iTerm PNG when the terminal can, else half-block art.
+pub fn print_brand_header(captions: &[&str]) {
+    if emit_graphics_mark() {
+        for caption in captions {
+            if !caption.is_empty() {
+                println!("{caption}");
+            }
+        }
+        return;
+    }
+    print!("{}", brand_header(captions));
+}
+
 /// OSC 8 hyperlink when color/TTY is on; plain URL otherwise.
 pub fn link(url: &str) -> String {
     if !color_enabled() {
@@ -257,5 +342,16 @@ mod tests {
     fn rank_ids_keeps_order_on_empty_query() {
         let ids = vec!["b".into(), "a".into()];
         assert_eq!(rank_ids("", &ids), ids);
+    }
+
+    #[test]
+    fn brand_header_places_captions_beside_the_mark() {
+        let out = brand_header(&["AnyRouter", "account  default", ""]);
+        for line in MARK_LINES {
+            assert!(out.contains(line), "missing {line:?} in:\n{out}");
+        }
+        assert!(out.contains("AnyRouter"), "{out}");
+        assert!(out.contains("account  default"), "{out}");
+        assert_eq!(out.lines().count(), 3);
     }
 }

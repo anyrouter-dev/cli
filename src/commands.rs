@@ -901,17 +901,15 @@ fn print_config_status(
     let profile = cfg.profiles.get(&cfg.active_profile);
     let key = resolve_api_key(&parsed.flags, env, profile);
     let base = resolve_base_url(&parsed.flags, profile);
-    println!("{}", term::bold("AnyRouter config"));
-    println!(
-        "{}  {}",
-        term::dim("account"),
-        term::accent(&cfg.active_profile)
-    );
-    println!(
-        "{}  {}",
-        term::dim("api_key "),
-        mask_api_key(key.as_deref())
-    );
+    term::print_brand_header(&[
+        &term::bold("AnyRouter config"),
+        &format!(
+            "{}  {}",
+            term::dim("account"),
+            term::accent(&cfg.active_profile)
+        ),
+        &format!("{}  {}", term::dim("api_key "), mask_api_key(key.as_deref())),
+    ]);
     println!(
         "{}  {}",
         term::dim("model   "),
@@ -1581,20 +1579,22 @@ fn run_menu(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, 
         .clone()
         .or_else(|| profile.and_then(|p| p.default_tool.clone()))
         .unwrap_or_else(|| "claude".into());
-    println!("{}", term::bold("AnyRouter"));
-    println!(
-        "{}  {}  {}",
-        term::dim("account"),
-        term::accent(&cfg.active_profile),
-        term::dim(&mask_api_key(profile.and_then(|p| p.api_key.as_deref())))
-    );
-    println!(
-        "{}  {}",
-        term::dim("model  "),
-        term::model_id(display_model_id(
-            profile.map(|p| p.default_model()).unwrap_or("auto"),
-        ))
-    );
+    term::print_brand_header(&[
+        &term::bold("AnyRouter"),
+        &format!(
+            "{}  {}  {}",
+            term::dim("account"),
+            term::accent(&cfg.active_profile),
+            term::dim(&mask_api_key(profile.and_then(|p| p.api_key.as_deref())))
+        ),
+        &format!(
+            "{}  {}",
+            term::dim("model  "),
+            term::model_id(display_model_id(
+                profile.map(|p| p.default_model()).unwrap_or("auto"),
+            ))
+        ),
+    ]);
     println!();
     let items = vec![
         format!("Launch {}", last),

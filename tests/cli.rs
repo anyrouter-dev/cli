@@ -54,6 +54,10 @@ fn help_lists_login_claude_account_and_spawn_targets() {
         stdout.contains("Sign in if needed") && stdout.contains("auth login"),
         "bare-command help should describe login-then-launcher, got:\n{stdout}"
     );
+    assert!(
+        stdout.contains("▄█▀▀█▄▄█▀"),
+        "help should render the small AR mark, got:\n{stdout}"
+    );
 }
 
 #[test]

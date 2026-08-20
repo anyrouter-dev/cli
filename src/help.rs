@@ -77,12 +77,18 @@ pub fn resolve_bin(argv0: Option<&str>, display_env: Option<&str>) -> String {
 
 pub fn root_help() -> String {
     let bin = invoked_bin();
+    let header = crate::term::brand_header(&[
+        &format!(
+            "{}  {}",
+            crate::term::bold(&format!("AnyRouter CLI v{VERSION}")),
+            crate::term::link("https://anyrouter.dev")
+        ),
+        &crate::term::dim("One key. Every coding agent."),
+        "",
+    ]);
     format!(
         "\
-AnyRouter CLI v{version} — https://anyrouter.dev
-
-One key. Every coding agent.
-
+{header}
 USAGE
   {bin} <command> [flags]
   {bin} <command> --help
@@ -108,7 +114,7 @@ LAUNCH
   {bin} auth login      Sign in
   {bin} claude          Launch Claude Code
 ",
-        version = VERSION,
+        header = header,
         bin = bin
     )
 }
@@ -469,6 +475,7 @@ mod tests {
         assert!(!out.contains("setup.sh"), "{out}");
         assert!(!out.contains("Install:"), "{out}");
         assert!(!out.contains("anyrouter.dev/docs/cli"), "{out}");
+        assert!(out.contains("▄█▀▀█▄▄█▀"), "help should include the AR mark, got:\n{out}");
 
         set_invoked_bin("npx @anyr/cli");
         let npx = root_help();
