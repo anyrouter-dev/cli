@@ -143,6 +143,8 @@ pub fn current_os() -> &'static str {
         "linux"
     } else if cfg!(target_os = "macos") {
         "darwin"
+    } else if cfg!(target_os = "windows") {
+        "windows"
     } else {
         "unknown"
     }

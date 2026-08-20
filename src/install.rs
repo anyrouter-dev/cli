@@ -1,5 +1,6 @@
 //! Resolve a coding-agent binary, and optionally install it (`--install`).
 
+#[cfg(feature = "native")]
 use std::process::Command;
 
 use crate::spawn::canonical_tool;
@@ -70,19 +71,33 @@ pub fn resolve_executable(command: &str) -> Option<String> {
     if command.contains('/') || command.contains('\\') || command.starts_with('.') {
         return Some(command.to_string());
     }
-    let finder = if cfg!(windows) { "where" } else { "which" };
-    let output = Command::new(finder).arg(command).output().ok()?;
-    if !output.status.success() {
+    #[cfg(not(feature = "native"))]
+    {
+        let _ = command;
         return None;
     }
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .next()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
+    #[cfg(feature = "native")]
+    {
+        let finder = if cfg!(windows) { "where" } else { "which" };
+        let output = Command::new(finder).arg(command).output().ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .next()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    }
 }
 
+#[cfg(not(feature = "native"))]
+pub fn run_installer(_install_command: &str) -> bool {
+    false
+}
+
+#[cfg(feature = "native")]
 pub fn run_installer(install_command: &str) -> bool {
     Command::new("sh")
         .arg("-c")

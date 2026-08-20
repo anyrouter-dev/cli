@@ -17,6 +17,7 @@ function assetName() {
   if (plat === "linux" && arch === "arm64") return "anyr-linux-arm64";
   if (plat === "darwin" && arch === "x64") return "anyr-darwin-x86_64";
   if (plat === "darwin" && arch === "arm64") return "anyr-darwin-arm64";
+  if (plat === "win32" && arch === "x64") return "anyr-windows-x86_64.exe";
   console.error(`Unsupported platform: ${plat}-${arch}`);
   process.exit(1);
 }

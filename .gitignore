@@ -5,3 +5,4 @@ binaries/anyr-*
 !binaries/.gitkeep
 *.tgz
 .DS_Store
+web/pkg/

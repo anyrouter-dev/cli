@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashMap};
+#[cfg(feature = "native")]
 use std::process::{Command, Stdio};
 
 use crate::config::{Profile, YamlValue, DEFAULT_BASE_URL, DEFAULT_PRESET, DEFAULT_TIMEOUT_MS};
@@ -520,6 +521,14 @@ pub fn env_command_path(tool: &str, env: &BTreeMap<String, String>) -> Option<St
         .filter(|s| !s.is_empty())
 }
 
+#[cfg(not(feature = "native"))]
+pub fn spawn_child(command: &str, args: &[String], extra_env: &BTreeMap<String, String>) -> i32 {
+    let _ = (args, extra_env);
+    eprintln!("spawn is not available in the browser demo ({command})");
+    1
+}
+
+#[cfg(feature = "native")]
 pub fn spawn_child(command: &str, args: &[String], extra_env: &BTreeMap<String, String>) -> i32 {
     match Command::new(command)
         .args(args)

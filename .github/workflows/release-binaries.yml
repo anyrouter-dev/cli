@@ -15,36 +15,135 @@ jobs:
         include:
           - os: ubuntu-latest
             asset: anyr-linux-x86_64
-            optional: false
+            target: x86_64-unknown-linux-gnu
           - os: ubuntu-24.04-arm
             asset: anyr-linux-arm64
-            optional: true
+            target: aarch64-unknown-linux-gnu
           - os: macos-13
             asset: anyr-darwin-x86_64
-            optional: true
+            target: x86_64-apple-darwin
           - os: macos-latest
             asset: anyr-darwin-arm64
-            optional: true
+            target: aarch64-apple-darwin
+          - os: windows-latest
+            asset: anyr-windows-x86_64.exe
+            target: x86_64-pc-windows-msvc
     runs-on: ${{ matrix.os }}
-    continue-on-error: ${{ matrix.optional }}
     steps:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
 
       - name: cargo build --release
-        run: cargo build --release
+        run: cargo build --release --target ${{ matrix.target }}
 
       - name: package asset
+        shell: bash
         run: |
-          bin="target/release/anyr"
-          if [ -f "target/release/anyr.exe" ]; then
-            bin="target/release/anyr.exe"
+          bin="target/${{ matrix.target }}/release/anyr"
+          if [ -f "target/${{ matrix.target }}/release/anyr.exe" ]; then
+            bin="target/${{ matrix.target }}/release/anyr.exe"
           fi
-          strip "$bin" || true
+          strip "$bin" 2>/dev/null || true
           cp "$bin" "${{ matrix.asset }}"
+
+      - name: bench
+        shell: bash
+        run: |
+          python scripts/bench.py measure \
+            --bin "${{ matrix.asset }}" \
+            --asset "${{ matrix.asset }}" \
+            --target "${{ matrix.target }}" \
+            --os "${{ matrix.os }}" \
+            --kind native \
+            --out "bench/${{ matrix.asset }}.json"
 
       - name: upload ${{ matrix.asset }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release upload "${{ github.event.release.tag_name }}" "${{ matrix.asset }}" --clobber
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bench-${{ matrix.asset }}
+          path: bench/${{ matrix.asset }}.json
+
+  wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: install wasm-bindgen-cli
+        run: cargo install wasm-bindgen-cli --version 0.2.100
+
+      - name: cargo build wasm
+        run: cargo build --release --target wasm32-unknown-unknown --no-default-features
+
+      - name: wasm-bindgen + zip demo
+        run: |
+          wasm-bindgen --target web --out-dir web/pkg \
+            target/wasm32-unknown-unknown/release/anyr_cli.wasm
+          cp web/pkg/anyr_cli_bg.wasm anyr.wasm
+          python scripts/bench.py measure \
+            --bin anyr.wasm \
+            --asset anyr.wasm \
+            --target wasm32-unknown-unknown \
+            --kind wasm \
+            --out bench/anyr.wasm.json
+          tar -czf anyr-wasm-demo.tar.gz -C web index.html pkg
+
+      - name: upload wasm assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ github.event.release.tag_name }}" \
+            anyr.wasm anyr-wasm-demo.tar.gz --clobber
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bench-anyr.wasm
+          path: bench/anyr.wasm.json
+
+  notes:
+    needs: [build, wasm]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: append bench report to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python scripts/bench.py report artifacts \
+            --out bench-report.md --json-out bench-report.json \
+            --title "Binary size and startup (${{ github.event.release.tag_name }})"
+          body="$(gh release view "${{ github.event.release.tag_name }}" --json body -q .body)"
+          {
+            printf '%s\n\n' "$body"
+            cat bench-report.md
+          } > notes.md
+          gh release edit "${{ github.event.release.tag_name }}" --notes-file notes.md
+          gh release upload "${{ github.event.release.tag_name }}" \
+            bench-report.md bench-report.json --clobber

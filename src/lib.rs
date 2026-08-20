@@ -4,6 +4,7 @@ pub mod auth;
 pub mod channel;
 pub mod commands;
 pub mod config;
+pub mod demo;
 pub mod help;
 pub mod http;
 pub mod install;
@@ -12,6 +13,9 @@ pub mod parse;
 pub mod spawn;
 pub mod term;
 pub mod upgrade;
+
+#[cfg(target_arch = "wasm32")]
+pub mod wasm;
 
 pub use commands::run;
 pub use config::{parse_config, serialize_config};

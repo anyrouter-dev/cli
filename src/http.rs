@@ -1,10 +1,10 @@
-use std::time::Duration;
-
+#[cfg(feature = "native")]
 use crate::VERSION;
 
+#[cfg(feature = "native")]
 fn agent() -> ureq::Agent {
     ureq::AgentBuilder::new()
-        .timeout(Duration::from_secs(30))
+        .timeout(std::time::Duration::from_secs(30))
         .user_agent(&format!("anyr-cli/{VERSION}"))
         .build()
 }
@@ -22,6 +22,7 @@ pub fn join_api(base_url: &str, path: &str) -> String {
     format!("{base}{path}")
 }
 
+#[cfg(feature = "native")]
 fn with_auth(mut req: ureq::Request, api_key: Option<&str>) -> ureq::Request {
     if let Some(key) = api_key.filter(|k| !k.is_empty()) {
         req = req.set("Authorization", &format!("Bearer {key}"));
@@ -29,6 +30,7 @@ fn with_auth(mut req: ureq::Request, api_key: Option<&str>) -> ureq::Request {
     req
 }
 
+#[cfg(feature = "native")]
 fn into_status_body(result: Result<ureq::Response, ureq::Error>) -> Result<(u16, String), String> {
     match result {
         Ok(resp) => {
@@ -44,10 +46,12 @@ fn into_status_body(result: Result<ureq::Response, ureq::Error>) -> Result<(u16,
     }
 }
 
+#[cfg(feature = "native")]
 pub fn http_get(url: &str, api_key: Option<&str>) -> Result<(u16, String), String> {
     into_status_body(with_auth(agent().get(url), api_key).call())
 }
 
+#[cfg(feature = "native")]
 pub fn http_post(
     url: &str,
     api_key: Option<&str>,
@@ -57,8 +61,33 @@ pub fn http_post(
     into_status_body(req.send_string(json_body.unwrap_or("{}")))
 }
 
+#[cfg(feature = "native")]
 pub fn http_delete(url: &str, api_key: Option<&str>) -> Result<(u16, String), String> {
     into_status_body(with_auth(agent().delete(url), api_key).call())
+}
+
+#[cfg(not(feature = "native"))]
+fn no_network() -> Result<(u16, String), String> {
+    Err("network is not available in the browser demo".into())
+}
+
+#[cfg(not(feature = "native"))]
+pub fn http_get(_url: &str, _api_key: Option<&str>) -> Result<(u16, String), String> {
+    no_network()
+}
+
+#[cfg(not(feature = "native"))]
+pub fn http_post(
+    _url: &str,
+    _api_key: Option<&str>,
+    _json_body: Option<&str>,
+) -> Result<(u16, String), String> {
+    no_network()
+}
+
+#[cfg(not(feature = "native"))]
+pub fn http_delete(_url: &str, _api_key: Option<&str>) -> Result<(u16, String), String> {
+    no_network()
 }
 
 /// GET `{base}/v1/credits`. 401 = rejected. 403 falls back to GET `{base}/v1/models`.

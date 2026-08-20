@@ -24,6 +24,12 @@ curl -fsSL https://raw.githubusercontent.com/anyrouter-dev/cli/main/setup.sh | b
 curl -fsSL https://raw.githubusercontent.com/anyrouter-dev/cli/main/setup.sh | bash -s -- --channel beta
 ```
 
+Live WASM playground (same parser/help/dry-run as the binary):
+[anyrouter-dev.github.io/cli](https://anyrouter-dev.github.io/cli/)
+
+CI builds **linux x86_64/arm64**, **macOS x86_64/arm64**, **Windows x86_64**, and **wasm32**.
+Every PR and GitHub Release gets a size + startup report (`anyr --version` / `--help`).
+
 Manual (Linux x86_64 example):
 
 ```bash
@@ -56,7 +62,7 @@ npm install -g @anyr/cli@next
 
 The npm package is a thin Node wrapper. It execs a shipped binary in
 `binaries/` when present, otherwise it downloads the matching GitHub Release
-asset (`anyr-linux-x86_64`, `anyr-linux-arm64`, `anyr-darwin-x86_64`, `anyr-darwin-arm64`).
+asset (`anyr-linux-x86_64`, `anyr-linux-arm64`, `anyr-darwin-x86_64`, `anyr-darwin-arm64`, `anyr-windows-x86_64.exe`).
 
 ## Upgrade
 

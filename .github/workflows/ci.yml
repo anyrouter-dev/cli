@@ -7,9 +7,10 @@ on:
 
 permissions:
   contents: read
+  pull-requests: write
 
 jobs:
-  test:
+  lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -25,9 +26,6 @@ jobs:
       - name: cargo test
         run: cargo test
 
-      - name: cargo build
-        run: cargo build --release
-
       - name: installer local-binary mode
         run: bash tests/setup-sh.test.sh
 
@@ -36,3 +34,178 @@ jobs:
 
       - name: node wrapper syntax
         run: node --check scripts/npx-anyr.js
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: bench script syntax
+        run: python -m py_compile scripts/bench.py
+
+  build:
+    needs: lint
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            asset: anyr-linux-x86_64
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            asset: anyr-linux-arm64
+            target: aarch64-unknown-linux-gnu
+          - os: macos-13
+            asset: anyr-darwin-x86_64
+            target: x86_64-apple-darwin
+          - os: macos-latest
+            asset: anyr-darwin-arm64
+            target: aarch64-apple-darwin
+          - os: windows-latest
+            asset: anyr-windows-x86_64.exe
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: cargo test
+        run: cargo test
+
+      - name: cargo build --release
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: package + strip
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin="target/${{ matrix.target }}/release/anyr"
+          if [ -f "target/${{ matrix.target }}/release/anyr.exe" ]; then
+            bin="target/${{ matrix.target }}/release/anyr.exe"
+          fi
+          strip "$bin" 2>/dev/null || true
+          cp "$bin" "${{ matrix.asset }}"
+          ls -la "${{ matrix.asset }}"
+
+      - name: bench size and startup
+        shell: bash
+        run: |
+          python scripts/bench.py measure \
+            --bin "${{ matrix.asset }}" \
+            --asset "${{ matrix.asset }}" \
+            --target "${{ matrix.target }}" \
+            --os "${{ matrix.os }}" \
+            --kind native \
+            --out "bench/${{ matrix.asset }}.json"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bin-${{ matrix.asset }}
+          path: |
+            ${{ matrix.asset }}
+            bench/${{ matrix.asset }}.json
+
+  wasm:
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: install wasm-bindgen-cli
+        run: cargo install wasm-bindgen-cli --version 0.2.100
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: cargo build wasm
+        run: cargo build --release --target wasm32-unknown-unknown --no-default-features
+
+      - name: wasm-bindgen
+        run: |
+          wasm-bindgen --target web --out-dir web/pkg \
+            target/wasm32-unknown-unknown/release/anyr_cli.wasm
+          ls -la web/pkg
+
+      - name: bench wasm size
+        run: |
+          python scripts/bench.py measure \
+            --bin web/pkg/anyr_cli_bg.wasm \
+            --asset anyr.wasm \
+            --target wasm32-unknown-unknown \
+            --kind wasm \
+            --out bench/anyr.wasm.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wasm-demo
+          path: |
+            web/index.html
+            web/pkg
+            bench/anyr.wasm.json
+
+  report:
+    needs: [build, wasm]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: compose markdown
+        run: |
+          python scripts/bench.py report artifacts --out bench-report.md --json-out bench-report.json
+          cat bench-report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bench-report
+          path: |
+            bench-report.md
+            bench-report.json
+
+      - name: comment on pull request
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const marker = '<!-- anyr-bench-report -->';
+            const body = marker + '\n' + fs.readFileSync('bench-report.md', 'utf8');
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find((c) => c.body && c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }

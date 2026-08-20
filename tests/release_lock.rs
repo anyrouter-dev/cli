@@ -138,6 +138,7 @@ fn workflow_files_exist_and_do_not_auto_merge() {
         ".github/workflows/release-please.yml",
         ".github/workflows/release-binaries.yml",
         ".github/workflows/npm-publish.yml",
+        ".github/workflows/pages.yml",
     ];
     for rel in workflows {
         must_exist(rel);
@@ -153,10 +154,45 @@ fn workflow_files_exist_and_do_not_auto_merge() {
     }
 
     let binaries = read(".github/workflows/release-binaries.yml");
+    for asset in [
+        "anyr-linux-x86_64",
+        "anyr-linux-arm64",
+        "anyr-darwin-x86_64",
+        "anyr-darwin-arm64",
+        "anyr-windows-x86_64.exe",
+        "anyr.wasm",
+    ] {
+        assert!(
+            binaries.contains(asset),
+            "release-binaries must ship {asset}"
+        );
+    }
     assert!(
-        binaries.contains("anyr-linux-x86_64"),
-        "linux x86_64 asset is required"
+        !binaries.contains("optional: true"),
+        "platform builds must not be optional"
     );
+    assert!(
+        binaries.contains("bench-report.md"),
+        "release notes must include the bench report"
+    );
+
+    let ci = read(".github/workflows/ci.yml");
+    for needle in [
+        "macos-latest",
+        "macos-13",
+        "ubuntu-latest",
+        "ubuntu-24.04-arm",
+        "windows-latest",
+        "wasm32-unknown-unknown",
+        "scripts/bench.py",
+        "anyr-bench-report",
+    ] {
+        assert!(ci.contains(needle), "ci.yml must include {needle}");
+    }
+
+    let pages = read(".github/workflows/pages.yml");
+    assert!(pages.contains("wasm32-unknown-unknown"), "{pages}");
+    assert!(pages.contains("actions/deploy-pages"), "{pages}");
 
     let npm = read(".github/workflows/npm-publish.yml");
     assert!(
@@ -190,12 +226,29 @@ fn wrapper_and_install_scripts_exist() {
     must_exist("scripts/install.sh");
     must_exist("scripts/install-hooks.sh");
     must_exist("scripts/check-coauthors.sh");
+    must_exist("scripts/bench.py");
+    must_exist("web/index.html");
+    let bench = read("scripts/bench.py");
+    assert!(
+        bench.contains("def measure"),
+        "bench.py must measure size/startup"
+    );
+    assert!(
+        bench.contains("def report"),
+        "bench.py must fold JSON into markdown"
+    );
+    let demo = read("web/index.html");
+    assert!(
+        demo.contains("anyr_cli.js"),
+        "wasm demo must load wasm-bindgen glue"
+    );
     must_exist("LICENSE");
     must_exist("CHANGELOG.md");
     must_exist("README.md");
     let wrapper = read("scripts/npx-anyr.js");
     assert!(wrapper.contains("github.com/anyrouter-dev/cli"));
     assert!(wrapper.contains("binaries"));
+    assert!(wrapper.contains("anyr-windows-x86_64.exe"));
     let install = read("scripts/install.sh");
     assert!(install.contains("--channel"));
     assert!(install.contains("stable"));

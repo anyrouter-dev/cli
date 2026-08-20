@@ -2,11 +2,16 @@
 //! `/v1/auth/cli/device/*`). Browser GUI opens the verification URL.
 
 use std::collections::BTreeMap;
+#[cfg(feature = "native")]
 use std::io::{self, Write};
+#[cfg(feature = "native")]
 use std::process::Command;
+#[cfg(feature = "native")]
 use std::thread;
+#[cfg(feature = "native")]
 use std::time::Duration;
 
+#[cfg(feature = "native")]
 use crate::http::{http_post, join_api};
 use crate::key::no_key_error;
 use crate::parse::{get_string_flag, FlagValue};
@@ -147,6 +152,12 @@ pub fn browser_likely_available(env: &BTreeMap<String, String>) -> bool {
     true
 }
 
+#[cfg(not(feature = "native"))]
+pub fn open_url(_url: &str) -> bool {
+    false
+}
+
+#[cfg(feature = "native")]
 pub fn open_url(url: &str) -> bool {
     let status = if cfg!(target_os = "macos") {
         Command::new("open").arg(url).status()
@@ -158,6 +169,7 @@ pub fn open_url(url: &str) -> bool {
     status.map(|s| s.success()).unwrap_or(false)
 }
 
+#[cfg(feature = "native")]
 fn print_device_block(start: &DeviceStart) {
     let mins = (start.expires_in / 60).max(1);
     eprintln!();
@@ -181,6 +193,12 @@ fn print_device_block(start: &DeviceStart) {
     let _ = io::stderr().flush();
 }
 
+#[cfg(not(feature = "native"))]
+pub fn start_device_flow(_base_url: &str, _tool: Option<&str>) -> Result<DeviceStart, String> {
+    Err("device login is not available in the browser demo".into())
+}
+
+#[cfg(feature = "native")]
 pub fn start_device_flow(base_url: &str, tool: Option<&str>) -> Result<DeviceStart, String> {
     let url = join_api(base_url, "/v1/auth/cli/device/start");
     let body = match tool {
@@ -194,6 +212,12 @@ pub fn start_device_flow(base_url: &str, tool: Option<&str>) -> Result<DeviceSta
     parse_device_start(&resp)
 }
 
+#[cfg(not(feature = "native"))]
+pub fn poll_device_token(_base_url: &str, _start: &DeviceStart) -> Result<DeviceToken, String> {
+    Err("device login is not available in the browser demo".into())
+}
+
+#[cfg(feature = "native")]
 pub fn poll_device_token(base_url: &str, start: &DeviceStart) -> Result<DeviceToken, String> {
     let url = join_api(base_url, "/v1/auth/cli/device/token");
     let payload = serde_json::json!({ "device_code": start.device_code }).to_string();
@@ -222,6 +246,16 @@ pub fn poll_device_token(base_url: &str, start: &DeviceStart) -> Result<DeviceTo
     }
 }
 
+#[cfg(not(feature = "native"))]
+pub fn login_via_device(
+    _base_url: &str,
+    _tool: Option<&str>,
+    _open_browser: bool,
+) -> Result<DeviceToken, String> {
+    Err("device login is not available in the browser demo".into())
+}
+
+#[cfg(feature = "native")]
 pub fn login_via_device(
     base_url: &str,
     tool: Option<&str>,

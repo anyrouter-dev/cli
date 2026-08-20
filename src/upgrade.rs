@@ -3,6 +3,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
+#[cfg(feature = "native")]
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
@@ -81,6 +82,12 @@ fn print_redacted_env(env: &BTreeMap<String, String>) {
     }
 }
 
+#[cfg(not(feature = "native"))]
+fn download_binary(_url: &str, _dest: &Path) -> Result<(), String> {
+    Err("download is not available in the browser demo".into())
+}
+
+#[cfg(feature = "native")]
 fn download_binary(url: &str, dest: &Path) -> Result<(), String> {
     let agent = ureq::AgentBuilder::new()
         .timeout(std::time::Duration::from_secs(60))
