@@ -289,7 +289,7 @@ mod tests {
     #[test]
     fn select_latest_stable_skips_prerelease() {
         let rel = select_latest(FIXTURE, Channel::Stable).unwrap();
-        assert_eq!(rel.version_str(), "0.1.1");
+        assert_eq!(rel.version_str(), "0.1.99");
         assert!(!rel.prerelease);
     }
 

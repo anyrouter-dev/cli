@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::help::{command_help, root_help};
+use crate::help::{command_help, display_bin, root_help, set_invoked_bin};
 use crate::http::{format_models_list, format_usage_report, CatalogModel};
 use crate::key::mask_api_key;
 use crate::parse::{get_string_flag, parse_cli_args};
@@ -17,11 +17,23 @@ const DEMO_HINT: &str =
     "\n(browser demo — install the native CLI: curl -fsSL https://anyrouter.dev/setup.sh | bash)\n";
 
 pub fn run_demo(line: &str) -> String {
-    let argv = strip_wrapper(tokenize(line));
+    let tokens = tokenize(line);
+    set_invoked_bin(invocation_bin(&tokens));
+    let argv = strip_wrapper(tokens);
     match demo_argv(argv) {
         Ok(out) => out,
         Err(err) => format!("{err}\n"),
     }
+}
+
+fn invocation_bin(tokens: &[String]) -> String {
+    if tokens.first().map(String::as_str) == Some("npx") {
+        return "npx @anyr/cli".into();
+    }
+    tokens
+        .first()
+        .map(|s| display_bin(s))
+        .unwrap_or_else(|| "anyr".into())
 }
 
 fn tokenize(line: &str) -> Vec<String> {
@@ -99,19 +111,23 @@ fn demo_argv(argv: Vec<String>) -> Result<String, String> {
         "usage" => Ok(demo_usage(parsed.flag_true("json"))),
         "whoami" | "status" => Ok(demo_whoami()),
         "login" | "setup" => Ok(format!(
-            "{}\nDevice login and key storage run in the native CLI.\n  anyr login --device\n  anyr login --key sk-ar-…\n{DEMO_HINT}",
-            command_help(command).unwrap_or_default()
+            "{}\nDevice login and key storage run in the native CLI.\n  {} login --device\n  {} login --key sk-ar-…\n{DEMO_HINT}",
+            command_help(command).unwrap_or_default(),
+            crate::help::invoked_bin(),
+            crate::help::invoked_bin()
         )),
         "upgrade" | "update" => Ok(format!(
-            "anyr upgrade checks GitHub Releases (anyrouter-dev/cli) on the native binary.\n{DEMO_HINT}"
+            "{} upgrade checks GitHub Releases (anyrouter-dev/cli) on the native binary.\n{DEMO_HINT}",
+            crate::help::invoked_bin()
         )),
         _ => {
             if let Some(help) = command_help(command) {
                 Ok(format!("{help}{DEMO_HINT}"))
             } else {
                 Err(format!(
-                    "Unknown command \"{}\". Run \"anyr --help\".{DEMO_HINT}",
-                    parsed.command
+                    "Unknown command \"{}\". Run \"{} --help\".{DEMO_HINT}",
+                    parsed.command,
+                    crate::help::invoked_bin()
                 ))
             }
         }
@@ -193,12 +209,21 @@ mod tests {
     fn help_is_real_root_help() {
         let out = run_demo("anyr --help");
         assert!(out.contains("login"), "{out}");
-        assert!(out.contains("claude"), "{out}");
-        assert!(
-            out.contains("github.com/anyrouter-dev/cli")
-                || out.contains("raw.githubusercontent.com/anyrouter-dev/cli"),
-            "{out}"
-        );
+        assert!(out.contains("anyr claude"), "{out}");
+        assert!(out.contains("https://anyrouter.dev/setup.sh"), "{out}");
+        assert!(!out.contains("npx @anyr/cli"), "{out}");
+    }
+
+    #[test]
+    fn help_follows_invoked_name() {
+        let ar = run_demo("ar --help");
+        assert!(ar.contains("ar claude"), "{ar}");
+        assert!(ar.contains("ar <command>"), "{ar}");
+        assert!(!ar.contains("npx @anyr/cli"), "{ar}");
+
+        let npx = run_demo("npx @anyr/cli --help");
+        assert!(npx.contains("npx @anyr/cli claude"), "{npx}");
+        assert!(npx.contains("npx @anyr/cli <command>"), "{npx}");
     }
 
     #[test]

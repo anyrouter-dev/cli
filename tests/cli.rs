@@ -29,11 +29,58 @@ fn help_lists_login_claude_account_and_spawn_targets() {
         );
     }
     assert!(
-        stdout.contains("github.com/anyrouter-dev/cli")
+        stdout.contains("anyrouter.dev/setup.sh")
+            || stdout.contains("github.com/anyrouter-dev/cli")
             || stdout.contains("raw.githubusercontent.com/anyrouter-dev/cli"),
-        "help must document the public GitHub install, got:\n{stdout}"
+        "help must document the public install, got:\n{stdout}"
     );
     assert!(stdout.contains("setup.sh"), "{stdout}");
+    assert!(
+        stdout.contains("anyr claude") || stdout.contains("anyr <command>"),
+        "binary --help should name itself anyr, got:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("npx @anyr/cli"),
+        "native anyr --help must not tell people to type npx, got:\n{stdout}"
+    );
+}
+
+#[test]
+fn help_follows_anyr_display_bin() {
+    for (name, needle) in [
+        ("ar", "ar claude"),
+        ("anyrouter", "anyrouter claude"),
+        ("npx @anyr/cli", "npx @anyr/cli claude"),
+    ] {
+        let out = anyr()
+            .args(["--help"])
+            .env("ANYR_DISPLAY_BIN", name)
+            .output()
+            .expect("spawn anyr");
+        assert_eq!(out.status.code().unwrap_or(1), 0);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            stdout.contains(needle),
+            "ANYR_DISPLAY_BIN={name} missing {needle:?} in:\n{stdout}"
+        );
+        assert!(
+            stdout.contains(&format!("{name} <command>")),
+            "ANYR_DISPLAY_BIN={name} missing usage line in:\n{stdout}"
+        );
+    }
+}
+
+#[test]
+fn login_help_follows_display_bin() {
+    let out = anyr()
+        .args(["login", "--help"])
+        .env("ANYR_DISPLAY_BIN", "ar")
+        .output()
+        .expect("spawn anyr");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code().unwrap_or(1), 0);
+    assert!(stdout.contains("ar login"), "{stdout}");
+    assert!(!stdout.contains("npx @anyr/cli"), "{stdout}");
 }
 
 #[test]
@@ -275,7 +322,7 @@ fn upgrade_check_newer_stable_would_upgrade() {
     };
     assert_eq!(code, 0, "stderr={stderr}");
     assert!(stdout.contains("channel: stable"), "{stdout}");
-    assert!(stdout.contains("latest: 0.1.1"), "{stdout}");
+    assert!(stdout.contains("latest: 0.1.99"), "{stdout}");
     assert!(stdout.contains("update available"), "{stdout}");
     assert!(
         stdout.contains("github.com/anyrouter-dev/cli/releases/download/"),

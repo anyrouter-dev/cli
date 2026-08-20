@@ -6,7 +6,7 @@ use crate::config::{
     create_default_profile, resolve_config_path, set_active_profile, upsert_profile,
     valid_account_name, write_config, DefaultProfileInput, DEFAULT_PROFILE,
 };
-use crate::help::{command_help, root_help};
+use crate::help::{command_help, resolve_bin, root_help, set_invoked_bin};
 use crate::http::{
     create_key, delete_key, fetch_credits, fetch_keys, fetch_models, format_models_list,
     format_usage_report, is_active_key_row, reveal_key, validate_key,
@@ -216,6 +216,10 @@ fn wants_help(parsed: &ParsedArgs) -> bool {
             .any(|a| a == "-h" || a == "--help")
 }
 
+fn hint(template: &str) -> String {
+    template.replace("{bin}", &crate::help::invoked_bin())
+}
+
 pub fn run(argv: Vec<String>, env: HashMap<String, String>) -> i32 {
     let raw = if argv.first().map(String::as_str) == Some("--") {
         argv[1..].to_vec()
@@ -223,6 +227,14 @@ pub fn run(argv: Vec<String>, env: HashMap<String, String>) -> i32 {
         argv
     };
     let env: BTreeMap<String, String> = env.into_iter().collect();
+    #[cfg(not(target_arch = "wasm32"))]
+    let argv0 = std::env::args().next();
+    #[cfg(target_arch = "wasm32")]
+    let argv0: Option<String> = None;
+    set_invoked_bin(resolve_bin(
+        argv0.as_deref(),
+        env.get("ANYR_DISPLAY_BIN").map(String::as_str),
+    ));
 
     let parsed = match parse_cli_args(&raw) {
         Ok(p) => p,
@@ -260,7 +272,10 @@ pub fn run(argv: Vec<String>, env: HashMap<String, String>) -> i32 {
         return 0;
     }
     if !known_command(command) {
-        eprintln!("Unknown command \"{command}\". Run \"npx @anyr/cli --help\".");
+        eprintln!(
+            "Unknown command \"{command}\". Run \"{} --help\".",
+            crate::help::invoked_bin()
+        );
         return 1;
     }
     if wants_help(&parsed) {
@@ -460,9 +475,11 @@ fn run_models(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32
                     None
                 }
             })
-            .ok_or_else(|| "Usage: anyr models use <id>".to_string())?;
+            .ok_or_else(|| hint("Usage: {bin} models use <id>"))?;
         if !models.iter().any(|m| m.id == id) && id != "auto" {
-            return Err(format!("Unknown model \"{id}\". Run: anyr models"));
+            return Err(hint(&format!(
+                "Unknown model \"{id}\". Run: {{bin}} models"
+            )));
         }
         let mut cfg = existing.unwrap_or_default();
         let name = cfg.active_profile.clone();
@@ -610,7 +627,7 @@ fn run_config(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32
                 .passthrough
                 .get(1)
                 .cloned()
-                .ok_or_else(|| "Usage: anyr config use <profile>".to_string())?;
+                .ok_or_else(|| hint("Usage: {bin} config use <profile>"))?;
             run_account_use(parsed, env, &name)
         }
         _ => {
@@ -784,7 +801,7 @@ fn run_account(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i3
                 );
             }
             if cfg.profiles.is_empty() {
-                println!("{}", term::dim("No accounts. Run: anyr login"));
+                println!("{}", term::dim(&hint("No accounts. Run: {bin} login")));
             }
             Ok(0)
         }
@@ -793,7 +810,7 @@ fn run_account(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i3
                 .passthrough
                 .get(1)
                 .cloned()
-                .ok_or_else(|| "Usage: anyr account use <name>".to_string())?;
+                .ok_or_else(|| hint("Usage: {bin} account use <name>"))?;
             run_account_use(parsed, env, &name)
         }
         "add" => {
@@ -821,12 +838,12 @@ fn run_account(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i3
                 .passthrough
                 .get(1)
                 .cloned()
-                .ok_or_else(|| "Usage: anyr account rename <old> <new>".to_string())?;
+                .ok_or_else(|| hint("Usage: {bin} account rename <old> <new>"))?;
             let new = parsed
                 .passthrough
                 .get(2)
                 .cloned()
-                .ok_or_else(|| "Usage: anyr account rename <old> <new>".to_string())?;
+                .ok_or_else(|| hint("Usage: {bin} account rename <old> <new>"))?;
             if !valid_account_name(&new) {
                 return Err(format!(
                     "Invalid account name \"{new}\". Use letters, digits, \".\", \"_\", \"-\"."
@@ -853,12 +870,12 @@ fn run_account(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i3
                 .passthrough
                 .get(1)
                 .cloned()
-                .ok_or_else(|| "Usage: anyr account remove <name>".to_string())?;
+                .ok_or_else(|| hint("Usage: {bin} account remove <name>"))?;
             let mut cfg = load_config_if_present(&path).ok_or_else(no_key_error)?;
             if cfg.active_profile == name {
-                return Err(format!(
-                    "\"{name}\" is the active account. Switch first: anyr account use <other>"
-                ));
+                return Err(hint(&format!(
+                    "\"{name}\" is the active account. Switch first: {{bin}} account use <other>"
+                )));
             }
             if cfg.profiles.remove(&name).is_none() {
                 return Err(format!("Account \"{name}\" was not found."));
@@ -901,7 +918,7 @@ fn keys_credential(
     let credential = management
         .clone()
         .or_else(|| api_key.clone())
-        .ok_or_else(|| "No stored credential. Run \"anyr login\" first.".to_string())?;
+        .ok_or_else(|| hint("No stored credential. Run \"{bin} login\" first."))?;
     Ok((path, cfg, base, credential, api_key))
 }
 
@@ -945,7 +962,10 @@ fn run_keys(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, 
                 return Ok(0);
             }
             if rows.is_empty() {
-                println!("{}", term::dim("No API keys. Create one: anyr keys create"));
+                println!(
+                    "{}",
+                    term::dim(&hint("No API keys. Create one: {bin} keys create"))
+                );
                 return Ok(0);
             }
             let name_w = rows.iter().map(|r| r.name.len()).max().unwrap_or(4).max(4);
@@ -966,7 +986,7 @@ fn run_keys(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, 
             println!();
             println!(
                 "{}",
-                term::dim("* = key this profile uses · switch: anyr keys use")
+                term::dim(&hint("* = key this profile uses · switch: {bin} keys use"))
             );
             Ok(0)
         }
@@ -1000,7 +1020,7 @@ fn run_keys(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, 
                 .filter(|r| r.active)
                 .collect();
             if rows.is_empty() {
-                return Err("No active keys. Create one: anyr keys create".into());
+                return Err(hint("No active keys. Create one: {bin} keys create"));
             }
             let hash_arg = parsed.passthrough.get(1).cloned();
             let row = if let Some(hash) = hash_arg {
@@ -1010,7 +1030,11 @@ fn run_keys(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, 
                     .collect();
                 match matches.as_slice() {
                     [one] => (*one).clone(),
-                    [] => return Err(format!("No key matches \"{hash}\". See: anyr keys list")),
+                    [] => {
+                        return Err(hint(&format!(
+                            "No key matches \"{hash}\". See: {{bin}} keys list"
+                        )))
+                    }
                     _ => {
                         return Err(format!(
                             "\"{hash}\" matches {} keys — use a longer hash prefix.",
@@ -1029,9 +1053,9 @@ fn run_keys(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, 
                 let idx = term::pick("Which key should this profile use?", &labels, current)?;
                 rows[idx].clone()
             } else {
-                return Err(
-                    "Usage: anyr keys use <hash>   (interactive picker needs a terminal)".into(),
-                );
+                return Err(hint(
+                    "Usage: {bin} keys use <hash>   (interactive picker needs a terminal)",
+                ));
             };
             let revealed = reveal_key(&base, &cred, &row.hash)?;
             let active = cfg.active_profile.clone();
@@ -1049,7 +1073,7 @@ fn run_keys(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, 
         }
         "revoke" => {
             let hash = parsed.passthrough.get(1).cloned().ok_or_else(|| {
-                "Usage: anyr keys revoke <hash>   (find hashes: anyr keys list)".to_string()
+                hint("Usage: {bin} keys revoke <hash>   (find hashes: {bin} keys list)")
             })?;
             let (_path, _cfg, base, cred, _api) = keys_credential(parsed, env)?;
             let rows = fetch_keys(&base, &cred)?;
@@ -1059,7 +1083,11 @@ fn run_keys(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, 
                 .collect();
             let row = match matches.as_slice() {
                 [one] => *one,
-                [] => return Err(format!("No key matches \"{hash}\". See: anyr keys list")),
+                [] => {
+                    return Err(hint(&format!(
+                        "No key matches \"{hash}\". See: {{bin}} keys list"
+                    )))
+                }
                 _ => {
                     return Err(format!(
                         "\"{hash}\" matches {} keys — use a longer hash prefix.",

@@ -1,4 +1,11 @@
+use std::cell::RefCell;
+use std::path::Path;
+
 use crate::VERSION;
+
+thread_local! {
+    static INVOKED_BIN: RefCell<String> = RefCell::new(String::new());
+}
 
 const LAUNCH_HELP_BODY: &str = "\
 Running this with no flags opens the launcher (review settings, then start).
@@ -23,7 +30,50 @@ First run with no config auto-detects the best way to sign in — browser first,
 falling back to the device-code flow automatically.
 ";
 
+/// Map argv0 / npm shim name to the command users should type in help.
+pub fn display_bin(argv0: &str) -> String {
+    let name = Path::new(argv0)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(argv0);
+    let name = name.strip_suffix(".exe").unwrap_or(name);
+    match name {
+        "ar" => "ar".into(),
+        "anyrouter" => "anyrouter".into(),
+        "anyr" => "anyr".into(),
+        "cli" | "npx-anyr" | "npx-anyr.js" => "npx @anyr/cli".into(),
+        other if other.starts_with("npx @anyr/cli") => "npx @anyr/cli".into(),
+        other if other.starts_with("anyr-") => "anyr".into(),
+        _ => "anyr".into(),
+    }
+}
+
+pub fn set_invoked_bin(name: impl Into<String>) {
+    let name = name.into();
+    INVOKED_BIN.with(|slot| *slot.borrow_mut() = name);
+}
+
+pub fn invoked_bin() -> String {
+    INVOKED_BIN.with(|slot| {
+        let current = slot.borrow();
+        if current.is_empty() {
+            "anyr".into()
+        } else {
+            current.clone()
+        }
+    })
+}
+
+/// Resolve the help command from env (`ANYR_DISPLAY_BIN`) or argv0.
+pub fn resolve_bin(argv0: Option<&str>, display_env: Option<&str>) -> String {
+    if let Some(v) = display_env.map(str::trim).filter(|s| !s.is_empty()) {
+        return display_bin(v);
+    }
+    display_bin(argv0.unwrap_or("anyr"))
+}
+
 pub fn root_help() -> String {
+    let bin = invoked_bin();
     format!(
         "\
 AnyRouter CLI v{version} — https://anyrouter.dev
@@ -31,21 +81,21 @@ AnyRouter CLI v{version} — https://anyrouter.dev
 Launch coding agents through the AnyRouter gateway. One key, every provider.
 
 Install:
-  curl -fsSL https://raw.githubusercontent.com/anyrouter-dev/cli/main/setup.sh | bash
+  curl -fsSL https://anyrouter.dev/setup.sh | bash
 
 Quick start:
-  npx @anyr/cli                 Open the launcher on your last agent (no args)
-  npx @anyr/cli chat            Chat with any model in your terminal (streaming)
-  npx @anyr/cli claude          Open the Claude Code launcher (review, then start)
-  npx @anyr/cli claude --ok     Start Claude Code now with current settings
-  npx @anyr/cli codex           Open the Codex launcher
-  npx @anyr/cli opencode        Open the OpenCode launcher
-  npx @anyr/cli pi              Open the Pi launcher
-  npx @anyr/cli cursor          Print the config to paste into Cursor
+  {bin}                 Open the launcher on your last agent (no args)
+  {bin} chat            Chat with any model in your terminal (streaming)
+  {bin} claude          Open the Claude Code launcher (review, then start)
+  {bin} claude --ok     Start Claude Code now with current settings
+  {bin} codex           Open the Codex launcher
+  {bin} opencode        Open the OpenCode launcher
+  {bin} pi              Open the Pi launcher
+  {bin} cursor          Print the config to paste into Cursor
 
 Usage:
-  npx @anyr/cli <command> [options]
-  npx @anyr/cli <command> --help
+  {bin} <command> [options]
+  {bin} <command> --help
 
 Commands:
   menu      Open the interactive TUI (default when no command given)
@@ -107,17 +157,23 @@ Options:
 
 Docs: https://anyrouter.dev/docs/cli
 ",
-        version = VERSION
+        version = VERSION,
+        bin = bin
     )
 }
 
-fn launch_help(id: &str, label: &str) -> String {
+fn launch_help(bin: &str, id: &str, label: &str) -> String {
     format!(
-        "npx @anyr/cli {id} — launch {label} through AnyRouter\n\nUsage:\n  npx @anyr/cli {id} [options] [-- <{id}-args>]\n\n{LAUNCH_HELP_BODY}"
+        "{bin} {id} — launch {label} through AnyRouter\n\nUsage:\n  {bin} {id} [options] [-- <{id}-args>]\n\n{LAUNCH_HELP_BODY}"
     )
+}
+
+fn fill(bin: &str, template: &str) -> String {
+    template.replace("{bin}", bin)
 }
 
 pub fn command_help(command: &str) -> Option<String> {
+    let bin = invoked_bin();
     let canonical = match command {
         "cc" => "claude",
         "poolside" => "pool",
@@ -126,45 +182,51 @@ pub fn command_help(command: &str) -> Option<String> {
         other => other,
     };
     Some(match canonical {
-        "login" => LOGIN.into(),
-        "setup" => SETUP.into(),
-        "usage" => USAGE.into(),
-        "whoami" => WHOAMI.into(),
-        "account" => ACCOUNT.into(),
-        "logs" => LOGS.into(),
-        "models" => MODELS.into(),
-        "config" => CONFIG.into(),
-        "chat" => CHAT.into(),
-        "skills" => SKILLS.into(),
-        "relay" => RELAY.into(),
-        "byok" => BYOK.into(),
-        "task" => TASK.into(),
-        "delegate" => DELEGATE.into(),
-        "keys" => KEYS.into(),
-        "audit" => AUDIT.into(),
-        "logout" => LOGOUT.into(),
-        "upgrade" => UPGRADE.into(),
-        "transactions" => TRANSACTIONS.into(),
-        "menu" => "anyrouter menu — open the interactive TUI (launch, switch model, switch key, credits)\n".into(),
-        "prompt" => "anyrouter prompt — pull prompts from the AnyRouter hub (get | url | list)\n".into(),
-        "claude" => launch_help("claude", "Claude Code"),
-        "codex" => launch_help("codex", "Codex"),
-        "grok" => launch_help("grok", "Grok Build"),
-        "opencode" => launch_help("opencode", "opencode"),
-        "pi" => launch_help("pi", "Pi"),
-        "pool" => launch_help("pool", "Poolside"),
+        "login" => fill(&bin, LOGIN),
+        "setup" => fill(&bin, SETUP),
+        "usage" => fill(&bin, USAGE),
+        "whoami" => fill(&bin, WHOAMI),
+        "account" => fill(&bin, ACCOUNT),
+        "logs" => fill(&bin, LOGS),
+        "models" => fill(&bin, MODELS),
+        "config" => fill(&bin, CONFIG),
+        "chat" => fill(&bin, CHAT),
+        "skills" => fill(&bin, SKILLS),
+        "relay" => fill(&bin, RELAY),
+        "byok" => fill(&bin, BYOK),
+        "task" => fill(&bin, TASK),
+        "delegate" => fill(&bin, DELEGATE),
+        "keys" => fill(&bin, KEYS),
+        "audit" => fill(&bin, AUDIT),
+        "logout" => fill(&bin, LOGOUT),
+        "upgrade" => fill(&bin, UPGRADE),
+        "transactions" => fill(&bin, TRANSACTIONS),
+        "menu" => fill(
+            &bin,
+            "{bin} menu — open the interactive TUI (launch, switch model, switch key, credits)\n",
+        ),
+        "prompt" => fill(
+            &bin,
+            "{bin} prompt — pull prompts from the AnyRouter hub (get | url | list)\n",
+        ),
+        "claude" => launch_help(&bin, "claude", "Claude Code"),
+        "codex" => launch_help(&bin, "codex", "Codex"),
+        "grok" => launch_help(&bin, "grok", "Grok Build"),
+        "opencode" => launch_help(&bin, "opencode", "opencode"),
+        "pi" => launch_help(&bin, "pi", "Pi"),
+        "pool" => launch_help(&bin, "pool", "Poolside"),
         "cursor" | "cline" | "windsurf" => format!(
-            "npx @anyr/cli {canonical} — print the AnyRouter base URL + key to paste into the editor\n"
+            "{bin} {canonical} — print the AnyRouter base URL + key to paste into the editor\n"
         ),
         _ => return None,
     })
 }
 
 const LOGIN: &str = "\
-anyrouter login — sign in and save your AnyRouter API key
+{bin} login — sign in and save your AnyRouter API key
 
 Usage:
-  npx @anyr/cli login [--key sk-ar-v1-...] [options]
+  {bin} login [--key sk-ar-v1-...] [options]
 
 Interactive (TTY): auto-detects the best way in — opens your browser (PKCE,
 never prints the full key — only a prefix…suffix) when one looks reachable,
@@ -182,10 +244,10 @@ Options:
 ";
 
 const SETUP: &str = "\
-anyrouter setup — save a local AnyRouter profile
+{bin} setup — save a local AnyRouter profile
 
 Usage:
-  npx @anyr/cli setup [--key sk-ar-v1-...] [options]
+  {bin} setup [--key sk-ar-v1-...] [options]
 
 Non-interactive: pass --key or set ANYROUTER_API_KEY.
 
@@ -195,10 +257,10 @@ Options:
 ";
 
 const USAGE: &str = "\
-anyrouter usage — credits remaining, 24h spend, top models
+{bin} usage — credits remaining, 24h spend, top models
 
 Usage:
-  npx @anyr/cli usage [options]
+  {bin} usage [options]
 
 Options:
   --json            Print as JSON
@@ -207,10 +269,10 @@ Options:
 ";
 
 const WHOAMI: &str = "\
-anyrouter whoami — active account
+{bin} whoami — active account
 
 Usage:
-  npx @anyr/cli whoami [--json]
+  {bin} whoami [--json]
 
 Shows the active account + masked credentials. \"status\" is an alias.
 
@@ -219,22 +281,22 @@ Options:
 ";
 
 const ACCOUNT: &str = "\
-anyrouter account — manage multiple accounts
+{bin} account — manage multiple accounts
 
 Usage:
-  npx @anyr/cli account list
-  npx @anyr/cli account use <name>
-  npx @anyr/cli account add [--yes]
+  {bin} account list
+  {bin} account use <name>
+  {bin} account add [--yes]
 
 Options:
   --yes            Skip confirmations
 ";
 
 const LOGS: &str = "\
-anyrouter logs — recent requests
+{bin} logs — recent requests
 
 Usage:
-  npx @anyr/cli logs [options]
+  {bin} logs [options]
 
 Lists recent requests: time, status, model, tokens, cost, latency.
 
@@ -244,12 +306,12 @@ Options:
 ";
 
 const MODELS: &str = "\
-anyrouter models — list catalog model ids
+{bin} models — list catalog model ids
 
 Usage:
-  npx @anyr/cli models [options]
-  npx @anyr/cli models use <id>
-  npx @anyr/cli models --pick
+  {bin} models [options]
+  {bin} models use <id>
+  {bin} models --pick
 
 Lists every model id usable with --model. `use` / `--pick` persist default_model.
 
@@ -260,19 +322,19 @@ Options:
 ";
 
 const CONFIG: &str = "\
-anyrouter config — inspect and switch profiles
+{bin} config — inspect and switch profiles
 
 Usage:
-  npx @anyr/cli config get [--json]
-  npx @anyr/cli config path
-  npx @anyr/cli config use <profile>
+  {bin} config get [--json]
+  {bin} config path
+  {bin} config use <profile>
 ";
 
 const CHAT: &str = "\
-anyrouter chat — chat with any model in your terminal
+{bin} chat — chat with any model in your terminal
 
 Usage:
-  npx @anyr/cli chat [options]
+  {bin} chat [options]
 
 Options:
   --model auto|<id>   Initial model
@@ -281,12 +343,12 @@ Options:
 ";
 
 const SKILLS: &str = "\
-anyrouter skills — sync your Skills & Knowledge Hub locally
+{bin} skills — sync your Skills & Knowledge Hub locally
 
 Usage:
-  npx @anyr/cli skills sync
-  npx @anyr/cli skills pull <hub>
-  npx @anyr/cli skills list
+  {bin} skills sync
+  {bin} skills pull <hub>
+  {bin} skills list
 
 Options:
   --hub <slug>     Hub slug
@@ -294,17 +356,17 @@ Options:
 ";
 
 const RELAY: &str = "\
-anyr relay start [--target <url>] [--token <rk_...>] [--pool]
-  anyr relay pair [--name \"My Mac\"]
+{bin} relay start [--target <url>] [--token <rk_...>] [--pool]
+  {bin} relay pair [--name \"My Mac\"]
 ";
 
 const BYOK: &str = "\
-anyr byok locate antigravity
-anyr byok add antigravity --yes
+{bin} byok locate antigravity
+{bin} byok add antigravity --yes
 ";
 
 const TASK: &str = "\
-anyr task \"<x>\" — two-phase plan → implement
+{bin} task \"<x>\" — two-phase plan → implement
 
 Options:
   --plan-model <id>
@@ -313,7 +375,7 @@ Options:
 ";
 
 const DELEGATE: &str = "\
-anyr delegate --to claude|codex|opencode|pi \"<task>\"
+{bin} delegate --to claude|codex|opencode|pi \"<task>\"
 
 Options:
   --to <agent>
@@ -322,19 +384,19 @@ Options:
 ";
 
 const KEYS: &str = "\
-anyr keys — manage API keys
+{bin} keys — manage API keys
 
 Usage:
-  anyr keys list [--json]
-  anyr keys create [name]
-  anyr keys use [hash]
-  anyr keys revoke <hash> [--yes]
+  {bin} keys list [--json]
+  {bin} keys create [name]
+  {bin} keys use [hash]
+  {bin} keys revoke <hash> [--yes]
 
 Needs a management key (ak_…) from device/browser login, or --management-key.
 ";
 
 const AUDIT: &str = "\
-anyrouter audit — see everything the CLI has configured and done
+{bin} audit — see everything the CLI has configured and done
 
 Options:
   --launches
@@ -343,14 +405,14 @@ Options:
 ";
 
 const LOGOUT: &str = "\
-anyrouter logout — remove the stored keys for an account
+{bin} logout — remove the stored keys for an account
 ";
 
 const UPGRADE: &str = "\
-anyr upgrade — install the latest CLI from GitHub Releases
+{bin} upgrade — install the latest CLI from GitHub Releases
 
 Usage:
-  anyr upgrade [--check] [--channel stable|beta] [--dry-run]
+  {bin} upgrade [--check] [--channel stable|beta] [--dry-run]
 
 Channels:
   stable  (default)  latest non-prerelease
@@ -365,7 +427,7 @@ ANYR_CHANNEL=stable|beta selects the channel when --channel is omitted.
 ";
 
 const TRANSACTIONS: &str = "\
-anyrouter transactions — credit grants, top-ups, and spend
+{bin} transactions — credit grants, top-ups, and spend
 
 Options:
   --limit <n>
@@ -373,3 +435,53 @@ Options:
   --json
   --key sk-ar-v1-…
 ";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_bin_from_symlink_and_npx() {
+        assert_eq!(display_bin("/home/duyet/.local/bin/ar"), "ar");
+        assert_eq!(display_bin("anyrouter"), "anyrouter");
+        assert_eq!(display_bin("anyr"), "anyr");
+        assert_eq!(display_bin("anyr.exe"), "anyr");
+        assert_eq!(display_bin("cli"), "npx @anyr/cli");
+        assert_eq!(display_bin("npx-anyr.js"), "npx @anyr/cli");
+        assert_eq!(display_bin("anyr-linux-x86_64"), "anyr");
+        assert_eq!(display_bin("npx @anyr/cli"), "npx @anyr/cli");
+    }
+
+    #[test]
+    fn root_help_uses_invoked_name() {
+        set_invoked_bin("ar");
+        let out = root_help();
+        assert!(out.contains("ar claude"), "{out}");
+        assert!(out.contains("ar <command>"), "{out}");
+        assert!(!out.contains("npx @anyr/cli"), "{out}");
+        assert!(out.contains("https://anyrouter.dev/setup.sh"), "{out}");
+
+        set_invoked_bin("npx @anyr/cli");
+        let npx = root_help();
+        assert!(npx.contains("npx @anyr/cli claude"), "{npx}");
+        assert!(npx.contains("npx @anyr/cli <command>"), "{npx}");
+        set_invoked_bin("anyr");
+    }
+
+    #[test]
+    fn command_help_uses_invoked_name() {
+        set_invoked_bin("ar");
+        let login = command_help("login").unwrap();
+        assert!(login.contains("ar login"), "{login}");
+        assert!(!login.contains("npx @anyr/cli"), "{login}");
+        let claude = command_help("claude").unwrap();
+        assert!(claude.contains("ar claude"), "{claude}");
+        set_invoked_bin("anyr");
+    }
+
+    #[test]
+    fn resolve_bin_prefers_env() {
+        assert_eq!(resolve_bin(Some("/usr/bin/anyr"), Some("ar")), "ar");
+        assert_eq!(resolve_bin(Some("/usr/bin/anyr"), None), "anyr");
+    }
+}

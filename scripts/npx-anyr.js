@@ -102,9 +102,22 @@ async function resolveBin() {
   return cached;
 }
 
+function displayBin() {
+  if (process.env.ANYR_DISPLAY_BIN) return process.env.ANYR_DISPLAY_BIN;
+  const invoked = path
+    .basename(process.argv[1] || "")
+    .replace(/\.js$/i, "");
+  if (invoked === "ar") return "ar";
+  if (invoked === "anyrouter") return "anyrouter";
+  if (invoked === "anyr") return "anyr";
+  // `npx @anyr/cli` resolves the `cli` bin; the shim file is npx-anyr.js.
+  return "npx @anyr/cli";
+}
+
 async function main() {
   const bin = await resolveBin();
-  const result = spawnSync(bin, process.argv.slice(2), { stdio: "inherit" });
+  const env = { ...process.env, ANYR_DISPLAY_BIN: displayBin() };
+  const result = spawnSync(bin, process.argv.slice(2), { stdio: "inherit", env });
   if (result.error) {
     console.error(result.error.message);
     process.exit(1);

@@ -393,7 +393,10 @@ pub fn serialize_config(config: &Config) -> String {
 
 pub fn read_config(path: &Path) -> Result<Config, String> {
     let src = fs::read_to_string(path).map_err(|_| {
-        "Missing AnyRouter config. Run: npx @anyr/cli claude (first run sets you up).".to_string()
+        format!(
+            "Missing AnyRouter config. Run: {} login (first run sets you up).",
+            crate::help::invoked_bin()
+        )
     })?;
     Ok(parse_config(&src))
 }
