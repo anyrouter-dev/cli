@@ -53,6 +53,7 @@ fn known_command(command: &str) -> bool {
         command,
         "setup"
             | "login"
+            | "auth"
             | "menu"
             | "models"
             | "chat"
@@ -182,6 +183,22 @@ fn allowed_flags(command: &str) -> Option<&'static [&'static str]> {
         ],
         "audit" => &["profile", "config", "json", "launches", "tool", "limit"],
         "logout" => &["profile", "config"],
+        "auth" => &[
+            "key",
+            "preset",
+            "profile",
+            "base-url",
+            "timeout",
+            "config",
+            "plaintext",
+            "device",
+            "device-code",
+            "paste",
+            "yes",
+            "management-key",
+            "json",
+            "masked",
+        ],
         "prompt" => &["base-url", "json"],
         "menu" => &[],
         "upgrade" => &["check", "channel", "fixture", "dry-run", "yes"],
@@ -214,6 +231,109 @@ fn wants_help(parsed: &ParsedArgs) -> bool {
             .passthrough
             .iter()
             .any(|a| a == "-h" || a == "--help")
+}
+
+fn help_topic(parsed: &ParsedArgs) -> String {
+    match parsed.command.as_str() {
+        "auth" => parsed
+            .passthrough
+            .iter()
+            .find(|s| *s != "-h" && *s != "--help")
+            .cloned()
+            .unwrap_or_else(|| "auth".into()),
+        other => other.to_string(),
+    }
+}
+
+fn shift_passthrough(parsed: &ParsedArgs) -> ParsedArgs {
+    let mut next = parsed.clone();
+    if !next.passthrough.is_empty() {
+        next.passthrough.remove(0);
+    }
+    next
+}
+
+fn run_auth(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, String> {
+    let sub = parsed
+        .passthrough
+        .first()
+        .map(String::as_str)
+        .filter(|s| *s != "-h" && *s != "--help")
+        .unwrap_or("");
+    if sub.is_empty() {
+        print!("{}", command_help("auth").unwrap_or_default());
+        return Ok(0);
+    }
+    let rest = shift_passthrough(parsed);
+    match sub {
+        "login" | "setup" => run_login(&rest, env),
+        "logout" => run_logout(&rest, env),
+        "status" => run_whoami(&rest, env),
+        "token" => run_auth_token(&rest, env),
+        "switch" => run_auth_switch(&rest, env),
+        other => Err(format!(
+            "unknown command \"{other}\" for \"{} auth\"\n\n{}",
+            crate::help::invoked_bin(),
+            command_help("auth").unwrap_or_default()
+        )),
+    }
+}
+
+fn run_auth_token(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, String> {
+    let path = config_path(parsed, env);
+    let cfg = load_config_if_present(&path).ok_or_else(no_key_error)?;
+    let name = get_string_flag(&parsed.flags, "profile")
+        .or_else(|| env.get("ANYROUTER_PROFILE").cloned())
+        .unwrap_or_else(|| cfg.active_profile.clone());
+    let profile = cfg
+        .profiles
+        .get(&name)
+        .ok_or_else(|| format!("Account \"{name}\" was not found."))?;
+    let key = resolve_api_key(&parsed.flags, env, Some(profile)).ok_or_else(no_key_error)?;
+    if parsed.flag_true("json") {
+        let value = if parsed.flag_true("masked") {
+            mask_api_key(Some(&key))
+        } else {
+            key.clone()
+        };
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "account": name,
+                "token": value,
+            }))
+            .unwrap_or_else(|_| "{}".into())
+        );
+        return Ok(0);
+    }
+    if parsed.flag_true("masked") {
+        println!("{}", mask_api_key(Some(&key)));
+    } else {
+        println!("{key}");
+    }
+    Ok(0)
+}
+
+fn run_auth_switch(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, String> {
+    let path = config_path(parsed, env);
+    let cfg = load_config_if_present(&path).ok_or_else(no_key_error)?;
+    let names: Vec<String> = cfg.profiles.keys().cloned().collect();
+    let name = parsed
+        .passthrough
+        .first()
+        .cloned()
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            if !term::is_interactive() || names.is_empty() {
+                return None;
+            }
+            let current = names.iter().position(|n| n == &cfg.active_profile);
+            term::pick("Active account", &names, current)
+                .ok()
+                .map(|i| names[i].clone())
+        })
+        .ok_or_else(|| hint("Usage: {bin} auth switch <account>"))?;
+    run_account_use(parsed, env, &name)
 }
 
 fn hint(template: &str) -> String {
@@ -279,7 +399,14 @@ pub fn run(argv: Vec<String>, env: HashMap<String, String>) -> i32 {
         return 1;
     }
     if wants_help(&parsed) {
-        if let Some(help) = command_help(command) {
+        let topic = help_topic(&parsed);
+        if let Some(help) = command_help(&topic).or_else(|| {
+            if parsed.command == "auth" {
+                command_help("auth")
+            } else {
+                None
+            }
+        }) {
             print!("{help}");
             return 0;
         }
@@ -305,6 +432,7 @@ fn dispatch(
     env: &BTreeMap<String, String>,
 ) -> Result<i32, String> {
     match command {
+        "auth" => run_auth(parsed, env),
         "login" | "setup" => run_login(parsed, env),
         "logout" => run_logout(parsed, env),
         "models" => run_models(parsed, env),

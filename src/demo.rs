@@ -208,8 +208,9 @@ mod tests {
     #[test]
     fn help_is_real_root_help() {
         let out = run_demo("anyr --help");
-        assert!(out.contains("login"), "{out}");
+        assert!(out.contains("auth"), "{out}");
         assert!(out.contains("anyr claude"), "{out}");
+        assert!(out.contains("anyr auth login"), "{out}");
         assert!(out.contains("https://anyrouter.dev/setup.sh"), "{out}");
         assert!(!out.contains("npx @anyr/cli"), "{out}");
     }

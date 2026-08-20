@@ -80,11 +80,18 @@ AnyRouter CLI v{version} — https://anyrouter.dev
 
 One key. Every coding agent.
 
-  {bin}                 Sign in if needed, then open the launcher
-  {bin} claude          Launch Claude Code
-  {bin} login           Sign in (browser, device code, or paste)
+USAGE
+  {bin} <command> [flags]
+  {bin} <command> --help
 
-Launch
+CORE COMMANDS
+  auth:       Authenticate with AnyRouter
+  config:     View and switch profiles
+  keys:       Manage API keys
+  models:     List catalog and set the default
+  usage:      Credits remaining
+
+LAUNCH
   claude    Claude Code
   cc        Alias of claude
   codex     Codex
@@ -94,22 +101,9 @@ Launch
   pool      Poolside
   poolside  Alias of pool
 
-Account
-  login     Sign in and save a key
-  logout    Remove stored keys
-  whoami    Active account (alias: status)
-  account   list | use | add | rename | remove
-  keys      list | create | use | revoke
-
-Status
-  usage     Credits remaining
-  models    Catalog; models use <id> sets the default
-  logs      Recent requests
-  upgrade   Update this CLI (alias: update)
-
-Usage:
-  {bin} <command> [options]
-  {bin} <command> --help
+  {bin}                 Sign in if needed, then open the launcher
+  {bin} auth login      Sign in
+  {bin} claude          Launch Claude Code
 
 Install:
   curl -fsSL https://anyrouter.dev/setup.sh | bash
@@ -138,11 +132,14 @@ pub fn command_help(command: &str) -> Option<String> {
         "poolside" => "pool",
         "status" => "whoami",
         "update" => "upgrade",
+        "setup" => "login",
         other => other,
     };
     Some(match canonical {
+        "auth" => fill(&bin, AUTH),
         "login" => fill(&bin, LOGIN),
-        "setup" => fill(&bin, SETUP),
+        "token" => fill(&bin, TOKEN),
+        "switch" => fill(&bin, SWITCH),
         "usage" => fill(&bin, USAGE),
         "whoami" => fill(&bin, WHOAMI),
         "account" => fill(&bin, ACCOUNT),
@@ -181,38 +178,67 @@ pub fn command_help(command: &str) -> Option<String> {
     })
 }
 
-const LOGIN: &str = "\
-{bin} login — sign in and save your AnyRouter API key
+const AUTH: &str = "\
+Authenticate with AnyRouter.
 
-Usage:
-  {bin} login [--key sk-ar-v1-...] [options]
+USAGE
+  {bin} auth <command> [flags]
 
-Interactive (TTY): auto-detects the best way in — opens your browser (PKCE,
-never prints the full key — only a prefix…suffix) when one looks reachable,
-and falls back to the device-code flow automatically over SSH, in CI, or if
-the browser handoff doesn't complete. Force a specific route with --device or
---paste.
+AVAILABLE COMMANDS
+  login:       Log in to an AnyRouter account
+  logout:      Log out of an AnyRouter account
+  status:      View authentication status
+  switch:      Switch the active account
+  token:       Print the API key
 
-Non-interactive: pass --key or set ANYROUTER_API_KEY.
-
-Options:
-  --key sk-ar-v1-...       AnyRouter API key (skips the prompt)
-  --device, --device-code  Force the device-code flow (headless / SSH)
-  --paste                  Force the paste-a-key flow, skipping auto-detection
-  --yes                    Skip the post-login model/agent wizard
+FLAGS
+  -h, --help   Show help for command
 ";
 
-const SETUP: &str = "\
-{bin} setup — save a local AnyRouter profile
+const LOGIN: &str = "\
+Log in to an AnyRouter account.
 
-Usage:
-  {bin} setup [--key sk-ar-v1-...] [options]
+USAGE
+  {bin} auth login [flags]
+
+Interactive (TTY): opens your browser when one looks reachable, and falls
+back to the device-code flow over SSH, in CI, or if the browser handoff
+does not complete. Force a route with --device or --paste.
 
 Non-interactive: pass --key or set ANYROUTER_API_KEY.
 
-Options:
+FLAGS
   --key sk-ar-v1-...       AnyRouter API key (skips the prompt)
-  --yes                    Skip prompts
+  --device, --device-code  Force the device-code flow (headless / SSH)
+  --paste                  Force the paste-a-key flow
+  --yes                    Skip the post-login model/agent wizard
+
+Also available as `{bin} login`.
+";
+
+const TOKEN: &str = "\
+Print the API key stored for the active account.
+
+USAGE
+  {bin} auth token [flags]
+
+Prints the full secret to stdout (for scripts). Use --masked in a log.
+
+FLAGS
+  --masked     Print a redacted key
+  --json       Print as JSON
+  --profile    Use a named account
+";
+
+const SWITCH: &str = "\
+Switch the active AnyRouter account.
+
+USAGE
+  {bin} auth switch [<account>]
+
+With no account on a TTY, pick from stored accounts.
+
+Also available as `{bin} account use <account>`.
 ";
 
 const USAGE: &str = "\
@@ -228,15 +254,18 @@ Options:
 ";
 
 const WHOAMI: &str = "\
-{bin} whoami — active account
+View authentication status.
 
-Usage:
-  {bin} whoami [--json]
+USAGE
+  {bin} auth status [flags]
 
-Shows the active account + masked credentials. \"status\" is an alias.
+Shows the active account and masked credentials.
 
-Options:
-  --json           Print as JSON
+FLAGS
+  --json       Print as JSON
+  --profile    Use a named account
+
+Also available as `{bin} whoami`.
 ";
 
 const ACCOUNT: &str = "\
@@ -364,7 +393,14 @@ Options:
 ";
 
 const LOGOUT: &str = "\
-{bin} logout — remove the stored keys for an account
+Log out of an AnyRouter account.
+
+USAGE
+  {bin} auth logout [flags]
+
+Removes stored keys for the active account (or --profile).
+
+Also available as `{bin} logout`.
 ";
 
 const UPGRADE: &str = "\
@@ -417,8 +453,9 @@ mod tests {
         let out = root_help();
         assert!(out.contains("ar claude"), "{out}");
         assert!(out.contains("ar <command>"), "{out}");
+        assert!(out.contains("ar auth login"), "{out}");
         assert!(out.contains("Sign in if needed"), "{out}");
-        for heading in ["Launch", "Account", "Status"] {
+        for heading in ["CORE COMMANDS", "LAUNCH"] {
             assert!(out.contains(heading), "missing {heading} in:\n{out}");
         }
         assert!(!out.contains("npx @anyr/cli"), "{out}");
@@ -435,8 +472,10 @@ mod tests {
     fn command_help_uses_invoked_name() {
         set_invoked_bin("ar");
         let login = command_help("login").unwrap();
-        assert!(login.contains("ar login"), "{login}");
+        assert!(login.contains("ar auth login"), "{login}");
         assert!(!login.contains("npx @anyr/cli"), "{login}");
+        let auth = command_help("auth").unwrap();
+        assert!(auth.contains("ar auth <command>"), "{auth}");
         let claude = command_help("claude").unwrap();
         assert!(claude.contains("ar claude"), "{claude}");
         set_invoked_bin("anyr");

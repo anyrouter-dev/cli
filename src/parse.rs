@@ -156,6 +156,14 @@ mod tests {
     }
 
     #[test]
+    fn auth_login_goes_to_passthrough() {
+        let parsed = parse_cli_args(["auth", "login", "--yes"]).unwrap();
+        assert_eq!(parsed.command, "auth");
+        assert_eq!(parsed.passthrough, vec!["login"]);
+        assert!(parsed.flag_true("yes"));
+    }
+
+    #[test]
     fn separator_starts_passthrough() {
         let parsed = parse_cli_args(["claude", "--yes", "--", "--print"]).unwrap();
         assert_eq!(parsed.passthrough, vec!["--print"]);

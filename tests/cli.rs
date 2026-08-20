@@ -17,7 +17,7 @@ fn run(args: &[&str]) -> (i32, String, String) {
 fn help_lists_login_claude_account_and_spawn_targets() {
     let (code, stdout, stderr) = run(&["--help"]);
     assert_eq!(code, 0, "stderr={stderr}");
-    for word in ["login", "claude", "account", "usage", "whoami"] {
+    for word in ["auth", "claude", "keys", "usage", "models"] {
         assert!(stdout.contains(word), "missing {word} in:\n{stdout}");
     }
     for target in [
@@ -43,14 +43,14 @@ fn help_lists_login_claude_account_and_spawn_targets() {
         !stdout.contains("npx @anyr/cli"),
         "native anyr --help must not tell people to type npx, got:\n{stdout}"
     );
-    for heading in ["Launch", "Account", "Status"] {
+    for heading in ["CORE COMMANDS", "LAUNCH"] {
         assert!(
             stdout.contains(heading),
             "help should group commands under {heading}, got:\n{stdout}"
         );
     }
     assert!(
-        stdout.contains("Sign in if needed"),
+        stdout.contains("Sign in if needed") && stdout.contains("auth login"),
         "bare-command help should describe login-then-launcher, got:\n{stdout}"
     );
 }
@@ -60,7 +60,7 @@ fn no_args_non_tty_prints_grouped_help() {
     let (code, stdout, stderr) = run(&[]);
     assert_eq!(code, 0, "stderr={stderr}");
     assert!(
-        stdout.contains("Sign in if needed") && stdout.contains("Launch"),
+        stdout.contains("Sign in if needed") && stdout.contains("CORE COMMANDS"),
         "no-args should print grouped help when not a TTY, got:\n{stdout}"
     );
 }
@@ -99,8 +99,35 @@ fn login_help_follows_display_bin() {
         .expect("spawn anyr");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert_eq!(out.status.code().unwrap_or(1), 0);
-    assert!(stdout.contains("ar login"), "{stdout}");
+    assert!(stdout.contains("ar auth login"), "{stdout}");
     assert!(!stdout.contains("npx @anyr/cli"), "{stdout}");
+}
+
+#[test]
+fn auth_help_lists_gh_style_subcommands() {
+    let (code, stdout, stderr) = run(&["auth", "--help"]);
+    assert_eq!(code, 0, "{stdout}{stderr}");
+    for sub in ["login", "logout", "status", "token", "switch"] {
+        assert!(stdout.contains(sub), "auth --help missing {sub}:\n{stdout}");
+    }
+}
+
+#[test]
+fn auth_login_help_is_nested() {
+    let (code, stdout, stderr) = run(&["auth", "login", "--help"]);
+    assert_eq!(code, 0, "{stdout}{stderr}");
+    assert!(stdout.contains("auth login"), "{stdout}");
+}
+
+#[test]
+fn auth_unknown_subcommand_errors() {
+    let (code, stdout, stderr) = run(&["auth", "nope"]);
+    assert_ne!(code, 0);
+    let combined = format!("{stdout}{stderr}");
+    assert!(
+        combined.contains("unknown command") && combined.contains("auth"),
+        "{combined}"
+    );
 }
 
 #[test]
@@ -141,6 +168,7 @@ fn documented_commands_are_known_not_unknown() {
         "logout",
         "transactions",
         "account",
+        "auth",
         "login",
         "usage",
         "whoami",
