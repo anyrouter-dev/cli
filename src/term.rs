@@ -60,6 +60,14 @@ pub fn model_id(text: &str) -> String {
     paint(TEAL, text)
 }
 
+/// OSC 8 hyperlink when color/TTY is on; plain URL otherwise.
+pub fn link(url: &str) -> String {
+    if !color_enabled() {
+        return url.to_string();
+    }
+    format!("\x1b]8;;{url}\x1b\\{MAGENTA}{url}{RESET}\x1b]8;;\x1b\\")
+}
+
 pub fn tool_color(tool: &str) -> &'static str {
     match tool {
         "claude" | "cc" => ORANGE,

@@ -204,9 +204,9 @@ Log in to an AnyRouter account.
 USAGE
   {bin} auth login [flags]
 
-Interactive (TTY): opens your browser when one looks reachable, and falls
-back to the device-code flow over SSH, in CI, or if the browser handoff
-does not complete. Force a route with --device or --paste.
+Interactive (TTY): opens a login URL with the code already in it (browser
+when one is reachable). Falls back to printing that URL over SSH / CI.
+Force a route with --device or --paste.
 
 Non-interactive: pass --key or set ANYROUTER_API_KEY.
 

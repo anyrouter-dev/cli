@@ -56,12 +56,18 @@ pub fn parse_device_start(body: &str) -> Result<DeviceStart, String> {
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-    let verification_uri = value
-        .get("verification_uri")
-        .or_else(|| value.get("verification_uri_complete"))
+    let raw_uri = value
+        .get("verification_uri_complete")
         .and_then(|v| v.as_str())
-        .unwrap_or("https://anyrouter.dev/cli/device")
-        .to_string();
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            value
+                .get("verification_uri")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+        })
+        .unwrap_or("https://anyrouter.dev/cli/device");
+    let verification_uri = with_user_code(raw_uri, &user_code);
     let interval = value.get("interval").and_then(|v| v.as_u64()).unwrap_or(5);
     let expires_in = value
         .get("expires_in")
@@ -74,6 +80,15 @@ pub fn parse_device_start(body: &str) -> Result<DeviceStart, String> {
         interval,
         expires_in,
     })
+}
+
+/// Prefer the server's complete URL; otherwise append `?code=`.
+pub fn with_user_code(uri: &str, user_code: &str) -> String {
+    if user_code.is_empty() || uri.contains("code=") {
+        return uri.to_string();
+    }
+    let sep = if uri.contains('?') { '&' } else { '?' };
+    format!("{uri}{sep}code={user_code}")
 }
 
 fn error_code(value: &serde_json::Value) -> String {
@@ -138,17 +153,6 @@ pub fn browser_likely_available(env: &BTreeMap<String, String>) -> bool {
     if env.get("CI").map(|s| !s.is_empty()).unwrap_or(false) {
         return false;
     }
-    if cfg!(target_os = "linux") && env.get("DISPLAY").map(|s| s.is_empty()).unwrap_or(true) {
-        // Wayland-only desktops still count as a GUI.
-        if env
-            .get("WAYLAND_DISPLAY")
-            .map(|s| !s.is_empty())
-            .unwrap_or(false)
-        {
-            return true;
-        }
-        return false;
-    }
     true
 }
 
@@ -158,35 +162,46 @@ pub fn open_url(_url: &str) -> bool {
 }
 
 #[cfg(feature = "native")]
-pub fn open_url(url: &str) -> bool {
-    let status = if cfg!(target_os = "macos") {
-        Command::new("open").arg(url).status()
-    } else if cfg!(target_os = "windows") {
-        Command::new("cmd").args(["/C", "start", "", url]).status()
-    } else {
-        Command::new("xdg-open").arg(url).status()
-    };
-    status.map(|s| s.success()).unwrap_or(false)
+fn spawn_opener(program: &str, args: &[&str]) -> bool {
+    Command::new(program)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 #[cfg(feature = "native")]
-fn print_device_block(start: &DeviceStart) {
+pub fn open_url(url: &str) -> bool {
+    if cfg!(target_os = "macos") {
+        return spawn_opener("open", &[url]);
+    }
+    if cfg!(target_os = "windows") {
+        return spawn_opener("cmd", &["/C", "start", "", url]);
+    }
+    spawn_opener("xdg-open", &[url])
+        || spawn_opener("gio", &["open", url])
+        || spawn_opener("sensible-browser", &[url])
+}
+
+#[cfg(feature = "native")]
+fn print_device_block(start: &DeviceStart, opened: bool) {
     let mins = (start.expires_in / 60).max(1);
     eprintln!();
-    eprintln!("  {}", term::bold("Device login"));
-    eprintln!("  {}", term::divider(12));
-    eprintln!("  Open this URL in your browser (you must be signed in to AnyRouter):");
+    if opened {
+        eprintln!("  {}", term::bold("Opened your browser to approve login."));
+    } else {
+        eprintln!("  {}", term::bold("Open this URL to sign in:"));
+    }
     eprintln!();
-    eprintln!("    {}", term::accent(&start.verification_uri));
-    eprintln!();
-    eprintln!("  Then enter this code:");
-    eprintln!();
-    eprintln!("    {}", term::bold(&start.user_code));
+    eprintln!("    {}", term::link(&start.verification_uri));
     eprintln!();
     eprintln!(
         "  {}",
         term::dim(&format!(
-            "Code expires in {mins} minutes. Waiting for approval…"
+            "Approve in the browser — this terminal continues when you're done. Expires in {mins} min."
         ))
     );
     eprintln!();
@@ -262,10 +277,8 @@ pub fn login_via_device(
     open_browser: bool,
 ) -> Result<DeviceToken, String> {
     let start = start_device_flow(base_url, tool)?;
-    print_device_block(&start);
-    if open_browser {
-        let _ = open_url(&start.verification_uri);
-    }
+    let opened = open_browser && open_url(&start.verification_uri);
+    print_device_block(&start, opened);
     poll_device_token(base_url, &start)
 }
 
@@ -345,12 +358,6 @@ pub fn acquire_api_key(
     }
 
     let open_browser = browser_likely_available(env);
-    if open_browser {
-        eprintln!(
-            "{}",
-            term::dim("Opening the device-login page in your browser…")
-        );
-    }
     match login_via_device(base_url, tool, open_browser) {
         Ok(token) => Ok(AcquiredKey {
             api_key: token.api_key,
@@ -391,6 +398,28 @@ mod tests {
         assert_eq!(start.device_code, "dc_1");
         assert_eq!(start.user_code, "ABCD-EFGH");
         assert_eq!(start.interval, 5);
+        assert_eq!(
+            start.verification_uri,
+            "https://anyrouter.dev/cli/device?code=ABCD-EFGH"
+        );
+    }
+
+    #[test]
+    fn parse_device_start_prefers_complete_uri() {
+        let start = parse_device_start(
+            r#"{"device_code":"dc_1","user_code":"ABCD-EFGH","verification_uri":"https://anyrouter.dev/cli/device","verification_uri_complete":"https://anyrouter.dev/cli/device?code=ABCD-EFGH","interval":5,"expires_in":600}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            start.verification_uri,
+            "https://anyrouter.dev/cli/device?code=ABCD-EFGH"
+        );
+    }
+
+    #[test]
+    fn with_user_code_is_idempotent_when_already_present() {
+        let url = "https://anyrouter.dev/cli/device?code=ABCD-EFGH";
+        assert_eq!(with_user_code(url, "ABCD-EFGH"), url);
     }
 
     #[test]
@@ -440,5 +469,11 @@ mod tests {
         env.clear();
         env.insert("CI".into(), "true".into());
         assert!(!browser_likely_available(&env));
+    }
+
+    #[test]
+    fn local_session_tries_browser() {
+        let env = BTreeMap::new();
+        assert!(browser_likely_available(&env));
     }
 }
