@@ -86,7 +86,7 @@ USAGE
 
 CORE COMMANDS
   auth:       Authenticate with AnyRouter
-  config:     View and switch profiles
+  config:     Interactive settings (key, credits, model)
   keys:       Manage API keys
   models:     List catalog and set the default
   usage:      Credits remaining
@@ -310,12 +310,16 @@ Options:
 ";
 
 const CONFIG: &str = "\
-{bin} config — inspect and switch profiles
+Interactive config: pick key, account, model, and see credits.
 
-Usage:
-  {bin} config get [--json]
-  {bin} config path
-  {bin} config use <profile>
+USAGE
+  {bin} config                 Open the TUI (TTY)
+  {bin} config get [--json]    Print current status
+  {bin} config path            Print the config file path
+  {bin} config use <account>   Switch the active account
+
+On a TTY, `{bin} config` loops until you pick Done: switch key, account,
+model, view credits, sign in, or log out.
 ";
 
 const CHAT: &str = "\

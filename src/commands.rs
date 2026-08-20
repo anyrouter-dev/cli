@@ -116,7 +116,7 @@ fn allowed_flags(command: &str) -> Option<&'static [&'static str]> {
         "models" => &["profile", "config", "json", "key", "base-url", "pick"],
         "usage" => &["profile", "base-url", "config", "json", "key", "no-detail"],
         "whoami" => &["profile", "config", "json"],
-        "config" => &["config", "json"],
+        "config" => &["config", "json", "key", "base-url", "profile"],
         "account" => &[
             "yes",
             "config",
@@ -738,43 +738,155 @@ fn run_whoami(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32
     Ok(0)
 }
 
+fn print_config_status(
+    parsed: &ParsedArgs,
+    env: &BTreeMap<String, String>,
+    path: &PathBuf,
+) -> Result<(), String> {
+    let cfg = load_config_if_present(path).unwrap_or_default();
+    let profile = cfg.profiles.get(&cfg.active_profile);
+    let key = resolve_api_key(&parsed.flags, env, profile);
+    let base = resolve_base_url(&parsed.flags, profile);
+    println!("{}", term::bold("AnyRouter config"));
+    println!(
+        "{}  {}",
+        term::dim("account"),
+        term::accent(&cfg.active_profile)
+    );
+    println!(
+        "{}  {}",
+        term::dim("api_key "),
+        mask_api_key(key.as_deref())
+    );
+    println!(
+        "{}  {}",
+        term::dim("model   "),
+        term::model_id(profile.map(|p| p.default_model()).unwrap_or("auto"))
+    );
+    if let Some(tool) = profile.and_then(|p| p.default_tool.as_deref()) {
+        println!(
+            "{}  {}",
+            term::dim("agent   "),
+            term::paint(term::tool_color(tool), tool)
+        );
+    }
+    println!("{}  {}", term::dim("file    "), path.display());
+    if let Some(key) = key.as_deref() {
+        if let Ok(credits) = fetch_credits(&base, key) {
+            print!("{}", format_usage_report(&credits, false));
+        }
+    }
+    Ok(())
+}
+
+fn run_config_tui(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, String> {
+    let path = config_path(parsed, env);
+    if stored_api_key(parsed, env, &path).is_none() {
+        run_login(parsed, env)?;
+        if stored_api_key(parsed, env, &path).is_none() {
+            return Err(hint(
+                "Not signed in. Run `{bin} auth login` or pass --key / ANYROUTER_API_KEY.",
+            ));
+        }
+    }
+    loop {
+        println!();
+        print_config_status(parsed, env, &path)?;
+        println!();
+        let items = vec![
+            "Switch key".into(),
+            "Switch account".into(),
+            "Switch model".into(),
+            "Credits".into(),
+            "Sign in".into(),
+            "Log out".into(),
+            "Done".into(),
+        ];
+        let idx = term::pick("Config", &items, Some(0))?;
+        let result = match idx {
+            0 => {
+                let mut next = parsed.clone();
+                next.command = "keys".into();
+                next.passthrough = vec!["use".into()];
+                run_keys(&next, env)
+            }
+            1 => {
+                let mut next = parsed.clone();
+                next.passthrough = Vec::new();
+                run_auth_switch(&next, env)
+            }
+            2 => {
+                let mut next = parsed.clone();
+                next.command = "models".into();
+                next.flags.insert("pick".into(), FlagValue::Bool(true));
+                next.passthrough = Vec::new();
+                run_models(&next, env)
+            }
+            3 => run_usage(parsed, env),
+            4 => run_login(parsed, env),
+            5 => run_logout(parsed, env),
+            _ => return Ok(0),
+        };
+        if let Err(err) = result {
+            eprintln!("{}", term::err(&err));
+        }
+    }
+}
+
 fn run_config(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, String> {
     let path = config_path(parsed, env);
-    let sub = parsed
-        .passthrough
-        .first()
-        .map(String::as_str)
-        .unwrap_or("get");
+    let sub = parsed.passthrough.first().map(String::as_str);
     match sub {
-        "path" => {
+        Some("path") => {
             println!("{}", path.display());
             Ok(0)
         }
-        "use" => {
+        Some("use") => {
             let name = parsed
                 .passthrough
                 .get(1)
                 .cloned()
-                .ok_or_else(|| hint("Usage: {bin} config use <profile>"))?;
+                .ok_or_else(|| hint("Usage: {bin} config use <account>"))?;
             run_account_use(parsed, env, &name)
         }
-        _ => {
+        Some("get") => {
             if parsed.flag_true("json") {
                 let cfg = load_config_if_present(&path).unwrap_or_default();
+                let profile = cfg.profiles.get(&cfg.active_profile);
                 let payload = serde_json::json!({
                     "path": path.display().to_string(),
                     "active_profile": cfg.active_profile,
+                    "api_key": mask_api_key(profile.and_then(|p| p.api_key.as_deref())),
+                    "default_model": profile.map(|p| p.default_model()),
                     "accounts": cfg.profiles.keys().cloned().collect::<Vec<_>>(),
                 });
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&payload).unwrap_or_else(|_| "{}".into())
                 );
+                Ok(0)
             } else {
-                println!("{}", path.display());
+                print_config_status(parsed, env, &path)?;
+                Ok(0)
             }
+        }
+        None if parsed.flag_true("json") => {
+            let mut next = parsed.clone();
+            next.passthrough = vec!["get".into()];
+            run_config(&next, env)
+        }
+        None if term::is_interactive() => run_config_tui(parsed, env),
+        None => {
+            print_config_status(parsed, env, &path)?;
+            println!(
+                "{}",
+                term::dim(&hint("Run `{bin} config` in a terminal to pick key, model, and account."))
+            );
             Ok(0)
         }
+        Some(other) => Err(hint(&format!(
+            "Unknown config command \"{other}\". Try: {{bin}} config · {{bin}} config path · {{bin}} config use <account>"
+        ))),
     }
 }
 

@@ -410,6 +410,75 @@ fn login_help_describes_device_and_paste() {
 }
 
 #[test]
+fn config_help_describes_tui() {
+    let (code, stdout, stderr) = run(&["config", "--help"]);
+    assert_eq!(code, 0, "{stdout}{stderr}");
+    let combined = format!("{stdout}{stderr}");
+    assert!(
+        combined.contains("TUI") || combined.contains("Interactive"),
+        "{combined}"
+    );
+    assert!(combined.contains("key"), "{combined}");
+    assert!(combined.contains("credits"), "{combined}");
+}
+
+#[test]
+fn config_no_args_non_tty_prints_status_not_picker() {
+    let dir = std::env::temp_dir().join(format!("anyr-cli-config-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("config.yaml");
+    std::fs::write(
+        &path,
+        "\
+active_profile: default
+profiles:
+  default:
+    api_key: sk-ar-v1-config-secret-value
+    default_model: auto
+",
+    )
+    .unwrap();
+    let out = anyr()
+        .args([
+            "config",
+            "--config",
+            path.to_str().unwrap(),
+            "--base-url",
+            "http://127.0.0.1:9",
+        ])
+        .env_remove("ANYROUTER_API_KEY")
+        .output()
+        .expect("config");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code().unwrap_or(1), 0, "{stdout}{stderr}");
+    assert!(stdout.contains("default"), "{stdout}");
+    assert!(stdout.contains("api_key"), "{stdout}");
+    assert!(
+        !stdout.contains("sk-ar-v1-config-secret-value"),
+        "full key leaked:\n{stdout}"
+    );
+    assert!(
+        !stderr.contains("Pick 1-"),
+        "non-TTY must not open picker:\n{stderr}"
+    );
+    assert!(
+        stdout.contains("terminal") || stdout.contains("config"),
+        "{stdout}"
+    );
+    let path_out = anyr()
+        .args(["config", "path", "--config", path.to_str().unwrap()])
+        .output()
+        .expect("config path");
+    let printed = String::from_utf8_lossy(&path_out.stdout);
+    assert!(
+        printed.contains(path.to_str().unwrap()),
+        "config path should still print the file: {printed}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn keys_and_account_help_exit_zero() {
     for cmd in ["keys", "account", "logout", "menu"] {
         let (code, stdout, stderr) = run(&[cmd, "--help"]);
