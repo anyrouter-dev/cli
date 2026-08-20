@@ -138,7 +138,6 @@ fn workflow_files_exist_and_do_not_auto_merge() {
         ".github/workflows/release-please.yml",
         ".github/workflows/release-binaries.yml",
         ".github/workflows/npm-publish.yml",
-        ".github/workflows/pages.yml",
     ];
     for rel in workflows {
         must_exist(rel);
@@ -190,9 +189,28 @@ fn workflow_files_exist_and_do_not_auto_merge() {
         assert!(ci.contains(needle), "ci.yml must include {needle}");
     }
 
-    let pages = read(".github/workflows/pages.yml");
-    assert!(pages.contains("wasm32-unknown-unknown"), "{pages}");
-    assert!(pages.contains("actions/deploy-pages"), "{pages}");
+    let ci_body = read(".github/workflows/ci.yml");
+    assert!(
+        !ci_body.contains("actions/deploy-pages"),
+        "ci.yml must not deploy GitHub Pages"
+    );
+    assert!(
+        !ci_body.contains("wasm-demo"),
+        "ci.yml must not upload a GH Pages wasm demo"
+    );
+    let binaries_body = read(".github/workflows/release-binaries.yml");
+    assert!(
+        !binaries_body.contains("anyr-wasm-demo.tar.gz"),
+        "releases must not ship a GH Pages wasm demo tarball"
+    );
+    assert!(
+        !root().join(".github/workflows/pages.yml").exists(),
+        "GitHub Pages workflow must not exist"
+    );
+    assert!(
+        !root().join("web/index.html").exists(),
+        "GH Pages wasm playground must not exist"
+    );
 
     let npm = read(".github/workflows/npm-publish.yml");
     assert!(
@@ -227,7 +245,6 @@ fn wrapper_and_install_scripts_exist() {
     must_exist("scripts/install-hooks.sh");
     must_exist("scripts/check-coauthors.sh");
     must_exist("scripts/bench.py");
-    must_exist("web/index.html");
     let bench = read("scripts/bench.py");
     assert!(
         bench.contains("def measure"),
@@ -236,11 +253,6 @@ fn wrapper_and_install_scripts_exist() {
     assert!(
         bench.contains("def report"),
         "bench.py must fold JSON into markdown"
-    );
-    let demo = read("web/index.html");
-    assert!(
-        demo.contains("anyr_cli.js"),
-        "wasm demo must load wasm-bindgen glue"
     );
     must_exist("LICENSE");
     must_exist("CHANGELOG.md");

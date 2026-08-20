@@ -1,4 +1,4 @@
-//! wasm-bindgen entry for the live website playground.
+//! wasm-bindgen entry for size benches and optional in-browser dry-run.
 
 use wasm_bindgen::prelude::*;
 

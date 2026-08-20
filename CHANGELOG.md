@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Dropped the GitHub Pages WASM playground. Docs and install live at
+  [anyrouter.dev/cli](https://anyrouter.dev/cli).
+
 ## [0.1.8] - 2026-08-20
 
 ### Changed

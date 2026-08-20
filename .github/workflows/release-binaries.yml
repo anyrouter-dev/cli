@@ -93,25 +93,24 @@ jobs:
       - name: cargo build wasm
         run: cargo build --release --target wasm32-unknown-unknown --no-default-features
 
-      - name: wasm-bindgen + zip demo
+      - name: wasm-bindgen + size bench
         run: |
-          wasm-bindgen --target web --out-dir web/pkg \
+          wasm-bindgen --target web --out-dir target/wasm-pkg \
             target/wasm32-unknown-unknown/release/anyr_cli.wasm
-          cp web/pkg/anyr_cli_bg.wasm anyr.wasm
+          cp target/wasm-pkg/anyr_cli_bg.wasm anyr.wasm
           python scripts/bench.py measure \
             --bin anyr.wasm \
             --asset anyr.wasm \
             --target wasm32-unknown-unknown \
             --kind wasm \
             --out bench/anyr.wasm.json
-          tar -czf anyr-wasm-demo.tar.gz -C web index.html pkg
 
       - name: upload wasm assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release upload "${{ github.event.release.tag_name }}" \
-            anyr.wasm anyr-wasm-demo.tar.gz --clobber
+            anyr.wasm --clobber
 
       - uses: actions/upload-artifact@v4
         with:

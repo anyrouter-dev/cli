@@ -133,14 +133,14 @@ jobs:
 
       - name: wasm-bindgen
         run: |
-          wasm-bindgen --target web --out-dir web/pkg \
+          wasm-bindgen --target web --out-dir target/wasm-pkg \
             target/wasm32-unknown-unknown/release/anyr_cli.wasm
-          ls -la web/pkg
+          ls -la target/wasm-pkg
 
       - name: bench wasm size
         run: |
           python scripts/bench.py measure \
-            --bin web/pkg/anyr_cli_bg.wasm \
+            --bin target/wasm-pkg/anyr_cli_bg.wasm \
             --asset anyr.wasm \
             --target wasm32-unknown-unknown \
             --kind wasm \
@@ -148,11 +148,8 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: wasm-demo
-          path: |
-            web/index.html
-            web/pkg
-            bench/anyr.wasm.json
+          name: bench-anyr.wasm
+          path: bench/anyr.wasm.json
 
   report:
     needs: [build, wasm]

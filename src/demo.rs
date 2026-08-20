@@ -1,4 +1,4 @@
-//! Browser / WASM playground: real help, parse, and dry-run from this crate.
+//! WASM dry-run: real help, parse, and dry-run from this crate (size benches).
 //! Network, spawn, and device login stay native-only.
 
 use std::collections::BTreeMap;

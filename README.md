@@ -24,8 +24,7 @@ curl -fsSL https://raw.githubusercontent.com/anyrouter-dev/cli/main/setup.sh | b
 curl -fsSL https://raw.githubusercontent.com/anyrouter-dev/cli/main/setup.sh | bash -s -- --channel beta
 ```
 
-Live WASM playground (same parser/help/dry-run as the binary):
-[anyrouter-dev.github.io/cli](https://anyrouter-dev.github.io/cli/)
+Docs and install: [anyrouter.dev/cli](https://anyrouter.dev/cli).
 
 CI builds **linux x86_64/arm64**, **macOS x86_64/arm64**, **Windows x86_64**, and **wasm32**.
 Every PR and GitHub Release gets a size + startup report (`anyr --version` / `--help`).
