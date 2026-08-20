@@ -3,17 +3,25 @@
 
 use std::collections::BTreeMap;
 use std::fs;
+use std::fs::OpenOptions;
 #[cfg(feature = "native")]
-use std::io::{self, Write};
+use std::io;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::channel::{
     current_arch, current_os, release_asset_url, select_latest, Channel, GITHUB_RELEASES_API,
 };
+use crate::config::resolve_config_path;
 use crate::http::http_get;
+use crate::key::load_config_if_present;
 use crate::parse::{get_string_flag, ParsedArgs};
 use crate::spawn::redact_value;
 use crate::VERSION;
+
+/// How often the background checker hits GitHub Releases.
+pub const DEFAULT_UPDATE_INTERVAL_SECS: u64 = 6 * 60 * 60;
 
 /// True when `latest` is a higher version than `current` (leading `v` ignored).
 pub fn needs_upgrade(current: &str, latest: &str) -> bool {
@@ -147,7 +155,267 @@ fn replace_current_binary(url: &str) -> Result<PathBuf, String> {
     Ok(dest)
 }
 
+fn env_flag(env: &BTreeMap<String, String>, key: &str) -> Option<bool> {
+    let raw = env.get(key)?.trim().to_ascii_lowercase();
+    match raw.as_str() {
+        "1" | "true" | "on" | "yes" => Some(true),
+        "0" | "false" | "off" | "no" => Some(false),
+        _ => None,
+    }
+}
+
+/// Auto-update is on unless config/env turns it off. `CI` and `ANYR_NO_UPDATE` always skip.
+pub fn auto_update_enabled(env: &BTreeMap<String, String>) -> bool {
+    if env_flag(env, "ANYR_NO_UPDATE") == Some(true) {
+        return false;
+    }
+    if env_flag(env, "CI") == Some(true) {
+        return false;
+    }
+    if let Some(v) = env_flag(env, "ANYR_AUTO_UPDATE") {
+        return v;
+    }
+    let path = resolve_config_path(None, env);
+    load_config_if_present(&path)
+        .map(|c| c.auto_update())
+        .unwrap_or(true)
+}
+
+fn state_dir(env: &BTreeMap<String, String>) -> PathBuf {
+    resolve_config_path(None, env)
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+fn update_interval_secs(env: &BTreeMap<String, String>) -> u64 {
+    env.get("ANYR_UPDATE_INTERVAL_SECS")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(DEFAULT_UPDATE_INTERVAL_SECS)
+}
+
+fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn stamp_is_fresh(env: &BTreeMap<String, String>) -> bool {
+    let interval = update_interval_secs(env);
+    if interval == 0 {
+        return false;
+    }
+    let path = state_dir(env).join("update.stamp");
+    let Ok(raw) = fs::read_to_string(&path) else {
+        return false;
+    };
+    let Ok(then) = raw.trim().parse::<u64>() else {
+        return false;
+    };
+    now_secs().saturating_sub(then) < interval
+}
+
+fn write_stamp(env: &BTreeMap<String, String>) {
+    let dir = state_dir(env);
+    let _ = fs::create_dir_all(&dir);
+    let _ = fs::write(dir.join("update.stamp"), format!("{}\n", now_secs()));
+}
+
+fn write_notice(env: &BTreeMap<String, String>, version: &str) {
+    let dir = state_dir(env);
+    let _ = fs::create_dir_all(&dir);
+    let _ = fs::write(dir.join("update.notice"), format!("{version}\n"));
+}
+
+struct UpdateLock {
+    path: PathBuf,
+}
+
+impl Drop for UpdateLock {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+fn try_lock(env: &BTreeMap<String, String>) -> Option<UpdateLock> {
+    let dir = state_dir(env);
+    let _ = fs::create_dir_all(&dir);
+    let path = dir.join("update.lock");
+    if let Ok(meta) = fs::metadata(&path) {
+        if let Ok(modified) = meta.modified() {
+            if modified
+                .elapsed()
+                .unwrap_or(Duration::from_secs(0))
+                .as_secs()
+                > 15 * 60
+            {
+                let _ = fs::remove_file(&path);
+            }
+        }
+    }
+    match OpenOptions::new().write(true).create_new(true).open(&path) {
+        Ok(mut file) => {
+            let _ = writeln!(file, "{}", std::process::id());
+            Some(UpdateLock { path })
+        }
+        Err(_) => None,
+    }
+}
+
+fn print_pending_notice(env: &BTreeMap<String, String>) {
+    let path = state_dir(env).join("update.notice");
+    let Ok(raw) = fs::read_to_string(&path) else {
+        return;
+    };
+    let ver = raw.trim().strip_prefix('v').unwrap_or(raw.trim());
+    if ver.is_empty() {
+        return;
+    }
+    let running = VERSION.trim().strip_prefix('v').unwrap_or(VERSION.trim());
+    if ver == running {
+        eprintln!("anyr: updated to {ver}");
+        let _ = fs::remove_file(&path);
+    }
+}
+
+/// Quiet check+install used by `--auto` and the background worker.
+fn run_auto(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, String> {
+    let _lock = match try_lock(env) {
+        Some(lock) => lock,
+        None => return Ok(0),
+    };
+    if stamp_is_fresh(env) && !parsed.flag_true("force") {
+        return Ok(0);
+    }
+    let channel = resolve_channel(parsed, env)?;
+    let fixture = fixture_path(parsed, env);
+    let json = match load_releases_json(fixture.as_deref()) {
+        Ok(j) => j,
+        Err(_) => {
+            write_stamp(env);
+            return Ok(0);
+        }
+    };
+    let latest = match select_latest(&json, channel) {
+        Ok(rel) => rel,
+        Err(_) => {
+            write_stamp(env);
+            return Ok(0);
+        }
+    };
+    let latest_ver = latest.version_str().to_string();
+    write_stamp(env);
+    if !needs_upgrade(VERSION, &latest_ver) {
+        return Ok(0);
+    }
+    let dry = parsed.flag_true("dry-run") || fixture.is_some();
+    if dry {
+        println!("would update {VERSION} -> {latest_ver}");
+        return Ok(0);
+    }
+    let url = release_asset_url(&latest, current_os(), current_arch());
+    match replace_current_binary(&url) {
+        Ok(_) => {
+            write_notice(env, &latest_ver);
+            println!("updated {VERSION} -> {latest_ver}");
+            Ok(0)
+        }
+        Err(_) => Ok(0),
+    }
+}
+
+/// Fire-and-forget `anyr upgrade --auto` so short commands still update.
+#[cfg(feature = "native")]
+fn spawn_detached_auto(env: &BTreeMap<String, String>) {
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    let mut cmd = std::process::Command::new(exe);
+    cmd.arg("upgrade")
+        .arg("--auto")
+        .env("ANYR_AUTO_CHILD", "1")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    for (k, v) in env {
+        if k.starts_with("ANYR") || k == "ANYROUTER_HOME" || k == "HOME" {
+            cmd.env(k, v);
+        }
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS);
+    }
+    let _ = cmd.spawn();
+}
+
+#[cfg(not(feature = "native"))]
+fn spawn_detached_auto(_env: &BTreeMap<String, String>) {}
+
+/// Background check on startup. No-op when auto-update is off, already a
+/// child, or we checked recently.
+pub fn on_startup(command: &str, parsed: &ParsedArgs, env: &BTreeMap<String, String>) {
+    let is_help = matches!(command, "help" | "--help" | "-h") || parsed.flag_true("help");
+    let is_upgrade = matches!(command, "upgrade" | "update");
+    if !is_help && command != "--version" && command != "-v" {
+        print_pending_notice(env);
+    }
+    if is_upgrade || env.get("ANYR_AUTO_CHILD").is_some() {
+        return;
+    }
+    if !auto_update_enabled(env) {
+        return;
+    }
+    if stamp_is_fresh(env) {
+        return;
+    }
+    spawn_detached_auto(env);
+}
+
+/// Recheck GitHub while a long-running agent is open (every interval).
+#[cfg(feature = "native")]
+pub fn start_session_checker(
+    env: &BTreeMap<String, String>,
+) -> Option<std::thread::JoinHandle<()>> {
+    if !auto_update_enabled(env) || env.get("ANYR_AUTO_CHILD").is_some() {
+        return None;
+    }
+    let env = env.clone();
+    std::thread::Builder::new()
+        .name("anyr-update".into())
+        .spawn(move || {
+            let parsed = ParsedArgs {
+                command: "upgrade".into(),
+                flags: std::collections::HashMap::new(),
+                passthrough: Vec::new(),
+            };
+            loop {
+                let _ = run_auto(&parsed, &env);
+                let sleep_for = update_interval_secs(&env).max(60);
+                std::thread::sleep(Duration::from_secs(sleep_for));
+            }
+        })
+        .ok()
+}
+
+#[cfg(not(feature = "native"))]
+pub fn start_session_checker(_env: &BTreeMap<String, String>) -> Option<()> {
+    None
+}
+
 pub fn run(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, String> {
+    if parsed.flag_true("auto") {
+        return run_auto(parsed, env);
+    }
     let channel = resolve_channel(parsed, env)?;
     let fixture = fixture_path(parsed, env);
     let json = load_releases_json(fixture.as_deref())?;
@@ -249,5 +517,58 @@ mod tests {
         let redacted = redact_printed_value("ANYROUTER_API_KEY", "sk-ar-v1-secret-value");
         assert!(!redacted.contains("sk-ar-v1-secret-value"));
         assert!(redacted.contains("sk-ar-"));
+    }
+
+    fn isolated_home() -> (BTreeMap<String, String>, PathBuf) {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static N: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "anyr-upd-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = fs::create_dir_all(&dir);
+        let mut env = BTreeMap::new();
+        env.insert("ANYROUTER_HOME".into(), dir.to_string_lossy().into_owned());
+        (env, dir)
+    }
+
+    #[test]
+    fn auto_update_enabled_defaults_on() {
+        let (env, _) = isolated_home();
+        assert!(auto_update_enabled(&env));
+    }
+
+    #[test]
+    fn auto_update_disabled_by_env_and_ci() {
+        let (mut env, _) = isolated_home();
+        env.insert("ANYR_NO_UPDATE".into(), "1".into());
+        assert!(!auto_update_enabled(&env));
+
+        let (mut env, _) = isolated_home();
+        env.insert("ANYR_AUTO_UPDATE".into(), "0".into());
+        assert!(!auto_update_enabled(&env));
+
+        let (mut env, _) = isolated_home();
+        env.insert("CI".into(), "true".into());
+        assert!(!auto_update_enabled(&env));
+    }
+
+    #[test]
+    fn auto_update_env_on_overrides_nothing() {
+        let (mut env, _) = isolated_home();
+        env.insert("ANYR_AUTO_UPDATE".into(), "on".into());
+        assert!(auto_update_enabled(&env));
+    }
+
+    #[test]
+    fn auto_update_config_false_disables() {
+        let (env, dir) = isolated_home();
+        fs::write(
+            dir.join("config.yaml"),
+            "active_profile: default\nauto_update: false\nprofiles:\n  default:\n    api_key: x\n",
+        )
+        .unwrap();
+        assert!(!auto_update_enabled(&env));
     }
 }

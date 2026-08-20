@@ -1,7 +1,9 @@
 use std::process::Command;
 
 fn anyr() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_anyr"))
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_anyr"));
+    cmd.env("ANYR_NO_UPDATE", "1");
+    cmd
 }
 
 fn run(args: &[&str]) -> (i32, String, String) {
@@ -300,7 +302,15 @@ fn claude_dry_run_with_key_prints_base_and_redacts_secret() {
     let key = "sk-ar-v1-testkey";
     let (code, stdout, stderr) = {
         let out = anyr()
-            .args(["claude", "--dry-run", "--yes", "--key", key, "--model", "auto"])
+            .args([
+                "claude",
+                "--dry-run",
+                "--yes",
+                "--key",
+                key,
+                "--model",
+                "auto",
+            ])
             .env_remove("ANYROUTER_API_KEY")
             .output()
             .expect("dry-run");
@@ -426,6 +436,10 @@ fn upgrade_help_mentions_channel_stable_beta() {
     assert!(stdout.contains("channel"), "{stdout}");
     assert!(stdout.contains("stable"), "{stdout}");
     assert!(stdout.contains("beta"), "{stdout}");
+    assert!(
+        stdout.contains("Auto-update") || stdout.contains("auto-update"),
+        "upgrade help should mention auto-update, got:\n{stdout}"
+    );
 }
 
 #[test]
@@ -741,4 +755,59 @@ fn upgrade_does_not_print_full_sk_ar_key() {
     assert_eq!(code, 0, "stderr={stderr}");
     let combined = format!("{stdout}{stderr}");
     assert!(!combined.contains(key), "full key leaked:\n{combined}");
+}
+
+#[test]
+fn upgrade_auto_with_fixture_would_update() {
+    let home = std::env::temp_dir().join(format!("anyr-auto-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&home);
+    let out = anyr()
+        .args(["upgrade", "--auto"])
+        .env("ANYR_RELEASES_JSON", fixture_path())
+        .env("ANYROUTER_HOME", &home)
+        .env("ANYR_UPDATE_INTERVAL_SECS", "0")
+        .env_remove("ANYR_CHANNEL")
+        .output()
+        .expect("upgrade --auto");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code().unwrap_or(1), 0, "stderr={stderr}");
+    assert!(
+        !format!("{stdout}{stderr}").contains("Unknown flag"),
+        "{stdout}{stderr}"
+    );
+    assert!(
+        stdout.contains("would update") && stdout.contains("0.1.99"),
+        "auto-update should install a newer GitHub release, got:\n{stdout}"
+    );
+}
+
+#[test]
+fn upgrade_auto_is_quiet_when_up_to_date() {
+    let home = std::env::temp_dir().join(format!("anyr-auto-current-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&home);
+    let (_, ver, _) = run(&["--version"]);
+    let ver = ver.trim();
+    let fixture = home.join("releases.json");
+    std::fs::write(
+        &fixture,
+        format!(
+            r#"[{{"tag_name":"v{ver}","prerelease":false,"assets":[{{"name":"anyr-linux-x86_64","browser_download_url":"https://github.com/anyrouter-dev/cli/releases/download/v{ver}/anyr-linux-x86_64"}}]}}]"#
+        ),
+    )
+    .expect("write fixture");
+    let out = anyr()
+        .args(["upgrade", "--auto"])
+        .env("ANYR_RELEASES_JSON", &fixture)
+        .env("ANYROUTER_HOME", &home)
+        .env("ANYR_UPDATE_INTERVAL_SECS", "0")
+        .output()
+        .expect("upgrade --auto current");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code().unwrap_or(1), 0, "stderr={stderr}");
+    assert!(
+        !stdout.contains("would update") && !stdout.contains("update available"),
+        "up-to-date auto-update should be silent, got:\n{stdout}"
+    );
 }

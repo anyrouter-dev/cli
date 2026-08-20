@@ -422,6 +422,14 @@ const UPGRADE: &str = "\
 Usage:
   {bin} upgrade [--check] [--channel stable|beta] [--dry-run]
 
+Auto-update is on by default. On startup a background process checks
+GitHub Releases, and while a coding agent is running it rechecks every
+few hours, then installs in place. The next `{bin}` uses the new build.
+
+  auto_update: false     in ~/.anyrouter/config.yaml to turn it off
+  ANYR_AUTO_UPDATE=0     same, for this process
+  {bin} config           toggle Auto-update in the TUI
+
 Channels:
   stable  (default)  latest non-prerelease
   beta               latest GitHub prerelease

@@ -206,7 +206,9 @@ fn allowed_flags(command: &str) -> Option<&'static [&'static str]> {
         ],
         "prompt" => &["base-url", "json"],
         "menu" => &[],
-        "upgrade" => &["check", "channel", "fixture", "dry-run", "yes"],
+        "upgrade" => &[
+            "check", "channel", "fixture", "dry-run", "yes", "auto", "force",
+        ],
         "claude" | "codex" | "grok" | "opencode" | "pool" | "pi" => LAUNCH_FLAGS,
         "cursor" | "cline" | "windsurf" => &["profile", "key", "base-url", "config", "yes"],
         "byok" => return None,
@@ -368,6 +370,9 @@ pub fn run(argv: Vec<String>, env: HashMap<String, String>) -> i32 {
             return 1;
         }
     };
+
+    #[cfg(feature = "native")]
+    crate::upgrade::on_startup(parsed.command.as_str(), &parsed, &env);
 
     let command = parsed.command.as_str();
     if command == "--version" || command == "-v" {
@@ -908,7 +913,11 @@ fn print_config_status(
             term::dim("account"),
             term::accent(&cfg.active_profile)
         ),
-        &format!("{}  {}", term::dim("api_key "), mask_api_key(key.as_deref())),
+        &format!(
+            "{}  {}",
+            term::dim("api_key "),
+            mask_api_key(key.as_deref())
+        ),
     ]);
     println!(
         "{}  {}",
@@ -942,6 +951,15 @@ fn print_config_status(
         );
     }
     println!("{}  {}", term::dim("file    "), path.display());
+    println!(
+        "{}  {}",
+        term::dim("update  "),
+        if cfg.auto_update() {
+            term::ok("auto on")
+        } else {
+            term::dim("auto off").to_string()
+        }
+    );
     if let Some(key) = key.as_deref() {
         if let Ok(credits) = fetch_credits(&base, key) {
             print!("{}", format_usage_report(&credits, false));
@@ -964,6 +982,9 @@ fn run_config_tui(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result
         println!();
         print_config_status(parsed, env, &path)?;
         println!();
+        let auto_on = load_config_if_present(&path)
+            .map(|c| c.auto_update())
+            .unwrap_or(true);
         let items = vec![
             "Switch key".into(),
             "Switch account".into(),
@@ -971,6 +992,7 @@ fn run_config_tui(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result
             "Credits".into(),
             "Sign in".into(),
             "Log out".into(),
+            format!("Auto-update  {}", if auto_on { "on" } else { "off" }),
             "Done".into(),
         ];
         let idx = term::pick("Config", &items, Some(0))?;
@@ -996,6 +1018,20 @@ fn run_config_tui(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result
             3 => run_usage(parsed, env),
             4 => run_login(parsed, env),
             5 => run_logout(parsed, env),
+            6 => {
+                let mut cfg = load_config_if_present(&path).unwrap_or_default();
+                cfg.auto_update = Some(!auto_on);
+                write_config(&cfg, &path)?;
+                println!(
+                    "{}",
+                    if cfg.auto_update() {
+                        term::ok("Auto-update on")
+                    } else {
+                        term::dim("Auto-update off")
+                    }
+                );
+                Ok(0)
+            }
             _ => return Ok(0),
         };
         if let Err(err) = result {
@@ -1033,6 +1069,7 @@ fn run_config(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32
                     "claude_sonnet": profile.map(|p| p.claude_sonnet()),
                     "claude_opus": profile.map(|p| p.claude_opus()),
                     "accounts": cfg.profiles.keys().cloned().collect::<Vec<_>>(),
+                    "auto_update": cfg.auto_update(),
                 });
                 println!(
                     "{}",
@@ -1144,6 +1181,7 @@ fn run_launch(
         }
         let _ = write_config(&cfg, &path);
     }
+    let _updater = crate::upgrade::start_session_checker(env);
     Ok(spawn_child(&resolved, &args, &env_map))
 }
 

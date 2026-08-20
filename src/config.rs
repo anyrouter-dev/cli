@@ -100,6 +100,8 @@ fn nonempty(value: &Option<String>) -> Option<&str> {
 pub struct Config {
     pub active_profile: String,
     pub last_tool: Option<String>,
+    /// `None` means default on. Explicit `false` disables background auto-update.
+    pub auto_update: Option<bool>,
     pub profiles: BTreeMap<String, Profile>,
     pub tools: BTreeMap<String, ToolConfig>,
 }
@@ -109,9 +111,16 @@ impl Default for Config {
         Self {
             active_profile: DEFAULT_PROFILE.into(),
             last_tool: None,
+            auto_update: None,
             profiles: BTreeMap::new(),
             tools: create_default_tools(),
         }
+    }
+}
+
+impl Config {
+    pub fn auto_update(&self) -> bool {
+        self.auto_update.unwrap_or(true)
     }
 }
 
@@ -354,6 +363,17 @@ pub fn parse_config(source: &str) -> Config {
     if let Some(s) = root.get("last_tool").and_then(|v| v.as_str()) {
         config.last_tool = Some(s.to_string());
     }
+    if let Some(v) = root.get("auto_update") {
+        config.auto_update = match v {
+            YamlValue::Bool(b) => Some(*b),
+            YamlValue::String(s) => match s.trim().to_ascii_lowercase().as_str() {
+                "true" | "1" | "on" | "yes" => Some(true),
+                "false" | "0" | "off" | "no" => Some(false),
+                _ => None,
+            },
+            _ => None,
+        };
+    }
     if let Some(map) = root.get("profiles").and_then(|v| v.as_map()) {
         for (name, value) in map {
             if let Some(pm) = value.as_map() {
@@ -384,6 +404,9 @@ pub fn serialize_config(config: &Config) -> String {
     )];
     if let Some(tool) = &config.last_tool {
         lines.push(format!("last_tool: {}", yaml_scalar(tool)));
+    }
+    if let Some(v) = config.auto_update {
+        lines.push(format!("auto_update: {v}"));
     }
     lines.push("profiles:".into());
     for (name, profile) in &config.profiles {
@@ -539,5 +562,21 @@ profiles:
     fn set_active_profile_rejects_unknown() {
         let cfg = parse_config("active_profile: default\nprofiles:\n  default:\n    api_key: x\n");
         assert!(set_active_profile(cfg, "missing").is_err());
+    }
+
+    #[test]
+    fn auto_update_defaults_on_and_roundtrips_off() {
+        let missing =
+            parse_config("active_profile: default\nprofiles:\n  default:\n    api_key: x\n");
+        assert!(missing.auto_update());
+        assert_eq!(missing.auto_update, None);
+        assert!(!serialize_config(&missing).contains("auto_update:"));
+
+        let off = parse_config(
+            "active_profile: default\nauto_update: false\nprofiles:\n  default:\n    api_key: x\n",
+        );
+        assert!(!off.auto_update());
+        let again = parse_config(&serialize_config(&off));
+        assert_eq!(again.auto_update, Some(false));
     }
 }
