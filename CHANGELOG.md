@@ -1,100 +1,66 @@
 # Changelog
 
-All notable changes to this project will be documented in this file.
+This file is maintained automatically by [release-please](https://github.com/googleapis/release-please).
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+GitHub Releases use this file as the release notes (full history through that tag).
 
-## [Unreleased]
+## [0.1.8](https://github.com/anyrouter-dev/cli/compare/v0.1.7...v0.1.8) (2026-08-20)
 
-### Changed
+### Bug Fixes
 
-- Dropped the GitHub Pages WASM playground. Docs and install live at
-  [anyrouter.dev/cli](https://anyrouter.dev/cli).
+* **cli:** login URL includes the code and opens the browser ([a5e1307](https://github.com/anyrouter-dev/cli/commit/a5e130768a4f7bcaa17c7429ea4dc3738d9a39ab))
 
-## [0.1.8] - 2026-08-20
+## [0.1.7](https://github.com/anyrouter-dev/cli/compare/v0.1.6...v0.1.7) (2026-08-20)
 
-### Changed
+### Bug Fixes
 
-- `ar auth login` prints one URL with the code already in it (`?code=`),
-  opens the browser when possible, and waits until you approve. No separate
-  "enter this code" step.
+* **cli:** keep Claude opus/sonnet/haiku aliases distinct ([f81e971](https://github.com/anyrouter-dev/cli/commit/f81e971bd75bd15a54aa9a3c2fbb7f7e07ae9257))
 
-## [0.1.7] - 2026-08-20
+## [0.1.6](https://github.com/anyrouter-dev/cli/compare/v0.1.5...v0.1.6) (2026-08-20)
 
-### Fixed
+### Bug Fixes
 
-- `ar claude` session default is `anyrouter/auto`, not the bare word `auto`.
-  Pinning a model no longer copies it onto opus / sonnet / haiku, so Claude
-  Code's `/model` picker lists all three aliases.
+* **cli:** wrap pi with AnyRouter key and endpoint ([90246a1](https://github.com/anyrouter-dev/cli/commit/90246a160212c915617bb8b804245179e1701b4d))
 
-### Added
+## [0.1.5](https://github.com/anyrouter-dev/cli/compare/v0.1.4...v0.1.5) (2026-08-20)
 
-- Persist Claude aliases: `claude_haiku`, `claude_sonnet`, `claude_opus`.
-  Set them with `ar claude --haiku|--sonnet|--opus`, `ar models use --haiku <id>`,
-  or Switch model in `ar config`.
+### Features
 
-## [0.1.6] - 2026-08-20
+* **cli:** interactive TUI for ar config ([b2c7d1a](https://github.com/anyrouter-dev/cli/commit/b2c7d1a5574fe7951d37ca9073e4271196215f9a))
 
-### Fixed
+## [0.1.4](https://github.com/anyrouter-dev/cli/compare/v0.1.3...v0.1.4) (2026-08-20)
 
-- `ar pi` writes a Pi agent dir with AnyRouter already in `models.json` and
-  sets `ANYROUTER_API_KEY`. Pi does not read `PI_MODELS_JSON`, so the old wrap
-  launched Pi with no provider and no key.
+### Features
 
-## [0.1.5] - 2026-08-20
+* **cli:** gh-style auth command group ([47563d6](https://github.com/anyrouter-dev/cli/commit/47563d6e69b7d4b84067c151d329d7c31e361436))
 
-### Changed
+## [0.1.3](https://github.com/anyrouter-dev/cli/compare/v0.1.2...v0.1.3) (2026-08-20)
 
-- `ar config` opens an interactive TUI (pick key, account, model, credits).
-  `config path` / `config get` / `config use` stay for scripts.
+### Bug Fixes
 
-## [0.1.4] - 2026-08-20
+* **cli:** login then launcher; group help ([cd8ace1](https://github.com/anyrouter-dev/cli/commit/cd8ace1bd286ac8acdb0c54057ebea5f10258371))
 
-### Changed
+## [0.1.2](https://github.com/anyrouter-dev/cli/compare/v0.1.1...v0.1.2) (2026-08-20)
 
-- Auth is `ar auth login|logout|status|token|switch`, like `gh auth`.
-  `login`, `logout`, and `whoami` still work as aliases.
-- Root help lists CORE COMMANDS (`auth`, `config`, `keys`, `models`, `usage`)
-  then LAUNCH, matching the GitHub CLI layout.
+### Bug Fixes
 
-## [0.1.3] - 2026-08-20
+* **ci:** resolve release bench binary by absolute path ([4291216](https://github.com/anyrouter-dev/cli/commit/429121641f56e004f7c7fbba596ffbe7eccc2b81))
 
-### Changed
+## [0.1.1](https://github.com/anyrouter-dev/cli/compare/v0.1.0...v0.1.1) (2026-08-20)
 
-- Bare `ar` / `anyr` signs in when no key is stored, then opens the launcher.
-- `--help` is grouped (Launch / Account / Status) instead of a flat command dump.
+### Features
 
-## [0.1.2] - 2026-08-20
+* **ci:** build every platform, bench size/startup, ship wasm demo ([532a1e0](https://github.com/anyrouter-dev/cli/commit/532a1e08f31a8bcd2567cc5db2269a30ff9f27e4))
+* **cli:** device login, key/model switch, agent install, color TUI ([cc4cccd](https://github.com/anyrouter-dev/cli/commit/cc4cccd144038a0454ba377648e18868e5ddc4c8))
+* **cli:** spawn pi alongside claude, codex, and opencode ([56f28d0](https://github.com/anyrouter-dev/cli/commit/56f28d045c8aaa1ededc01e1155927134ffe0474))
 
-### Fixed
+### Bug Fixes
 
-- Release bench looks up the asset by absolute path so Linux/macOS CI can
-  upload binaries (`anyr-linux-x86_64` is not on `PATH`).
+* **cli:** print help using the invoked command name ([16c0f1f](https://github.com/anyrouter-dev/cli/commit/16c0f1f779ac3d0ca797cff64264acc8e29ad896))
+* **release:** lock release-please to always-bump-patch ([4b778a2](https://github.com/anyrouter-dev/cli/commit/4b778a242bb137fc0d6fe838950e546f05923153))
 
-## [0.1.1] - 2026-08-20
+## [0.1.0](https://github.com/anyrouter-dev/cli/releases/tag/v0.1.0) (2026-08-20)
 
-### Added
+### Features
 
-- Spawn target `pi` (Pi coding agent) alongside `claude`, `codex`, and `opencode`.
-
-### Fixed
-
-- Help and usage lines use the name you invoked (`ar`, `anyr`, `anyrouter`, or `npx @anyr/cli`) instead of always printing `npx @anyr/cli`.
-
-## [0.1.0] - 2026-08-20
-
-### Added
-
-- Initial native CLI (`anyr`) written in Rust.
-
-[Unreleased]: https://github.com/anyrouter-dev/cli/compare/v0.1.8...HEAD
-[0.1.8]: https://github.com/anyrouter-dev/cli/compare/v0.1.7...v0.1.8
-[0.1.7]: https://github.com/anyrouter-dev/cli/compare/v0.1.6...v0.1.7
-[0.1.6]: https://github.com/anyrouter-dev/cli/compare/v0.1.5...v0.1.6
-[0.1.5]: https://github.com/anyrouter-dev/cli/compare/v0.1.4...v0.1.5
-[0.1.4]: https://github.com/anyrouter-dev/cli/compare/v0.1.3...v0.1.4
-[0.1.3]: https://github.com/anyrouter-dev/cli/compare/v0.1.2...v0.1.3
-[0.1.2]: https://github.com/anyrouter-dev/cli/compare/v0.1.1...v0.1.2
-[0.1.1]: https://github.com/anyrouter-dev/cli/compare/v0.1.0...v0.1.1
-[0.1.0]: https://github.com/anyrouter-dev/cli/releases/tag/v0.1.0
+* **cli:** native anyr 0.1.x with GitHub Releases install ([836f73f](https://github.com/anyrouter-dev/cli/commit/836f73f48c3a8d48d06c1c4ea49fef9f25e83694))

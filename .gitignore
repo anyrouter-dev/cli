@@ -6,3 +6,5 @@ binaries/anyr-*
 *.tgz
 .DS_Store
 web/pkg/
+__pycache__/
+*.pyc

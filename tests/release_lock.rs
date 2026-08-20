@@ -174,6 +174,14 @@ fn workflow_files_exist_and_do_not_auto_merge() {
         binaries.contains("bench-report.md"),
         "release notes must include the bench report"
     );
+    assert!(
+        binaries.contains("scripts/release_notes.py github"),
+        "release notes must use the release-please changelog"
+    );
+    assert!(
+        !binaries.contains("gh release view"),
+        "release notes must not keep a short handwritten body"
+    );
 
     let ci = read(".github/workflows/ci.yml");
     for needle in [
@@ -245,6 +253,18 @@ fn wrapper_and_install_scripts_exist() {
     must_exist("scripts/install-hooks.sh");
     must_exist("scripts/check-coauthors.sh");
     must_exist("scripts/bench.py");
+    must_exist("scripts/release_notes.py");
+    must_exist("tests/release_notes_test.py");
+    let notes = read("scripts/release_notes.py");
+    assert!(
+        notes.contains("release-please"),
+        "release_notes.py must build release-please changelog notes"
+    );
+    let ci = read(".github/workflows/ci.yml");
+    assert!(
+        ci.contains("tests/release_notes_test.py"),
+        "ci.yml must run release notes tests"
+    );
     let bench = read("scripts/bench.py");
     assert!(
         bench.contains("def measure"),

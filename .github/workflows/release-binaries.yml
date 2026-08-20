@@ -131,18 +131,17 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: append bench report to release
+      - name: write changelog + bench to release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           python scripts/bench.py report artifacts \
             --out bench-report.md --json-out bench-report.json \
             --title "Binary size and startup (${{ github.event.release.tag_name }})"
-          body="$(gh release view "${{ github.event.release.tag_name }}" --json body -q .body)"
-          {
-            printf '%s\n\n' "$body"
-            cat bench-report.md
-          } > notes.md
+          python scripts/release_notes.py github \
+            --tag "${{ github.event.release.tag_name }}" \
+            --bench bench-report.md \
+            --out notes.md
           gh release edit "${{ github.event.release.tag_name }}" --notes-file notes.md
           gh release upload "${{ github.event.release.tag_name }}" \
             bench-report.md bench-report.json --clobber

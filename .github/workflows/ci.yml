@@ -40,7 +40,10 @@ jobs:
           python-version: "3.12"
 
       - name: bench script syntax
-        run: python -m py_compile scripts/bench.py
+        run: python -m py_compile scripts/bench.py scripts/release_notes.py
+
+      - name: release notes
+        run: python tests/release_notes_test.py
 
   build:
     needs: lint
