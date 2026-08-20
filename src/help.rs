@@ -427,19 +427,20 @@ GitHub Releases, and while a coding agent is running it rechecks every
 few hours, then installs in place. The next `{bin}` uses the new build.
 
   auto_update: false     in ~/.anyrouter/config.yaml to turn it off
-  ANYR_AUTO_UPDATE=0     same, for this process
-  {bin} config           toggle Auto-update in the TUI
+  channel: beta          follow main (GitHub prereleases)
+  ANYR_AUTO_UPDATE=0     disable auto-update for this process
+  ANYR_CHANNEL=beta      same as channel: in the config file
 
 Channels:
   stable  (default)  latest non-prerelease
-  beta               latest GitHub prerelease
+  beta               every push to main (GitHub prerelease)
 
 Downloads:
   https://github.com/anyrouter-dev/cli/releases/download/<tag>/anyr-<os>-<arch>
 
 --check reports current vs latest without installing.
 --fixture <path> / ANYR_RELEASES_JSON skips the network (tests / dry-run).
-ANYR_CHANNEL=stable|beta selects the channel when --channel is omitted.
+--channel stable|beta overrides the config file for this run.
 ";
 
 const TRANSACTIONS: &str = "\

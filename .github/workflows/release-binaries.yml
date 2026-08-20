@@ -9,6 +9,7 @@ permissions:
 
 jobs:
   build:
+    if: ${{ github.event.release.prerelease == false }}
     strategy:
       fail-fast: false
       matrix:
@@ -75,6 +76,7 @@ jobs:
           path: bench/${{ matrix.asset }}.json
 
   wasm:
+    if: ${{ github.event.release.prerelease == false }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -118,6 +120,7 @@ jobs:
           path: bench/anyr.wasm.json
 
   notes:
+    if: ${{ github.event.release.prerelease == false }}
     needs: [build, wasm]
     runs-on: ubuntu-latest
     steps:

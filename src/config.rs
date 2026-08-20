@@ -102,6 +102,8 @@ pub struct Config {
     pub last_tool: Option<String>,
     /// `None` means default on. Explicit `false` disables background auto-update.
     pub auto_update: Option<bool>,
+    /// Upgrade channel: `stable` (default) or `beta`. Not shown in `ar config`.
+    pub channel: Option<String>,
     pub profiles: BTreeMap<String, Profile>,
     pub tools: BTreeMap<String, ToolConfig>,
 }
@@ -112,6 +114,7 @@ impl Default for Config {
             active_profile: DEFAULT_PROFILE.into(),
             last_tool: None,
             auto_update: None,
+            channel: None,
             profiles: BTreeMap::new(),
             tools: create_default_tools(),
         }
@@ -121,6 +124,18 @@ impl Default for Config {
 impl Config {
     pub fn auto_update(&self) -> bool {
         self.auto_update.unwrap_or(true)
+    }
+
+    pub fn channel(&self) -> &str {
+        match self
+            .channel
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            Some(ch) => ch,
+            None => "stable",
+        }
     }
 }
 
@@ -374,6 +389,15 @@ pub fn parse_config(source: &str) -> Config {
             _ => None,
         };
     }
+    if let Some(s) = root
+        .get("channel")
+        .or_else(|| root.get("update_channel"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        config.channel = Some(s.to_ascii_lowercase());
+    }
     if let Some(map) = root.get("profiles").and_then(|v| v.as_map()) {
         for (name, value) in map {
             if let Some(pm) = value.as_map() {
@@ -407,6 +431,9 @@ pub fn serialize_config(config: &Config) -> String {
     }
     if let Some(v) = config.auto_update {
         lines.push(format!("auto_update: {v}"));
+    }
+    if let Some(ch) = &config.channel {
+        lines.push(format!("channel: {}", yaml_scalar(ch)));
     }
     lines.push("profiles:".into());
     for (name, profile) in &config.profiles {
@@ -578,5 +605,26 @@ profiles:
         assert!(!off.auto_update());
         let again = parse_config(&serialize_config(&off));
         assert_eq!(again.auto_update, Some(false));
+    }
+
+    #[test]
+    fn channel_defaults_stable_and_roundtrips_beta() {
+        let missing =
+            parse_config("active_profile: default\nprofiles:\n  default:\n    api_key: x\n");
+        assert_eq!(missing.channel(), "stable");
+        assert_eq!(missing.channel, None);
+        assert!(!serialize_config(&missing).contains("channel:"));
+
+        let beta = parse_config(
+            "active_profile: default\nchannel: beta\nprofiles:\n  default:\n    api_key: x\n",
+        );
+        assert_eq!(beta.channel(), "beta");
+        let again = parse_config(&serialize_config(&beta));
+        assert_eq!(again.channel.as_deref(), Some("beta"));
+
+        let alias = parse_config(
+            "active_profile: default\nupdate_channel: BETA\nprofiles:\n  default:\n    api_key: x\n",
+        );
+        assert_eq!(alias.channel(), "beta");
     }
 }

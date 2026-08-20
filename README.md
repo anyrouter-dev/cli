@@ -21,7 +21,7 @@ into `~/.local/bin`.
 curl -fsSL https://raw.githubusercontent.com/anyrouter-dev/cli/main/setup.sh | bash
 ```
 
-**beta** (latest GitHub prerelease):
+**beta** (every push to `main` publishes a GitHub prerelease):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/anyrouter-dev/cli/main/setup.sh | bash -s -- --channel beta

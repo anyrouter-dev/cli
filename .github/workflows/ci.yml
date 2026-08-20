@@ -18,6 +18,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: stamp beta version (main)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: python3 scripts/stamp_beta_version.py --run "${{ github.run_number }}"
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, llvm-tools-preview
@@ -65,10 +69,13 @@ jobs:
           python-version: "3.12"
 
       - name: bench script syntax
-        run: python -m py_compile scripts/bench.py scripts/release_notes.py
+        run: python -m py_compile scripts/bench.py scripts/release_notes.py scripts/stamp_beta_version.py
 
       - name: release notes
         run: python tests/release_notes_test.py
+
+      - name: stamp beta version script
+        run: python tests/stamp_beta_version_test.py
 
   build:
     needs: lint
@@ -95,13 +102,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      - name: stamp beta version (main)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: python3 scripts/stamp_beta_version.py --run "${{ github.run_number }}"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
 
       - name: cargo test
         run: cargo test --locked --all-targets
@@ -145,16 +156,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: stamp beta version (main)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: python3 scripts/stamp_beta_version.py --run "${{ github.run_number }}"
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
 
       - name: install wasm-bindgen-cli
         run: cargo install wasm-bindgen-cli --version 0.2.100
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
 
       - name: cargo build wasm
         run: cargo build --release --target wasm32-unknown-unknown --no-default-features
@@ -234,3 +249,35 @@ jobs:
                 body,
               });
             }
+
+  beta:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: publish GitHub prerelease
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          VER="$(python3 scripts/stamp_beta_version.py --run "${{ github.run_number }}" --print)"
+          TAG="v${VER}"
+          mkdir -p dist
+          find artifacts -type f \( -name 'anyr-*' -o -name 'anyr.exe' \) ! -name '*.json' -exec cp -v {} dist/ \;
+          ls -la dist
+          test -n "$(ls -A dist)" || { echo "no binaries in artifacts"; exit 1; }
+          SHORT="$(echo "${GITHUB_SHA}" | cut -c1-7)"
+          printf 'Beta from main (%s).\n\ncurl -fsSL https://anyrouter.dev/setup.sh | bash -s -- --channel beta\nchannel: beta\n' "$SHORT" > notes.md
+          gh release create "${TAG}" dist/* \
+            --prerelease \
+            --target "${GITHUB_SHA}" \
+            --title "${TAG}" \
+            --notes-file notes.md

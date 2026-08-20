@@ -69,7 +69,18 @@ fn resolve_channel(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Resul
     if let Some(flag) = get_string_flag(&parsed.flags, "channel") {
         return Channel::parse(&flag);
     }
-    Channel::from_env(env)
+    if let Some(v) = env
+        .get("ANYR_CHANNEL")
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    {
+        return Channel::parse(v);
+    }
+    let path = resolve_config_path(None, env);
+    if let Some(ch) = load_config_if_present(&path).and_then(|c| c.channel) {
+        return Channel::parse(&ch);
+    }
+    Ok(Channel::Stable)
 }
 
 fn wants_check(parsed: &ParsedArgs) -> bool {
@@ -570,5 +581,35 @@ mod tests {
         )
         .unwrap();
         assert!(!auto_update_enabled(&env));
+    }
+
+    fn parsed_check() -> ParsedArgs {
+        ParsedArgs {
+            command: "upgrade".into(),
+            flags: std::collections::HashMap::from([(
+                "check".into(),
+                crate::parse::FlagValue::Bool(true),
+            )]),
+            passthrough: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn resolve_channel_reads_config_then_env() {
+        let (mut env, dir) = isolated_home();
+        fs::write(
+            dir.join("config.yaml"),
+            "active_profile: default\nchannel: beta\nprofiles:\n  default:\n    api_key: x\n",
+        )
+        .unwrap();
+        assert_eq!(
+            resolve_channel(&parsed_check(), &env).unwrap(),
+            Channel::Beta
+        );
+        env.insert("ANYR_CHANNEL".into(), "stable".into());
+        assert_eq!(
+            resolve_channel(&parsed_check(), &env).unwrap(),
+            Channel::Stable
+        );
     }
 }

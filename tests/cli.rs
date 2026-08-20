@@ -758,6 +758,29 @@ fn upgrade_does_not_print_full_sk_ar_key() {
 }
 
 #[test]
+fn upgrade_check_reads_channel_from_config() {
+    let home = std::env::temp_dir().join(format!("anyr-ch-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&home);
+    std::fs::write(
+        home.join("config.yaml"),
+        "active_profile: default\nchannel: beta\nprofiles:\n  default:\n    api_key: x\n",
+    )
+    .expect("write config");
+    let out = anyr()
+        .args(["upgrade", "--check"])
+        .env("ANYR_RELEASES_JSON", fixture_path())
+        .env("ANYROUTER_HOME", &home)
+        .env_remove("ANYR_CHANNEL")
+        .output()
+        .expect("upgrade --check config channel");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code().unwrap_or(1), 0, "stderr={stderr}");
+    assert!(stdout.contains("channel: beta"), "{stdout}");
+    assert!(stdout.contains("latest: 0.2.0-beta.1"), "{stdout}");
+}
+
+#[test]
 fn upgrade_auto_with_fixture_would_update() {
     let home = std::env::temp_dir().join(format!("anyr-auto-{}", std::process::id()));
     let _ = std::fs::create_dir_all(&home);
