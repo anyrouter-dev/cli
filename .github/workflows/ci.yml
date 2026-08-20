@@ -11,20 +11,40 @@ permissions:
 
 jobs:
   lint:
+    name: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt
+          components: rustfmt, llvm-tools-preview
 
       - name: cargo fmt --check (optional)
         run: cargo fmt --check
         continue-on-error: true
 
-      - name: cargo test
-        run: cargo test
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+
+      - name: cargo llvm-cov (full suite)
+        run: cargo llvm-cov --locked --all-targets --lcov --output-path lcov.info
+
+      # Repo secret CODECOV_TOKEN: https://app.codecov.io/gh/anyrouter-dev/cli
+      - uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: lcov.info
+          flags: cli
+          name: anyr-cli
+          fail_ci_if_error: true
+          verbose: true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage-lcov
+          path: lcov.info
 
       - name: installer local-binary mode
         run: bash tests/setup-sh.test.sh
@@ -79,7 +99,7 @@ jobs:
           python-version: "3.12"
 
       - name: cargo test
-        run: cargo test
+        run: cargo test --locked --all-targets
 
       - name: cargo build --release
         run: cargo build --release --target ${{ matrix.target }}

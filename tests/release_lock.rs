@@ -193,9 +193,19 @@ fn workflow_files_exist_and_do_not_auto_merge() {
         "wasm32-unknown-unknown",
         "scripts/bench.py",
         "anyr-bench-report",
+        "cargo test --locked --all-targets",
+        "cargo llvm-cov --locked --all-targets",
+        "codecov/codecov-action",
+        "lcov.info",
     ] {
         assert!(ci.contains(needle), "ci.yml must include {needle}");
     }
+    must_exist("codecov.yml");
+    let codecov = read("codecov.yml");
+    assert!(
+        codecov.contains("coverage:"),
+        "codecov.yml must configure coverage status"
+    );
 
     let ci_body = read(".github/workflows/ci.yml");
     assert!(

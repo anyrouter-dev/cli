@@ -2,6 +2,9 @@
 
 Native CLI for [AnyRouter](https://anyrouter.dev). This line is **0.1.x**.
 
+[![CI](https://github.com/anyrouter-dev/cli/actions/workflows/ci.yml/badge.svg)](https://github.com/anyrouter-dev/cli/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/anyrouter-dev/cli/branch/main/graph/badge.svg)](https://codecov.io/gh/anyrouter-dev/cli)
+
 Launch coding agents through the AnyRouter gateway. One key, every provider.
 
 ## Install
@@ -27,6 +30,8 @@ curl -fsSL https://raw.githubusercontent.com/anyrouter-dev/cli/main/setup.sh | b
 Docs and install: [anyrouter.dev/cli](https://anyrouter.dev/cli).
 
 CI builds **linux x86_64/arm64**, **macOS x86_64/arm64**, **Windows x86_64**, and **wasm32**.
+Every PR runs the full test suite (`cargo test --all-targets`) on each of those
+platforms, plus LLVM coverage uploaded to [Codecov](https://codecov.io/gh/anyrouter-dev/cli).
 Every PR and GitHub Release gets a size + startup report (`anyr --version` / `--help`).
 
 Manual (Linux x86_64 example):
