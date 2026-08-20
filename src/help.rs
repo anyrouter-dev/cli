@@ -475,7 +475,10 @@ mod tests {
         assert!(!out.contains("setup.sh"), "{out}");
         assert!(!out.contains("Install:"), "{out}");
         assert!(!out.contains("anyrouter.dev/docs/cli"), "{out}");
-        assert!(out.contains("▄█▀▀█▄▄█▀"), "help should include the AR mark, got:\n{out}");
+        assert!(
+            out.contains("⠻⠟⠿"),
+            "help should include the official dithered AR, got:\n{out}"
+        );
 
         set_invoked_bin("npx @anyr/cli");
         let npx = root_help();

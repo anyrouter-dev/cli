@@ -60,53 +60,200 @@ pub fn model_id(text: &str) -> String {
     paint(TEAL, text)
 }
 
-/// Small AR mark rasterized from the official 32px icon (half-blocks).
-/// Three rows × 11 cells — readable without a graphics protocol.
-pub const MARK_LINES: [&str; 3] = ["    ▄▄ ▄▄▄ ", "  ▄█▀▀█▄▄█▀", " ▀▀    ▀▀▀▀"];
+/// Official AR ligature as Floyd–Steinberg dithered braille (dot version).
+/// Source is `anyrouter-logo-white.png`, not the 32px favicon.
+pub const MARK_LINES: [&str; 4] = [
+    "⠀⠀⠀⣼⣜⠻⠟⠿⢻⣦⡀",
+    "⠀⠀⢀⣾⠟⢻⣧⠀⠀⢀⣽⠇",
+    "⠀⢠⣿⠋⠀⠀⠻⣷⡹⣿⡋⠀",
+    "⣰⡿⠃⠀⠀⠀⠀⠙⣷⣜⢿⣆",
+];
 
-/// Official 32×32 white PNG (Kitty / iTerm2 inline image).
-const MARK_PNG_B64: &str = "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAACXBIWXMAABYlAAAWJQFJUiTwAAABUElEQVRYw2NgGAWjYBSMgqEI/v//rwHEFkC8EIh3Y8GrgTgCiBlp5YDtQHwJiMP/4webgZiV2paHIllQAsQZQFyOhlcA8V+omk5qWs4FxA+RHPAFiOVxqK2GqvkAxOzUckAL1NCfQPwOFsw41MoiOVSDGparAPEPWLACcSKSBcFY1NsgyUtRwwFboIY9BmIeUAoH4r1QsWdAzA9VxwHE5kB8HSp3mhqW+yL5JhRJXA2Iv0PF+4F4Nlou+AZyDKWWg3x0B2rgLizy9VC5P0DsCMQvkdKJOTV8X4NkoDoWeXYgvgFVcwaIY5FCIIZSy+WB+CvUsFY86pyA+B9UXQEQ74SyQaEhRIkD1kINAuV9bgJqFyGVDdZQGgRmk2u5G1JQ+hGhXhSI30DVbwDiCigbFDK25DhgHrRimUSCngikCskAWiSD2BNGq/BRMApGwaAFAIddWov0Aaf6AAAAAElFTkSuQmCC";
+const MARK_PNG: &[u8] = include_bytes!("../assets/mark.png");
 
+const B64: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+fn base64_encode(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity((bytes.len() + 2) / 3 * 4);
+    for chunk in bytes.chunks(3) {
+        let a = chunk[0] as u32;
+        let b = chunk.get(1).copied().unwrap_or(0) as u32;
+        let c = chunk.get(2).copied().unwrap_or(0) as u32;
+        let n = (a << 16) | (b << 8) | c;
+        out.push(B64[((n >> 18) & 63) as usize] as char);
+        out.push(B64[((n >> 12) & 63) as usize] as char);
+        out.push(if chunk.len() > 1 {
+            B64[((n >> 6) & 63) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            B64[(n & 63) as usize] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Graphics {
     Kitty,
     Iterm,
+    Sixel,
 }
 
+/// Inline image protocol for this terminal.
+///
+/// - Kitty PNG: kitty, Ghostty
+/// - iTerm OSC 1337 PNG: iTerm2, WezTerm, Warp, mintty, rio, Tabby, Blink, Prompt
+/// - Sixel: Windows Terminal, Konsole, foot, mlterm, contour, Alacritty, eat, yaft
+///
+/// `ANYR_GRAPHICS=kitty|iterm|sixel|off` overrides detection.
+/// Generic `xterm-256color` is not treated as Sixel (VTE/Apple/conhost share it).
+/// tmux: Kitty/iTerm are wrapped in DCS passthrough; Sixel is left raw for tmux 3.4+.
 fn graphics_kind() -> Option<Graphics> {
     if !io::stdout().is_terminal() {
         return None;
     }
-    if std::env::var_os("TMUX").is_some() {
+    graphics_kind_from(|k| std::env::var(k).ok())
+}
+
+fn graphics_kind_from(get: impl Fn(&str) -> Option<String>) -> Option<Graphics> {
+    let get = &get;
+    let has = |k: &str| get(k).is_some();
+    let val = |k: &str| get(k).unwrap_or_default();
+
+    match val("ANYR_GRAPHICS").trim().to_ascii_lowercase().as_str() {
+        "off" | "none" | "0" | "false" => return None,
+        "kitty" => return Some(Graphics::Kitty),
+        "iterm" | "iterm2" | "osc1337" => return Some(Graphics::Iterm),
+        "sixel" => return Some(Graphics::Sixel),
+        _ => {}
+    }
+
+    let term = val("TERM").to_ascii_lowercase();
+    let program = val("TERM_PROGRAM").to_ascii_lowercase();
+    let emulator = val("TERMINAL_EMULATOR").to_ascii_lowercase();
+    let lc_terminal = val("LC_TERMINAL").to_ascii_lowercase();
+
+    // Multiplexers that swallow sequences (tmux is handled at emit time).
+    if has("ZELLIJ") || has("STY") {
         return None;
     }
-    let term = std::env::var("TERM").unwrap_or_default().to_ascii_lowercase();
-    let program = std::env::var("TERM_PROGRAM").unwrap_or_default();
-    if std::env::var_os("KITTY_WINDOW_ID").is_some()
+    if term.starts_with("screen") && !has("TMUX") {
+        return None;
+    }
+
+    if matches!(
+        program.as_str(),
+        "apple_terminal"
+            | "vscode"
+            | "vscode-insiders"
+            | "cursor"
+            | "zed"
+            | "hyper"
+            | "terminus"
+            | "jetbrains"
+    ) || emulator.contains("jetbrains")
+        || has("NVIM")
+        || has("TERMUX_VERSION")
+        || matches!(
+            term.as_str(),
+            "dumb" | "linux" | "vt100" | "vt102" | "vt220" | "ansi" | "cygwin"
+        )
+    {
+        return None;
+    }
+
+    if has("KITTY_WINDOW_ID")
+        || has("KITTY_PID")
+        || has("GHOSTTY_RESOURCES_DIR")
+        || has("GHOSTTY_BIN_DIR")
         || term.contains("kitty")
         || term.contains("ghostty")
-        || program.eq_ignore_ascii_case("ghostty")
+        || program == "kitty"
+        || program == "ghostty"
     {
         return Some(Graphics::Kitty);
     }
-    match program.as_str() {
-        "iTerm.app" | "WezTerm" | "WarpTerminal" => Some(Graphics::Iterm),
-        _ => None,
+
+    if has("ITERM_SESSION_ID")
+        || has("WEZTERM_EXECUTABLE")
+        || has("WEZTERM_PANE")
+        || lc_terminal == "iterm2"
+        || matches!(
+            program.as_str(),
+            "iterm.app"
+                | "wezterm"
+                | "warpterminal"
+                | "mintty"
+                | "rio"
+                | "tabby"
+                | "blink"
+                | "prompt"
+        )
+        || term.contains("wezterm")
+        || term.contains("mintty")
+        || term.contains("warp")
+        || term == "rio"
+        || term.starts_with("rio-")
+    {
+        return Some(Graphics::Iterm);
     }
+
+    if has("WT_SESSION")
+        || has("WT_PROFILE_ID")
+        || has("KONSOLE_VERSION")
+        || has("KONSOLE_DBUS_SERVICE")
+        || has("ALACRITTY_WINDOW_ID")
+        || has("ALACRITTY_SOCKET")
+        || term.starts_with("foot")
+        || term.contains("mlterm")
+        || term.contains("contour")
+        || term.contains("sixel")
+        || term.contains("alacritty")
+        || term.starts_with("yaft")
+        || term.starts_with("eat-")
+        || term.contains("darktile")
+        || term.contains("domterm")
+    {
+        return Some(Graphics::Sixel);
+    }
+
+    None
 }
 
-/// Best-effort inline PNG. Returns true when a graphics sequence was written.
+fn tmux_passthrough(seq: &str) -> String {
+    let escaped = seq.replace('\x1b', "\x1b\x1b");
+    format!("\x1bPtmux;{escaped}\x1b\\")
+}
+
+/// Best-effort inline PNG/Sixel of the official AR mark.
 fn emit_graphics_mark() -> bool {
     let Some(kind) = graphics_kind() else {
         return false;
     };
     let seq = match kind {
-        Graphics::Kitty => format!("\x1b_Ga=T,f=100,c=4,r=2,q=2;{MARK_PNG_B64}\x1b\\"),
-        Graphics::Iterm => format!(
-            "\x1b]1337;File=inline=1;width=4;height=2;preserveAspectRatio=1:{MARK_PNG_B64}\x07"
-        ),
+        Graphics::Kitty => {
+            let b64 = base64_encode(MARK_PNG);
+            format!("\x1b_Ga=T,f=100,c=8,r=3,q=2;{b64}\x1b\\")
+        }
+        Graphics::Iterm => {
+            let b64 = base64_encode(MARK_PNG);
+            format!("\x1b]1337;File=inline=1;width=8;height=3;preserveAspectRatio=1:{b64}\x07")
+        }
+        Graphics::Sixel => include_str!("../assets/mark.sixel").to_string(),
+    };
+    // Kitty/iTerm need tmux DCS passthrough (`allow-passthrough on`, tmux 3.3+).
+    // Sixel is understood by tmux 3.4+ itself.
+    let payload = if std::env::var_os("TMUX").is_some() && kind != Graphics::Sixel {
+        tmux_passthrough(&seq)
+    } else {
+        seq
     };
     let mut out = io::stdout();
-    if out.write_all(seq.as_bytes()).is_err() {
+    if out.write_all(payload.as_bytes()).is_err() {
         return false;
     }
     let _ = out.write_all(b"\n");
@@ -114,16 +261,14 @@ fn emit_graphics_mark() -> bool {
     true
 }
 
-/// Three-line AR mark next to up to three caption lines.
+/// AR mark next to matching caption lines.
 pub fn brand_header(captions: &[&str]) -> String {
     let mut out = String::new();
-    for i in 0..3 {
-        let mark = paint(WHITE, MARK_LINES[i]);
+    for (i, mark_line) in MARK_LINES.iter().enumerate() {
+        let mark = paint(WHITE, mark_line);
         let caption = captions.get(i).copied().unwrap_or("");
-        if caption.is_empty() {
-            out.push_str(&mark);
-        } else {
-            out.push_str(&mark);
+        out.push_str(&mark);
+        if !caption.is_empty() {
             out.push_str("  ");
             out.push_str(caption);
         }
@@ -132,7 +277,7 @@ pub fn brand_header(captions: &[&str]) -> String {
     out
 }
 
-/// Print the mark: Kitty/iTerm PNG when the terminal can, else half-block art.
+/// Print the official AR mark: inline PNG/Sixel when the terminal can, else dithered braille.
 pub fn print_brand_header(captions: &[&str]) {
     if emit_graphics_mark() {
         for caption in captions {
@@ -350,8 +495,185 @@ mod tests {
         for line in MARK_LINES {
             assert!(out.contains(line), "missing {line:?} in:\n{out}");
         }
+        assert!(
+            out.contains("⠻⠟⠿"),
+            "must be the dithered official AR, not the 32px icon:\n{out}"
+        );
         assert!(out.contains("AnyRouter"), "{out}");
         assert!(out.contains("account  default"), "{out}");
-        assert_eq!(out.lines().count(), 3);
+        assert_eq!(out.lines().count(), MARK_LINES.len());
+    }
+
+    #[test]
+    fn mark_png_is_the_official_logo_not_the_32px_icon() {
+        assert!(
+            MARK_PNG.starts_with(b"\x89PNG"),
+            "assets/mark.png must be PNG"
+        );
+        assert!(
+            MARK_PNG.len() > 1000,
+            "official cropped AR is larger than the 32px favicon, got {}",
+            MARK_PNG.len()
+        );
+        let b64 = base64_encode(MARK_PNG);
+        assert!(b64.starts_with("iVBOR"));
+        assert!(!b64.contains(' '));
+    }
+
+    #[test]
+    fn mark_sixel_is_a_sixel_dcs() {
+        let s = include_str!("../assets/mark.sixel");
+        assert!(
+            s.starts_with("\x1bPq"),
+            "assets/mark.sixel must start with DCS Pq, got {:?}",
+            s.chars().take(8).collect::<String>()
+        );
+        assert!(s.contains("\x1b\\"), "sixel must end with ST");
+    }
+
+    fn probe(pairs: &[(&str, &str)]) -> Option<Graphics> {
+        graphics_kind_from(|k| {
+            pairs
+                .iter()
+                .find(|(n, _)| *n == k)
+                .map(|(_, v)| (*v).to_string())
+        })
+    }
+
+    #[test]
+    fn graphics_kitty_family() {
+        assert_eq!(probe(&[("KITTY_WINDOW_ID", "1")]), Some(Graphics::Kitty));
+        assert_eq!(probe(&[("TERM", "xterm-kitty")]), Some(Graphics::Kitty));
+        assert_eq!(
+            probe(&[("GHOSTTY_RESOURCES_DIR", "/opt/ghostty")]),
+            Some(Graphics::Kitty)
+        );
+        assert_eq!(
+            probe(&[("TERM", "xterm-ghostty"), ("TERM_PROGRAM", "ghostty")]),
+            Some(Graphics::Kitty)
+        );
+    }
+
+    #[test]
+    fn graphics_iterm_family() {
+        assert_eq!(
+            probe(&[("ITERM_SESSION_ID", "w0t0p0")]),
+            Some(Graphics::Iterm)
+        );
+        assert_eq!(
+            probe(&[("LC_TERMINAL", "iTerm2"), ("TERM", "xterm-256color")]),
+            Some(Graphics::Iterm)
+        );
+        assert_eq!(probe(&[("TERM_PROGRAM", "WezTerm")]), Some(Graphics::Iterm));
+        assert_eq!(
+            probe(&[("WEZTERM_EXECUTABLE", "/usr/bin/wezterm")]),
+            Some(Graphics::Iterm)
+        );
+        assert_eq!(
+            probe(&[("TERM_PROGRAM", "WarpTerminal")]),
+            Some(Graphics::Iterm)
+        );
+        assert_eq!(probe(&[("TERM_PROGRAM", "mintty")]), Some(Graphics::Iterm));
+        assert_eq!(probe(&[("TERM_PROGRAM", "rio")]), Some(Graphics::Iterm));
+        assert_eq!(probe(&[("TERM_PROGRAM", "Tabby")]), Some(Graphics::Iterm));
+        assert_eq!(probe(&[("TERM_PROGRAM", "Blink")]), Some(Graphics::Iterm));
+    }
+
+    #[test]
+    fn graphics_sixel_family() {
+        assert_eq!(probe(&[("WT_SESSION", "abc")]), Some(Graphics::Sixel));
+        assert_eq!(
+            probe(&[("KONSOLE_VERSION", "240400")]),
+            Some(Graphics::Sixel)
+        );
+        assert_eq!(probe(&[("TERM", "foot")]), Some(Graphics::Sixel));
+        assert_eq!(probe(&[("TERM", "mlterm")]), Some(Graphics::Sixel));
+        assert_eq!(probe(&[("TERM", "contour")]), Some(Graphics::Sixel));
+        assert_eq!(
+            probe(&[("ALACRITTY_WINDOW_ID", "1")]),
+            Some(Graphics::Sixel)
+        );
+        assert_eq!(probe(&[("TERM", "eat-truecolor")]), Some(Graphics::Sixel));
+        assert_eq!(probe(&[("TERM", "yaft")]), Some(Graphics::Sixel));
+    }
+
+    #[test]
+    fn graphics_skips_hosts_that_would_print_garbage() {
+        assert_eq!(
+            probe(&[("TERM", "xterm-256color"), ("TERM_PROGRAM", "vscode")]),
+            None
+        );
+        assert_eq!(
+            probe(&[
+                ("TERM", "xterm-256color"),
+                ("TERM_PROGRAM", "Apple_Terminal")
+            ]),
+            None
+        );
+        assert_eq!(
+            probe(&[("TERM", "xterm-256color"), ("VTE_VERSION", "7600")]),
+            None
+        );
+        assert_eq!(probe(&[("TERM", "xterm-256color")]), None);
+        assert_eq!(probe(&[("TERM", "linux")]), None);
+        assert_eq!(probe(&[("TERM", "dumb")]), None);
+        assert_eq!(probe(&[("ZELLIJ", "0"), ("KITTY_WINDOW_ID", "1")]), None);
+        assert_eq!(
+            probe(&[("STY", "123.pts"), ("TERM", "screen-256color")]),
+            None
+        );
+        assert_eq!(probe(&[("NVIM", "1"), ("TERM", "xterm-kitty")]), None);
+        assert_eq!(
+            probe(&[
+                ("TERMINAL_EMULATOR", "JetBrains-JediTerm"),
+                ("TERM", "xterm-256color")
+            ]),
+            None
+        );
+        assert_eq!(probe(&[("MSYSTEM", "MINGW64"), ("TERM", "xterm")]), None);
+    }
+
+    #[test]
+    fn graphics_tmux_still_detects_outer_terminal() {
+        assert_eq!(
+            probe(&[
+                ("TMUX", "/tmp/tmux-1/default,1,0"),
+                ("KITTY_WINDOW_ID", "1")
+            ]),
+            Some(Graphics::Kitty)
+        );
+        assert_eq!(
+            probe(&[("TMUX", "1"), ("ITERM_SESSION_ID", "w0t0p0")]),
+            Some(Graphics::Iterm)
+        );
+        assert_eq!(
+            probe(&[("TMUX", "1"), ("WT_SESSION", "abc")]),
+            Some(Graphics::Sixel)
+        );
+    }
+
+    #[test]
+    fn graphics_override_env() {
+        assert_eq!(
+            probe(&[("ANYR_GRAPHICS", "off"), ("KITTY_WINDOW_ID", "1")]),
+            None
+        );
+        assert_eq!(
+            probe(&[("ANYR_GRAPHICS", "sixel"), ("TERM_PROGRAM", "vscode")]),
+            Some(Graphics::Sixel)
+        );
+        assert_eq!(
+            probe(&[("ANYR_GRAPHICS", "kitty"), ("TERM", "dumb")]),
+            Some(Graphics::Kitty)
+        );
+        assert_eq!(probe(&[("ANYR_GRAPHICS", "iterm")]), Some(Graphics::Iterm));
+    }
+
+    #[test]
+    fn tmux_passthrough_doubles_esc() {
+        let wrapped = tmux_passthrough("\x1b_Gok\x1b\\");
+        assert!(wrapped.starts_with("\x1bPtmux;"), "{wrapped:?}");
+        assert!(wrapped.contains("\x1b\x1b_Gok\x1b\x1b\\"), "{wrapped:?}");
+        assert!(wrapped.ends_with("\x1b\\"), "{wrapped:?}");
     }
 }
