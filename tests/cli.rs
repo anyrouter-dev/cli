@@ -43,6 +43,26 @@ fn help_lists_login_claude_account_and_spawn_targets() {
         !stdout.contains("npx @anyr/cli"),
         "native anyr --help must not tell people to type npx, got:\n{stdout}"
     );
+    for heading in ["Launch", "Account", "Status"] {
+        assert!(
+            stdout.contains(heading),
+            "help should group commands under {heading}, got:\n{stdout}"
+        );
+    }
+    assert!(
+        stdout.contains("Sign in if needed"),
+        "bare-command help should describe login-then-launcher, got:\n{stdout}"
+    );
+}
+
+#[test]
+fn no_args_non_tty_prints_grouped_help() {
+    let (code, stdout, stderr) = run(&[]);
+    assert_eq!(code, 0, "stderr={stderr}");
+    assert!(
+        stdout.contains("Sign in if needed") && stdout.contains("Launch"),
+        "no-args should print grouped help when not a TTY, got:\n{stdout}"
+    );
 }
 
 #[test]
@@ -347,7 +367,7 @@ fn upgrade_check_beta_selects_prerelease() {
     };
     assert_eq!(code, 0, "stderr={stderr}");
     assert!(stdout.contains("channel: beta"), "{stdout}");
-    assert!(stdout.contains("latest: 0.1.2-beta.1"), "{stdout}");
+    assert!(stdout.contains("latest: 0.2.0-beta.1"), "{stdout}");
     assert!(stdout.contains("update available"), "{stdout}");
 }
 

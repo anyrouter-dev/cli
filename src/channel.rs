@@ -296,7 +296,7 @@ mod tests {
     #[test]
     fn select_latest_beta_picks_prerelease() {
         let rel = select_latest(FIXTURE, Channel::Beta).unwrap();
-        assert_eq!(rel.version_str(), "0.1.2-beta.1");
+        assert_eq!(rel.version_str(), "0.2.0-beta.1");
         assert!(rel.prerelease);
     }
 

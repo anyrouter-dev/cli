@@ -1121,13 +1121,29 @@ fn run_keys(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, 
     }
 }
 
+fn stored_api_key(
+    parsed: &ParsedArgs,
+    env: &BTreeMap<String, String>,
+    path: &PathBuf,
+) -> Option<String> {
+    let existing = load_config_if_present(path);
+    let profile = existing
+        .as_ref()
+        .and_then(|c| c.profiles.get(&c.active_profile));
+    resolve_api_key(&parsed.flags, env, profile)
+}
+
 fn run_menu(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, String> {
     let path = config_path(parsed, env);
-    let existing = load_config_if_present(&path);
-    if existing.is_none() && resolve_api_key(&parsed.flags, env, None).is_none() {
-        return run_login(parsed, env);
+    if stored_api_key(parsed, env, &path).is_none() {
+        run_login(parsed, env)?;
+        if stored_api_key(parsed, env, &path).is_none() {
+            return Err(hint(
+                "Not signed in. Run `{bin} login` or pass --key / ANYROUTER_API_KEY.",
+            ));
+        }
     }
-    let cfg = existing.unwrap_or_default();
+    let cfg = load_config_if_present(&path).unwrap_or_default();
     let profile = cfg.profiles.get(&cfg.active_profile);
     let last = cfg
         .last_tool

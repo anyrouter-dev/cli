@@ -78,82 +78,41 @@ pub fn root_help() -> String {
         "\
 AnyRouter CLI v{version} — https://anyrouter.dev
 
-Launch coding agents through the AnyRouter gateway. One key, every provider.
+One key. Every coding agent.
 
-Install:
-  curl -fsSL https://anyrouter.dev/setup.sh | bash
+  {bin}                 Sign in if needed, then open the launcher
+  {bin} claude          Launch Claude Code
+  {bin} login           Sign in (browser, device code, or paste)
 
-Quick start:
-  {bin}                 Open the launcher on your last agent (no args)
-  {bin} chat            Chat with any model in your terminal (streaming)
-  {bin} claude          Open the Claude Code launcher (review, then start)
-  {bin} claude --ok     Start Claude Code now with current settings
-  {bin} codex           Open the Codex launcher
-  {bin} opencode        Open the OpenCode launcher
-  {bin} pi              Open the Pi launcher
-  {bin} cursor          Print the config to paste into Cursor
+Launch
+  claude    Claude Code
+  cc        Alias of claude
+  codex     Codex
+  grok      Grok Build
+  opencode  OpenCode
+  pi        Pi
+  pool      Poolside
+  poolside  Alias of pool
+
+Account
+  login     Sign in and save a key
+  logout    Remove stored keys
+  whoami    Active account (alias: status)
+  account   list | use | add | rename | remove
+  keys      list | create | use | revoke
+
+Status
+  usage     Credits remaining
+  models    Catalog; models use <id> sets the default
+  logs      Recent requests
+  upgrade   Update this CLI (alias: update)
 
 Usage:
   {bin} <command> [options]
   {bin} <command> --help
 
-Commands:
-  menu      Open the interactive TUI (default when no command given)
-  login     Sign in: open browser, paste key, save locally
-  logout    Remove the stored keys for an account
-  whoami    Show the active account + masked credentials (\"status\" works too)
-  audit     Effective config, key storage, redacted env injection, launch history
-  account   Manage multiple accounts (list | use | add | rename | remove)
-  setup     Save a local profile (paste a key or log in)
-  chat      Chat with any model in your terminal (streaming TUI)
-  task      Plan with one model, implement with another (plan → implement)
-  delegate  Hand a task to a coding agent headlessly (--to claude|codex|opencode|pi)
-  relay     Relay: start a local LLM server relay or pair this device
-
-Launch agents (spawn through AnyRouter):
-  claude    Launch Claude Code routed through AnyRouter
-  cc        Alias of \"claude\"
-  codex     Launch Codex routed through AnyRouter
-  grok      Launch Grok Build routed through AnyRouter
-  opencode  Launch opencode routed through AnyRouter
-  pi        Launch Pi routed through AnyRouter
-  pool      Launch Poolside routed through AnyRouter
-  poolside  Alias of \"pool\"
-
-Editors (print config to paste — not launched):
-  cursor    Print the AnyRouter base URL + key for Cursor
-  cline     Print the AnyRouter base URL + key for Cline
-  windsurf  Print the AnyRouter base URL + key for Windsurf
-
-  models    List catalog model ids usable with --model
-  usage     Credit balance, 24h spend + top models, lifetime used (cached on fail)
-  logs      Recent requests: time, status, model, tokens, cost, latency
-  transactions  Credit ledger: top-ups, spend, bonuses (newest first)
-  keys      Manage API keys (list | create | use | revoke; bare = dashboard)
-  config    Inspect, locate, or switch profiles (get | path | use)
-  skills    Sync your Skills & Knowledge Hub locally (sync | pull | list | add | push)
-  prompt    Pull prompts from the AnyRouter hub (get | url | list)
-  byok        Add BYOK keys (byok add <provider> | byok locate <provider>)
-  upgrade   Install the latest anyr from GitHub releases (alias: update)
-  update    Alias of upgrade
-  help      Show this help
-
-Options:
-  --ok, --yes              Skip the launcher and start with current settings
-  --no-check               Skip the pre-launch reachability probe
-  --model auto|<id>        One-session model: \"auto\" picks from the pinned preset
-  --effort <level>         Reasoning effort: minimal | low | medium | high | xhigh | max
-  --hub <slug>             Load a hub: sync ~/.anyrouter/hubs + claude --plugin-dir
-  --preset <slug>          Preset to pin (e.g. coding-stack)
-  --key sk-ar-v1-...       AnyRouter API key (setup / first run)
-  --management-key ak_...  Management key, enables preset validation
-  --profile <name>         Use a named profile (default: \"default\")
-  --base-url <url>         Override the AnyRouter base URL
-  --command-path <path>    Explicit path to the agent executable
-  --config <path>          Override the config file path
-  --plaintext              Store keys in config.yaml instead of the OS keychain
-  --dry-run                Print the child command and env (secrets redacted)
-  -v, --version            Print the CLI version
+Install:
+  curl -fsSL https://anyrouter.dev/setup.sh | bash
 
 Docs: https://anyrouter.dev/docs/cli
 ",
@@ -458,6 +417,10 @@ mod tests {
         let out = root_help();
         assert!(out.contains("ar claude"), "{out}");
         assert!(out.contains("ar <command>"), "{out}");
+        assert!(out.contains("Sign in if needed"), "{out}");
+        for heading in ["Launch", "Account", "Status"] {
+            assert!(out.contains(heading), "missing {heading} in:\n{out}");
+        }
         assert!(!out.contains("npx @anyr/cli"), "{out}");
         assert!(out.contains("https://anyrouter.dev/setup.sh"), "{out}");
 
