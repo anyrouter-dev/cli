@@ -239,6 +239,10 @@ fn spawn_targets_dry_run_inject_gateway_and_redact_key() {
 #[test]
 fn pi_dry_run_uses_anyrouter_provider() {
     let key = "sk-ar-v1-testkey";
+    let dir = std::env::temp_dir().join(format!("anyr-pi-cli-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let cfg = dir.join("config.yaml");
     let (code, stdout, stderr) = {
         let out = anyr()
             .args([
@@ -249,6 +253,8 @@ fn pi_dry_run_uses_anyrouter_provider() {
                 key,
                 "--model",
                 "z-ai/glm-4.7-flash",
+                "--config",
+                cfg.to_str().unwrap(),
             ])
             .env_remove("ANYROUTER_API_KEY")
             .output()
@@ -264,10 +270,18 @@ fn pi_dry_run_uses_anyrouter_provider() {
     assert!(stdout.contains("--provider"), "{stdout}");
     assert!(stdout.contains("anyrouter"), "{stdout}");
     assert!(stdout.contains("--model"), "{stdout}");
-    assert!(stdout.contains("z-ai/glm-4.7-flash"), "{stdout}");
-    assert!(stdout.contains("PI_MODELS_JSON"), "{stdout}");
+    assert!(stdout.contains("anyrouter/z-ai/glm-4.7-flash"), "{stdout}");
+    assert!(stdout.contains("PI_CODING_AGENT_DIR"), "{stdout}");
+    assert!(stdout.contains("ANYROUTER_API_KEY"), "{stdout}");
     assert!(stdout.contains("anyrouter.dev/api/v1"), "{stdout}");
+    assert!(!stdout.contains("$ANYROUTER_API_KEY"), "{stdout}");
     assert!(!stdout.contains(key), "full key leaked:\n{stdout}");
+    let models = std::fs::read_to_string(dir.join("pi").join("models.json")).unwrap();
+    assert!(models.contains("\"apiKey\": \"ANYROUTER_API_KEY\""), "{models}");
+    assert!(models.contains("z-ai/glm-4.7-flash"), "{models}");
+    let settings = std::fs::read_to_string(dir.join("pi").join("settings.json")).unwrap();
+    assert!(settings.contains("\"defaultProvider\": \"anyrouter\""), "{settings}");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-08-20
+
+### Fixed
+
+- `ar pi` writes a Pi agent dir with AnyRouter already in `models.json` and
+  sets `ANYROUTER_API_KEY`. Pi does not read `PI_MODELS_JSON`, so the old wrap
+  launched Pi with no provider and no key.
+
 ## [0.1.5] - 2026-08-20
 
 ### Changed
@@ -53,7 +61,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial native CLI (`anyr`) written in Rust.
 
-[Unreleased]: https://github.com/anyrouter-dev/cli/compare/v0.1.5...HEAD
+[Unreleased]: https://github.com/anyrouter-dev/cli/compare/v0.1.6...HEAD
+[0.1.6]: https://github.com/anyrouter-dev/cli/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/anyrouter-dev/cli/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/anyrouter-dev/cli/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/anyrouter-dev/cli/compare/v0.1.2...v0.1.3

@@ -1,8 +1,11 @@
 use std::collections::{BTreeMap, HashMap};
+use std::path::{Path, PathBuf};
 #[cfg(feature = "native")]
 use std::process::{Command, Stdio};
 
 use crate::config::{Profile, YamlValue, DEFAULT_BASE_URL, DEFAULT_PRESET, DEFAULT_TIMEOUT_MS};
+
+pub const PI_DEFAULT_MODEL: &str = "anthropic/claude-sonnet-4.6";
 
 const REASONING_LEVELS: &[&str] = &["minimal", "low", "medium", "high", "xhigh", "max"];
 const CLAUDE_LEVELS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
@@ -328,27 +331,12 @@ pub fn build_tool_env(input: BuildToolEnvInput<'_>) -> BTreeMap<String, String> 
         env.insert("ANYROUTER_EFFORT".into(), effort.to_string());
     }
     if input.tool_name == "pi" {
-        env.remove(&input.tool.base_url_env);
         let base = tool_base_url(input.profile, input.tool);
-        let model_id = if input.model.is_empty() || input.model == "auto" {
-            "anthropic/claude-sonnet-4.6"
-        } else {
-            input.model
-        };
-        let config = serde_json::json!({
-            "providers": {
-                "anyrouter": {
-                    "baseUrl": base,
-                    "api": "openai-completions",
-                    "apiKey": "$ANYROUTER_API_KEY",
-                    "headers": { "X-AnyRouter-App": "pi" },
-                    "models": [{ "id": model_id }]
-                }
-            }
-        });
+        let model_id = pi_resolved_model(input.model);
         env.insert(
             "PI_MODELS_JSON".into(),
-            serde_json::to_string(&config).unwrap_or_else(|_| "{}".into()),
+            serde_json::to_string(&pi_models_config(&base, model_id))
+                .unwrap_or_else(|_| "{}".into()),
         );
     }
     if input.tool_name == "opencode" {
@@ -430,12 +418,109 @@ pub fn effort_args_for(tool_name: &str, effort: Option<&str>) -> Vec<String> {
     vec![]
 }
 
+pub fn pi_resolved_model(model: &str) -> &str {
+    if model.is_empty() || model == "auto" {
+        PI_DEFAULT_MODEL
+    } else {
+        model
+    }
+}
+
+pub fn pi_models_config(base_url: &str, model_id: &str) -> serde_json::Value {
+    serde_json::json!({
+        "providers": {
+            "anyrouter": {
+                "baseUrl": base_url,
+                "api": "openai-completions",
+                "apiKey": "ANYROUTER_API_KEY",
+                "authHeader": true,
+                "headers": { "X-AnyRouter-App": "pi" },
+                "models": [{ "id": model_id }]
+            }
+        }
+    })
+}
+
+pub fn pi_agent_dir(config_path: &Path) -> PathBuf {
+    config_path
+        .parent()
+        .map(|p| p.join("pi"))
+        .unwrap_or_else(|| PathBuf::from("pi"))
+}
+
+/// Pi reads `models.json` from `PI_CODING_AGENT_DIR` (not `PI_MODELS_JSON`).
+/// Write a wrap dir with AnyRouter already registered and selected.
+pub fn prepare_pi_wrapper(
+    env: &mut BTreeMap<String, String>,
+    config_path: &Path,
+    profile: &Profile,
+    tool: &ToolConfig,
+    model: &str,
+) -> Result<(), String> {
+    let dir = pi_agent_dir(config_path);
+    let model_id = pi_resolved_model(model);
+    let base = tool_base_url(profile, tool);
+    let models = pi_models_config(&base, model_id);
+    write_pi_wrapper_files(&dir, &models, model_id)?;
+    env.insert(
+        "PI_CODING_AGENT_DIR".into(),
+        dir.to_string_lossy().into_owned(),
+    );
+    env.insert(
+        "PI_MODELS_JSON".into(),
+        serde_json::to_string(&models).unwrap_or_else(|_| "{}".into()),
+    );
+    Ok(())
+}
+
+#[cfg(feature = "native")]
+fn write_pi_wrapper_files(
+    dir: &Path,
+    models: &serde_json::Value,
+    model_id: &str,
+) -> Result<(), String> {
+    std::fs::create_dir_all(dir).map_err(|e| {
+        format!(
+            "Could not create Pi wrapper directory {}: {e}",
+            dir.display()
+        )
+    })?;
+    std::fs::write(
+        dir.join("models.json"),
+        serde_json::to_vec_pretty(models).unwrap_or_else(|_| b"{}".to_vec()),
+    )
+    .map_err(|e| format!("Could not write Pi models.json: {e}"))?;
+    let settings = serde_json::json!({
+        "defaultProvider": "anyrouter",
+        "defaultModel": model_id,
+    });
+    std::fs::write(
+        dir.join("settings.json"),
+        serde_json::to_vec_pretty(&settings).unwrap_or_else(|_| b"{}".to_vec()),
+    )
+    .map_err(|e| format!("Could not write Pi settings.json: {e}"))?;
+    Ok(())
+}
+
+#[cfg(not(feature = "native"))]
+fn write_pi_wrapper_files(
+    dir: &Path,
+    models: &serde_json::Value,
+    model_id: &str,
+) -> Result<(), String> {
+    let _ = (dir, models, model_id);
+    Ok(())
+}
+
 pub fn model_args_for(tool_name: &str, model: &str, model_mode: &str) -> Vec<String> {
+    if tool_name == "pi" {
+        let id = pi_resolved_model(model);
+        // Pi strips a matching `--provider` prefix from `--model`. Prefix so
+        // ids like `anyrouter/free` survive as the AnyRouter model id.
+        return vec!["--model".into(), format!("anyrouter/{id}")];
+    }
     if model.is_empty() || model == "auto" || model_mode == "auto" {
         return vec![];
-    }
-    if tool_name == "pi" {
-        return vec!["--model".into(), model.to_string()];
     }
     if tool_name != "codex" {
         return vec![];
@@ -657,7 +742,8 @@ mod tests {
         let json = env.get("PI_MODELS_JSON").expect("PI_MODELS_JSON");
         assert!(json.contains("anyrouter.dev/api/v1"), "{json}");
         assert!(json.contains("z-ai/glm-4.7-flash"), "{json}");
-        assert!(json.contains("$ANYROUTER_API_KEY"), "{json}");
+        assert!(json.contains("\"apiKey\":\"ANYROUTER_API_KEY\""), "{json}");
+        assert!(!json.contains("$ANYROUTER_API_KEY"), "{json}");
         assert!(!json.contains("sk-ar-v1-secret"), "{json}");
         assert_eq!(
             provider_args_for("pi", &profile()),
@@ -665,8 +751,54 @@ mod tests {
         );
         assert_eq!(
             model_args_for("pi", "z-ai/glm-4.7-flash", "concrete"),
-            vec!["--model".to_string(), "z-ai/glm-4.7-flash".to_string()]
+            vec![
+                "--model".to_string(),
+                "anyrouter/z-ai/glm-4.7-flash".to_string()
+            ]
         );
+        assert_eq!(
+            model_args_for("pi", "anyrouter/free", "concrete"),
+            vec![
+                "--model".to_string(),
+                "anyrouter/anyrouter/free".to_string()
+            ]
+        );
+        assert_eq!(
+            model_args_for("pi", "auto", "auto"),
+            vec![
+                "--model".to_string(),
+                format!("anyrouter/{PI_DEFAULT_MODEL}")
+            ]
+        );
+    }
+
+    #[test]
+    fn prepare_pi_wrapper_writes_models_json() {
+        let dir = std::env::temp_dir().join(format!("anyr-pi-wrap-{}", std::process::id()));
+        let cfg = dir.join("config.yaml");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let tool = builtin("pi").unwrap();
+        let mut env = BTreeMap::new();
+        prepare_pi_wrapper(&mut env, &cfg, &profile(), &tool, "anyrouter/free").unwrap();
+        let agent = dir.join("pi");
+        let agent_s = agent.to_string_lossy().into_owned();
+        assert_eq!(
+            env.get("PI_CODING_AGENT_DIR").map(String::as_str),
+            Some(agent_s.as_str())
+        );
+        let models = std::fs::read_to_string(agent.join("models.json")).unwrap();
+        assert!(models.contains("ANYROUTER_API_KEY"), "{models}");
+        assert!(!models.contains("$ANYROUTER_API_KEY"), "{models}");
+        assert!(models.contains("anyrouter/free"), "{models}");
+        assert!(models.contains("anyrouter.dev/api/v1"), "{models}");
+        let settings = std::fs::read_to_string(agent.join("settings.json")).unwrap();
+        assert!(
+            settings.contains("\"defaultProvider\": \"anyrouter\""),
+            "{settings}"
+        );
+        assert!(settings.contains("anyrouter/free"), "{settings}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -18,8 +18,8 @@ use crate::key::{
 use crate::parse::{get_string_flag, parse_cli_args, FlagValue, ParsedArgs};
 use crate::spawn::{
     build_tool_env, canonical_tool, default_profile_for_env, effort_args_for, env_command_path,
-    model_args_for, normalize_effort, provider_args_for, render_dry_run, resolve_tool, spawn_child,
-    BuildToolEnvInput,
+    model_args_for, normalize_effort, prepare_pi_wrapper, provider_args_for, render_dry_run,
+    resolve_tool, spawn_child, BuildToolEnvInput,
 };
 use crate::term;
 use crate::VERSION;
@@ -928,7 +928,7 @@ fn run_launch(
         .unwrap_or_else(|| profile.default_model().to_string());
     let effort = normalize_effort(get_string_flag(&parsed.flags, "effort").as_deref())?;
     let model_mode = if model == "auto" { "auto" } else { "concrete" };
-    let env_map = build_tool_env(BuildToolEnvInput {
+    let mut env_map = build_tool_env(BuildToolEnvInput {
         tool_name,
         tool: &tool,
         profile: &profile,
@@ -938,6 +938,9 @@ fn run_launch(
         context_window: None,
         model_map: None,
     });
+    if tool_name == "pi" {
+        prepare_pi_wrapper(&mut env_map, &path, &profile, &tool, &model)?;
+    }
     let mut args = Vec::new();
     args.extend(effort_args_for(tool_name, effort.as_deref()));
     args.extend(provider_args_for(tool_name, &profile));
