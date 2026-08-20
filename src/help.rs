@@ -14,7 +14,10 @@ Add --ok to skip the launcher and start with current settings.
 Options:
   --ok, --yes           Skip the launcher and start with current settings
   --no-check            Skip the pre-launch reachability probe
-  --model auto|<id>     Model for this session — \"auto\" picks from the preset
+  --model auto|<id>     Session model. \"auto\" is anyrouter/auto (smart pick)
+  --haiku <id>          Claude /model haiku and subagents
+  --sonnet <id>         Claude /model sonnet
+  --opus <id>           Claude /model opus
   --effort <level>      Reasoning effort: minimal | low | medium | high | xhigh | max
   --hub <slug>          Load a hub: sync ~/.anyrouter/hubs + claude --plugin-dir
   --profile <name>      Use a named profile
@@ -299,13 +302,18 @@ const MODELS: &str = "\
 Usage:
   {bin} models [options]
   {bin} models use <id>
+  {bin} models use --haiku|--sonnet|--opus <id>
   {bin} models --pick
 
-Lists every model id usable with --model. `use` / `--pick` persist default_model.
+Lists every model id usable with --model. `use` / `--pick` persist the session
+default, or Claude Code's opus / sonnet / haiku aliases.
 
 Options:
   --json            Print as JSON
-  --pick            Interactive picker (TTY)
+  --pick            Interactive picker (TTY) — default / haiku / sonnet / opus
+  --haiku <id>      Persist Claude haiku alias
+  --sonnet <id>     Persist Claude sonnet alias
+  --opus <id>       Persist Claude opus alias
   --key sk-ar-v1-…  Optional inference key
 ";
 
@@ -319,7 +327,7 @@ USAGE
   {bin} config use <account>   Switch the active account
 
 On a TTY, `{bin} config` loops until you pick Done: switch key, account,
-model, view credits, sign in, or log out.
+model (default / haiku / sonnet / opus), view credits, sign in, or log out.
 ";
 
 const CHAT: &str = "\

@@ -304,7 +304,7 @@ pub struct BuildToolEnvInput<'a> {
 }
 
 pub fn build_tool_env(input: BuildToolEnvInput<'_>) -> BTreeMap<String, String> {
-    let model_mode = if input.model.is_empty() || input.model == "auto" {
+    let model_mode = if is_auto_model(input.model) {
         "auto"
     } else {
         "concrete"
@@ -366,6 +366,10 @@ pub fn build_tool_env(input: BuildToolEnvInput<'_>) -> BTreeMap<String, String> 
     }
     if input.tool_name == "claude" {
         env.insert(
+            "ANTHROPIC_MODEL".into(),
+            display_model_id(input.model).to_string(),
+        );
+        env.insert(
             "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY".into(),
             if input.tool.enable_gateway_model_discovery {
                 "1"
@@ -374,29 +378,24 @@ pub fn build_tool_env(input: BuildToolEnvInput<'_>) -> BTreeMap<String, String> 
             }
             .into(),
         );
-        if model_mode == "concrete" && input.model != "auto" {
-            for (k, fallback) in [
-                ("ANTHROPIC_DEFAULT_HAIKU_MODEL", input.model),
-                ("ANTHROPIC_DEFAULT_SONNET_MODEL", input.model),
-                ("ANTHROPIC_DEFAULT_OPUS_MODEL", input.model),
-                ("CLAUDE_CODE_SUBAGENT_MODEL", input.model),
-            ] {
-                env.insert(k.into(), fallback.into());
-            }
-        } else {
-            env.insert(
-                "ANTHROPIC_DEFAULT_HAIKU_MODEL".into(),
-                "anthropic/claude-haiku-4.5".into(),
-            );
-            env.insert(
-                "ANTHROPIC_DEFAULT_SONNET_MODEL".into(),
-                "anthropic/claude-sonnet-4.6".into(),
-            );
-            env.insert(
-                "ANTHROPIC_DEFAULT_OPUS_MODEL".into(),
-                "anthropic/claude-opus-4.6".into(),
-            );
-        }
+        // Keep opus/sonnet/haiku independent so Claude Code's /model picker
+        // lists all three instead of collapsing onto the session model.
+        env.insert(
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL".into(),
+            input.profile.claude_haiku().to_string(),
+        );
+        env.insert(
+            "ANTHROPIC_DEFAULT_SONNET_MODEL".into(),
+            input.profile.claude_sonnet().to_string(),
+        );
+        env.insert(
+            "ANTHROPIC_DEFAULT_OPUS_MODEL".into(),
+            input.profile.claude_opus().to_string(),
+        );
+        env.insert(
+            "CLAUDE_CODE_SUBAGENT_MODEL".into(),
+            input.profile.claude_haiku().to_string(),
+        );
         if let Some(effort) = harness_effort("claude", input.effort) {
             if let Some((_, tokens)) = CLAUDE_EFFORT_TOKENS.iter().find(|(k, _)| *k == effort) {
                 env.insert("MAX_THINKING_TOKENS".into(), tokens.to_string());
@@ -416,6 +415,19 @@ pub fn effort_args_for(tool_name: &str, effort: Option<&str>) -> Vec<String> {
         return vec!["-c".into(), format!("model_reasoning_effort=\"{mapped}\"")];
     }
     vec![]
+}
+
+pub fn is_auto_model(model: &str) -> bool {
+    let value = model.trim();
+    value.is_empty() || value == "auto" || value == "anyrouter/auto"
+}
+
+pub fn display_model_id(model: &str) -> &str {
+    if is_auto_model(model) {
+        "anyrouter/auto"
+    } else {
+        model
+    }
 }
 
 pub fn pi_resolved_model(model: &str) -> &str {
@@ -668,6 +680,90 @@ mod tests {
         assert_eq!(
             env.get("ANTHROPIC_AUTH_TOKEN").map(String::as_str),
             Some("sk-ar-v1-secret")
+        );
+        assert_eq!(
+            env.get("ANTHROPIC_MODEL").map(String::as_str),
+            Some("anyrouter/auto")
+        );
+        assert_eq!(
+            env.get("ANTHROPIC_DEFAULT_HAIKU_MODEL").map(String::as_str),
+            Some("anthropic/claude-haiku-4.5")
+        );
+        assert_eq!(
+            env.get("ANTHROPIC_DEFAULT_SONNET_MODEL")
+                .map(String::as_str),
+            Some("anthropic/claude-sonnet-4.6")
+        );
+        assert_eq!(
+            env.get("ANTHROPIC_DEFAULT_OPUS_MODEL").map(String::as_str),
+            Some("anthropic/claude-opus-4.6")
+        );
+    }
+
+    #[test]
+    fn claude_pinned_model_does_not_collapse_aliases() {
+        let tool = builtin("claude").unwrap();
+        let env = build_tool_env(BuildToolEnvInput {
+            tool_name: "claude",
+            tool: &tool,
+            profile: &profile(),
+            api_key: "sk-ar-v1-secret",
+            model: "anyrouter/free",
+            effort: None,
+            context_window: None,
+            model_map: None,
+        });
+        assert_eq!(
+            env.get("ANTHROPIC_MODEL").map(String::as_str),
+            Some("anyrouter/free")
+        );
+        assert_eq!(
+            env.get("ANTHROPIC_DEFAULT_SONNET_MODEL")
+                .map(String::as_str),
+            Some("anthropic/claude-sonnet-4.6")
+        );
+        assert_ne!(
+            env.get("ANTHROPIC_DEFAULT_HAIKU_MODEL").map(String::as_str),
+            Some("anyrouter/free")
+        );
+        assert_ne!(
+            env.get("ANTHROPIC_DEFAULT_OPUS_MODEL").map(String::as_str),
+            Some("anyrouter/free")
+        );
+    }
+
+    #[test]
+    fn claude_uses_profile_alias_overrides() {
+        let tool = builtin("claude").unwrap();
+        let mut p = profile();
+        p.claude_haiku = Some("z-ai/glm-4.7-flash".into());
+        p.claude_sonnet = Some("anthropic/claude-sonnet-4.6".into());
+        p.claude_opus = Some("anthropic/claude-opus-4.6".into());
+        let env = build_tool_env(BuildToolEnvInput {
+            tool_name: "claude",
+            tool: &tool,
+            profile: &p,
+            api_key: "sk-ar-v1-secret",
+            model: "anyrouter/auto",
+            effort: None,
+            context_window: None,
+            model_map: None,
+        });
+        assert_eq!(
+            env.get("ANTHROPIC_MODEL").map(String::as_str),
+            Some("anyrouter/auto")
+        );
+        assert_eq!(
+            env.get("ANTHROPIC_DEFAULT_HAIKU_MODEL").map(String::as_str),
+            Some("z-ai/glm-4.7-flash")
+        );
+        assert_eq!(
+            env.get("CLAUDE_CODE_SUBAGENT_MODEL").map(String::as_str),
+            Some("z-ai/glm-4.7-flash")
+        );
+        assert_eq!(
+            env.get("ANYROUTER_MODEL_MODE").map(String::as_str),
+            Some("auto")
         );
     }
 

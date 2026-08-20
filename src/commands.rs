@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use crate::auth::acquire_api_key;
 use crate::config::{
     create_default_profile, resolve_config_path, set_active_profile, upsert_profile,
-    valid_account_name, write_config, DefaultProfileInput, DEFAULT_PROFILE,
+    valid_account_name, write_config, DefaultProfileInput, Profile, DEFAULT_PROFILE,
 };
 use crate::help::{command_help, resolve_bin, root_help, set_invoked_bin};
 use crate::http::{
@@ -17,9 +17,9 @@ use crate::key::{
 };
 use crate::parse::{get_string_flag, parse_cli_args, FlagValue, ParsedArgs};
 use crate::spawn::{
-    build_tool_env, canonical_tool, default_profile_for_env, effort_args_for, env_command_path,
-    model_args_for, normalize_effort, prepare_pi_wrapper, provider_args_for, render_dry_run,
-    resolve_tool, spawn_child, BuildToolEnvInput,
+    build_tool_env, canonical_tool, default_profile_for_env, display_model_id, effort_args_for,
+    env_command_path, is_auto_model, model_args_for, normalize_effort, prepare_pi_wrapper,
+    provider_args_for, render_dry_run, resolve_tool, spawn_child, BuildToolEnvInput,
 };
 use crate::term;
 use crate::VERSION;
@@ -27,6 +27,9 @@ use crate::VERSION;
 const LAUNCH_FLAGS: &[&str] = &[
     "model",
     "effort",
+    "haiku",
+    "sonnet",
+    "opus",
     "profile",
     "preset",
     "key",
@@ -113,7 +116,9 @@ fn allowed_flags(command: &str) -> Option<&'static [&'static str]> {
             "yes",
             "management-key",
         ],
-        "models" => &["profile", "config", "json", "key", "base-url", "pick"],
+        "models" => &[
+            "profile", "config", "json", "key", "base-url", "pick", "haiku", "sonnet", "opus",
+        ],
         "usage" => &["profile", "base-url", "config", "json", "key", "no-detail"],
         "whoami" => &["profile", "config", "json"],
         "config" => &["config", "json", "key", "base-url", "profile"],
@@ -500,11 +505,16 @@ fn persist_login(
     if let Some(tool) = stored.and_then(|p| p.default_tool.clone()) {
         profile.default_tool = Some(tool);
     }
+    if let Some(prev) = stored {
+        profile.claude_haiku = prev.claude_haiku.clone();
+        profile.claude_sonnet = prev.claude_sonnet.clone();
+        profile.claude_opus = prev.claude_opus.clone();
+    }
     let mut cfg = upsert_profile(existing.unwrap_or_default(), &name, profile);
     cfg.active_profile = name.clone();
     if !parsed.flag_true("yes") && term::is_interactive() {
         if let Ok(models) = fetch_models(&base, Some(key)) {
-            if let Ok(id) = pick_model(&models, None) {
+            if let Ok(id) = pick_model(&models, None, "Default model") {
                 if let Some(p) = cfg.profiles.get_mut(&name) {
                     p.default_model = Some(id);
                 }
@@ -558,31 +568,138 @@ fn run_login(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32,
     )
 }
 
+fn model_pick_label(id: &str) -> String {
+    if is_auto_model(id) {
+        "anyrouter/auto  ·  smart pick".into()
+    } else {
+        id.to_string()
+    }
+}
+
+fn pick_ids(models: &[crate::http::CatalogModel]) -> Vec<String> {
+    let mut ids = Vec::new();
+    ids.push("anyrouter/auto".into());
+    for model in models {
+        let id = display_model_id(&model.id).to_string();
+        if !ids.iter().any(|existing| existing == &id) {
+            ids.push(id);
+        }
+    }
+    ids
+}
+
 fn pick_model(
     models: &[crate::http::CatalogModel],
     current: Option<&str>,
+    title: &str,
 ) -> Result<String, String> {
-    if models.is_empty() {
+    let ids = pick_ids(models);
+    if ids.is_empty() {
         return Err("No models in catalog.".into());
     }
-    let current_idx = current.and_then(|id| models.iter().position(|m| m.id == id));
+    let current_id = current.map(display_model_id);
     let query = term::prompt("Filter models (Enter lists top 30): ")?;
-    let ids: Vec<String> = models.iter().map(|m| m.id.clone()).collect();
     let ranked = term::rank_ids(&query, &ids);
     let shown: Vec<String> = ranked.into_iter().take(30).collect();
     if shown.is_empty() {
         return Err("No models matched.".into());
     }
-    let shown_idx = current
-        .and_then(|id| shown.iter().position(|s| s == id))
-        .or(current_idx.filter(|_| query.is_empty()));
-    let idx = term::pick("Default model", &shown, shown_idx)?;
+    let labels: Vec<String> = shown.iter().map(|id| model_pick_label(id)).collect();
+    let shown_idx = current_id.and_then(|id| shown.iter().position(|s| s == id));
+    let idx = term::pick(title, &labels, shown_idx)?;
     Ok(shown[idx].clone())
+}
+
+fn set_model_slot(profile: &mut Profile, slot: &str, id: String) {
+    let id = display_model_id(&id).to_string();
+    match slot {
+        "haiku" => profile.claude_haiku = Some(id),
+        "sonnet" => profile.claude_sonnet = Some(id),
+        "opus" => profile.claude_opus = Some(id),
+        _ => profile.default_model = Some(id),
+    }
+}
+
+fn pick_claude_slot(profile: &Profile) -> Result<&'static str, String> {
+    let items = vec![
+        format!("Default  ·  {}", display_model_id(profile.default_model())),
+        format!("Haiku    ·  {}", profile.claude_haiku()),
+        format!("Sonnet   ·  {}", profile.claude_sonnet()),
+        format!("Opus     ·  {}", profile.claude_opus()),
+    ];
+    Ok(match term::pick("Which Claude model?", &items, Some(0))? {
+        1 => "haiku",
+        2 => "sonnet",
+        3 => "opus",
+        _ => "default",
+    })
+}
+
+fn slot_title(slot: &str) -> &'static str {
+    match slot {
+        "haiku" => "Haiku model",
+        "sonnet" => "Sonnet model",
+        "opus" => "Opus model",
+        _ => "Default model",
+    }
+}
+
+fn slot_current<'a>(profile: &'a Profile, slot: &str) -> &'a str {
+    match slot {
+        "haiku" => profile.claude_haiku(),
+        "sonnet" => profile.claude_sonnet(),
+        "opus" => profile.claude_opus(),
+        _ => profile.default_model(),
+    }
+}
+
+fn apply_claude_alias_flags(profile: &mut Profile, parsed: &ParsedArgs) -> bool {
+    let mut changed = false;
+    if let Some(v) = get_string_flag(&parsed.flags, "haiku") {
+        profile.claude_haiku = Some(v);
+        changed = true;
+    }
+    if let Some(v) = get_string_flag(&parsed.flags, "sonnet") {
+        profile.claude_sonnet = Some(v);
+        changed = true;
+    }
+    if let Some(v) = get_string_flag(&parsed.flags, "opus") {
+        profile.claude_opus = Some(v);
+        changed = true;
+    }
+    changed
+}
+
+fn known_model_id(models: &[crate::http::CatalogModel], id: &str) -> bool {
+    is_auto_model(id) || models.iter().any(|m| m.id == id)
+}
+
+fn save_model_slot(
+    existing: Option<crate::config::Config>,
+    path: &PathBuf,
+    slot: &str,
+    id: &str,
+) -> Result<i32, String> {
+    let mut cfg = existing.ok_or_else(no_key_error)?;
+    let name = cfg.active_profile.clone();
+    let Some(p) = cfg.profiles.get_mut(&name) else {
+        return Err(no_key_error());
+    };
+    set_model_slot(p, slot, id.to_string());
+    write_config(&cfg, path)?;
+    let label = match slot {
+        "haiku" => "haiku",
+        "sonnet" => "sonnet",
+        "opus" => "opus",
+        _ => "default model",
+    };
+    println!("{}  {}  {}", term::ok("Saved"), label, term::model_id(id));
+    Ok(0)
 }
 
 fn run_models(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, String> {
     let path = config_path(parsed, env);
-    let mut existing = load_config_if_present(&path);
+    let existing = load_config_if_present(&path);
     let profile = existing
         .as_ref()
         .and_then(|c| c.profiles.get(&c.active_profile));
@@ -590,62 +707,81 @@ fn run_models(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32
     let base = resolve_base_url(&parsed.flags, profile);
     let models = fetch_models(&base, key.as_deref())?;
     let sub = parsed.passthrough.first().map(String::as_str);
-    if sub == Some("use") {
-        let id = parsed
-            .passthrough
-            .get(1)
-            .cloned()
-            .filter(|s| !s.is_empty())
-            .or_else(|| {
-                if term::is_interactive() {
-                    pick_model(&models, profile.and_then(|p| p.default_model.as_deref())).ok()
-                } else {
-                    None
-                }
-            })
-            .ok_or_else(|| hint("Usage: {bin} models use <id>"))?;
-        if !models.iter().any(|m| m.id == id) && id != "auto" {
-            return Err(hint(&format!(
-                "Unknown model \"{id}\". Run: {{bin}} models"
-            )));
-        }
-        let mut cfg = existing.unwrap_or_default();
-        let name = cfg.active_profile.clone();
-        if let Some(p) = cfg.profiles.get_mut(&name) {
-            p.default_model = Some(id.clone());
-        } else {
-            return Err(no_key_error());
-        }
-        write_config(&cfg, &path)?;
-        println!(
-            "{}  default model  {}",
-            term::ok("Saved"),
-            term::model_id(&id)
-        );
-        return Ok(0);
-    }
-    if parsed.flag_true("pick") && term::is_interactive() {
-        let id = pick_model(&models, profile.and_then(|p| p.default_model.as_deref()))?;
-        if let Some(cfg) = existing.as_mut() {
-            let name = cfg.active_profile.clone();
-            if let Some(p) = cfg.profiles.get_mut(&name) {
-                p.default_model = Some(id.clone());
+    let flag_slots = [
+        ("haiku", get_string_flag(&parsed.flags, "haiku")),
+        ("sonnet", get_string_flag(&parsed.flags, "sonnet")),
+        ("opus", get_string_flag(&parsed.flags, "opus")),
+    ];
+    let has_alias_flags = flag_slots.iter().any(|(_, v)| v.is_some());
+    if sub == Some("use") || has_alias_flags {
+        let mut assigned = false;
+        for (slot, value) in &flag_slots {
+            let Some(id) = value.clone() else {
+                continue;
+            };
+            if !known_model_id(&models, &id) {
+                return Err(hint(&format!(
+                    "Unknown model \"{id}\". Run: {{bin}} models"
+                )));
             }
-            write_config(cfg, &path)?;
-            println!(
-                "{}  default model  {}",
-                term::ok("Saved"),
-                term::model_id(&id)
-            );
+            save_model_slot(existing.clone(), &path, slot, &display_model_id(&id))?;
+            assigned = true;
+        }
+        let positional = parsed.passthrough.get(1).cloned().filter(|s| !s.is_empty());
+        if let Some(id) = positional {
+            if !known_model_id(&models, &id) {
+                return Err(hint(&format!(
+                    "Unknown model \"{id}\". Run: {{bin}} models"
+                )));
+            }
+            save_model_slot(
+                load_config_if_present(&path),
+                &path,
+                "default",
+                display_model_id(&id),
+            )?;
+            assigned = true;
+        }
+        if assigned {
             return Ok(0);
         }
-        println!("{}", term::model_id(&id));
-        return Ok(0);
+        let id = if term::is_interactive() {
+            let slot = profile
+                .map(pick_claude_slot)
+                .transpose()?
+                .unwrap_or("default");
+            let current = profile.map(|p| slot_current(p, slot).to_string());
+            pick_model(&models, current.as_deref(), slot_title(slot)).map(|id| (slot, id))
+        } else {
+            Err(hint(
+                "Usage: {bin} models use <id>   or   {bin} models use --haiku|--sonnet|--opus <id>",
+            ))
+        }?;
+        if !known_model_id(&models, &id.1) {
+            return Err(hint(&format!(
+                "Unknown model \"{}\". Run: {{bin}} models",
+                id.1
+            )));
+        }
+        return save_model_slot(
+            load_config_if_present(&path),
+            &path,
+            id.0,
+            display_model_id(&id.1),
+        );
+    }
+    if parsed.flag_true("pick") && term::is_interactive() {
+        let slot = profile
+            .map(pick_claude_slot)
+            .transpose()?
+            .unwrap_or("default");
+        let current = profile.map(|p| slot_current(p, slot).to_string());
+        let id = pick_model(&models, current.as_deref(), slot_title(slot))?;
+        return save_model_slot(existing, &path, slot, display_model_id(&id));
     }
     let pinned = profile
-        .and_then(|p| p.default_model.clone())
+        .map(|p| display_model_id(p.default_model()).to_string())
         .into_iter()
-        .filter(|s| s != "auto")
         .collect::<Vec<_>>();
     let preset = profile.map(|p| p.pinned_preset().to_string());
     let (stdout, _) = format_models_list(
@@ -693,7 +829,10 @@ fn run_whoami(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32
             "config": path.display().to_string(),
             "api_key": mask_api_key(key.as_deref()),
             "management_key": if profile.management_key.as_ref().is_some_and(|s| !s.is_empty()) { "present" } else { "none" },
-            "default_model": profile.default_model(),
+            "default_model": display_model_id(profile.default_model()),
+            "claude_haiku": profile.claude_haiku(),
+            "claude_sonnet": profile.claude_sonnet(),
+            "claude_opus": profile.claude_opus(),
             "default_tool": profile.default_tool,
             "base_url": profile.base_url(),
         });
@@ -726,7 +865,22 @@ fn run_whoami(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32
     println!(
         "{}  {}",
         term::dim("default_model  "),
-        term::model_id(profile.default_model())
+        term::model_id(display_model_id(profile.default_model()))
+    );
+    println!(
+        "{}  {}",
+        term::dim("claude_haiku   "),
+        term::model_id(profile.claude_haiku())
+    );
+    println!(
+        "{}  {}",
+        term::dim("claude_sonnet  "),
+        term::model_id(profile.claude_sonnet())
+    );
+    println!(
+        "{}  {}",
+        term::dim("claude_opus    "),
+        term::model_id(profile.claude_opus())
     );
     if let Some(tool) = &profile.default_tool {
         println!(
@@ -761,8 +915,27 @@ fn print_config_status(
     println!(
         "{}  {}",
         term::dim("model   "),
-        term::model_id(profile.map(|p| p.default_model()).unwrap_or("auto"))
+        term::model_id(display_model_id(
+            profile.map(|p| p.default_model()).unwrap_or("auto"),
+        ))
     );
+    if let Some(p) = profile {
+        println!(
+            "{}  {}",
+            term::dim("haiku   "),
+            term::model_id(p.claude_haiku())
+        );
+        println!(
+            "{}  {}",
+            term::dim("sonnet  "),
+            term::model_id(p.claude_sonnet())
+        );
+        println!(
+            "{}  {}",
+            term::dim("opus    "),
+            term::model_id(p.claude_opus())
+        );
+    }
     if let Some(tool) = profile.and_then(|p| p.default_tool.as_deref()) {
         println!(
             "{}  {}",
@@ -857,7 +1030,10 @@ fn run_config(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32
                     "path": path.display().to_string(),
                     "active_profile": cfg.active_profile,
                     "api_key": mask_api_key(profile.and_then(|p| p.api_key.as_deref())),
-                    "default_model": profile.map(|p| p.default_model()),
+                    "default_model": profile.map(|p| display_model_id(p.default_model())),
+                    "claude_haiku": profile.map(|p| p.claude_haiku()),
+                    "claude_sonnet": profile.map(|p| p.claude_sonnet()),
+                    "claude_opus": profile.map(|p| p.claude_opus()),
                     "accounts": cfg.profiles.keys().cloned().collect::<Vec<_>>(),
                 });
                 println!(
@@ -923,11 +1099,16 @@ fn run_launch(
         .cloned()
         .unwrap_or_else(|| default_profile_for_env(Some(&base), Some(&key)));
     profile.base_url = Some(base);
+    let aliases_changed = apply_claude_alias_flags(&mut profile, parsed);
     let tool = resolve_tool(existing.as_ref(), tool_name)?;
     let model = get_string_flag(&parsed.flags, "model")
         .unwrap_or_else(|| profile.default_model().to_string());
     let effort = normalize_effort(get_string_flag(&parsed.flags, "effort").as_deref())?;
-    let model_mode = if model == "auto" { "auto" } else { "concrete" };
+    let model_mode = if is_auto_model(&model) {
+        "auto"
+    } else {
+        "concrete"
+    };
     let mut env_map = build_tool_env(BuildToolEnvInput {
         tool_name,
         tool: &tool,
@@ -956,6 +1137,13 @@ fn run_launch(
     let resolved = ensure_tool_installed(tool_name, &command, parsed.flag_true("install"))?;
     if let Some(mut cfg) = existing.clone() {
         cfg.last_tool = Some(tool_name.to_string());
+        if aliases_changed {
+            if let Some(p) = cfg.profiles.get_mut(&cfg.active_profile) {
+                p.claude_haiku = profile.claude_haiku.clone();
+                p.claude_sonnet = profile.claude_sonnet.clone();
+                p.claude_opus = profile.claude_opus.clone();
+            }
+        }
         let _ = write_config(&cfg, &path);
     }
     Ok(spawn_child(&resolved, &args, &env_map))
@@ -1039,7 +1227,7 @@ fn run_account(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i3
                 println!(
                     "{marker} {}  {}  {}",
                     term::accent(name),
-                    term::model_id(profile.default_model()),
+                    term::model_id(display_model_id(profile.default_model())),
                     mask_api_key(profile.api_key.as_deref())
                 );
             }
@@ -1403,7 +1591,9 @@ fn run_menu(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, 
     println!(
         "{}  {}",
         term::dim("model  "),
-        term::model_id(profile.map(|p| p.default_model()).unwrap_or("auto"))
+        term::model_id(display_model_id(
+            profile.map(|p| p.default_model()).unwrap_or("auto"),
+        ))
     );
     println!();
     let items = vec![

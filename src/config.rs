@@ -8,6 +8,9 @@ pub const DEFAULT_BASE_URL: &str = "https://anyrouter.dev/api";
 pub const DEFAULT_TIMEOUT_MS: i64 = 3_000_000;
 pub const DEFAULT_PROFILE: &str = "default";
 pub const DEFAULT_PRESET: &str = "@preset/coding-stack";
+pub const DEFAULT_CLAUDE_HAIKU: &str = "anthropic/claude-haiku-4.5";
+pub const DEFAULT_CLAUDE_SONNET: &str = "anthropic/claude-sonnet-4.6";
+pub const DEFAULT_CLAUDE_OPUS: &str = "anthropic/claude-opus-4.6";
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum YamlValue {
@@ -52,6 +55,9 @@ pub struct Profile {
     pub pinned_preset: Option<String>,
     pub default_model: Option<String>,
     pub default_tool: Option<String>,
+    pub claude_haiku: Option<String>,
+    pub claude_sonnet: Option<String>,
+    pub claude_opus: Option<String>,
     pub timeout_ms: Option<i64>,
     pub extra: BTreeMap<String, YamlValue>,
 }
@@ -69,9 +75,25 @@ impl Profile {
         self.default_model.as_deref().unwrap_or("auto")
     }
 
+    pub fn claude_haiku(&self) -> &str {
+        nonempty(&self.claude_haiku).unwrap_or(DEFAULT_CLAUDE_HAIKU)
+    }
+
+    pub fn claude_sonnet(&self) -> &str {
+        nonempty(&self.claude_sonnet).unwrap_or(DEFAULT_CLAUDE_SONNET)
+    }
+
+    pub fn claude_opus(&self) -> &str {
+        nonempty(&self.claude_opus).unwrap_or(DEFAULT_CLAUDE_OPUS)
+    }
+
     pub fn timeout_ms(&self) -> i64 {
         self.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS)
     }
+}
+
+fn nonempty(value: &Option<String>) -> Option<&str> {
+    value.as_deref().map(str::trim).filter(|s| !s.is_empty())
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -304,6 +326,11 @@ fn profile_from_map(map: &BTreeMap<String, YamlValue>) -> Profile {
             "pinned_preset" => p.pinned_preset = Some(normalize_preset(&v.as_string_lossy())),
             "default_model" => p.default_model = Some(v.as_string_lossy()),
             "default_tool" => p.default_tool = Some(v.as_string_lossy()).filter(|s| !s.is_empty()),
+            "claude_haiku" => p.claude_haiku = Some(v.as_string_lossy()).filter(|s| !s.is_empty()),
+            "claude_sonnet" => {
+                p.claude_sonnet = Some(v.as_string_lossy()).filter(|s| !s.is_empty())
+            }
+            "claude_opus" => p.claude_opus = Some(v.as_string_lossy()).filter(|s| !s.is_empty()),
             "timeout_ms" => {
                 p.timeout_ms = match v {
                     YamlValue::Int(n) => Some(*n),
@@ -378,6 +405,15 @@ pub fn serialize_config(config: &Config) -> String {
         }
         if let Some(t) = &profile.default_tool {
             lines.push(format!("    default_tool: {}", yaml_scalar(t)));
+        }
+        if let Some(m) = &profile.claude_haiku {
+            lines.push(format!("    claude_haiku: {}", yaml_scalar(m)));
+        }
+        if let Some(m) = &profile.claude_sonnet {
+            lines.push(format!("    claude_sonnet: {}", yaml_scalar(m)));
+        }
+        if let Some(m) = &profile.claude_opus {
+            lines.push(format!("    claude_opus: {}", yaml_scalar(m)));
         }
         if let Some(t) = profile.timeout_ms {
             lines.push(format!("    timeout_ms: {t}"));
@@ -474,6 +510,29 @@ profiles:
                 .as_deref(),
             Some("ak_mgmt")
         );
+    }
+
+    #[test]
+    fn serialize_keeps_claude_aliases() {
+        let src = "\
+active_profile: default
+profiles:
+  default:
+    api_key: sk-ar-v1-test
+    default_model: anyrouter/auto
+    claude_haiku: z-ai/glm-4.7-flash
+    claude_sonnet: anthropic/claude-sonnet-4.6
+    claude_opus: anthropic/claude-opus-4.6
+";
+        let cfg = parse_config(src);
+        let p = cfg.profiles.get("default").unwrap();
+        assert_eq!(p.claude_haiku(), "z-ai/glm-4.7-flash");
+        assert_eq!(p.claude_sonnet(), "anthropic/claude-sonnet-4.6");
+        assert_eq!(p.claude_opus(), "anthropic/claude-opus-4.6");
+        let again = parse_config(&serialize_config(&cfg));
+        let p2 = again.profiles.get("default").unwrap();
+        assert_eq!(p2.claude_haiku.as_deref(), Some("z-ai/glm-4.7-flash"));
+        assert_eq!(p2.default_model.as_deref(), Some("anyrouter/auto"));
     }
 
     #[test]

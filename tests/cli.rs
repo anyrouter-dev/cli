@@ -277,10 +277,16 @@ fn pi_dry_run_uses_anyrouter_provider() {
     assert!(!stdout.contains("$ANYROUTER_API_KEY"), "{stdout}");
     assert!(!stdout.contains(key), "full key leaked:\n{stdout}");
     let models = std::fs::read_to_string(dir.join("pi").join("models.json")).unwrap();
-    assert!(models.contains("\"apiKey\": \"ANYROUTER_API_KEY\""), "{models}");
+    assert!(
+        models.contains("\"apiKey\": \"ANYROUTER_API_KEY\""),
+        "{models}"
+    );
     assert!(models.contains("z-ai/glm-4.7-flash"), "{models}");
     let settings = std::fs::read_to_string(dir.join("pi").join("settings.json")).unwrap();
-    assert!(settings.contains("\"defaultProvider\": \"anyrouter\""), "{settings}");
+    assert!(
+        settings.contains("\"defaultProvider\": \"anyrouter\""),
+        "{settings}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -289,7 +295,7 @@ fn claude_dry_run_with_key_prints_base_and_redacts_secret() {
     let key = "sk-ar-v1-testkey";
     let (code, stdout, stderr) = {
         let out = anyr()
-            .args(["claude", "--dry-run", "--yes", "--key", key])
+            .args(["claude", "--dry-run", "--yes", "--key", key, "--model", "auto"])
             .env_remove("ANYROUTER_API_KEY")
             .output()
             .expect("dry-run");
@@ -301,7 +307,99 @@ fn claude_dry_run_with_key_prints_base_and_redacts_secret() {
     };
     assert_eq!(code, 0, "stderr={stderr}");
     assert!(stdout.contains("ANTHROPIC_BASE_URL"), "{stdout}");
+    assert!(
+        stdout.contains("ANTHROPIC_MODEL=anyrouter/auto"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("ANTHROPIC_DEFAULT_HAIKU_MODEL=anthropic/claude-haiku-4.5"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("ANTHROPIC_DEFAULT_SONNET_MODEL=anthropic/claude-sonnet-4.6"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("ANTHROPIC_DEFAULT_OPUS_MODEL=anthropic/claude-opus-4.6"),
+        "{stdout}"
+    );
     assert!(!stdout.contains(key), "full key leaked:\n{stdout}");
+}
+
+#[test]
+fn claude_dry_run_pinned_model_keeps_distinct_aliases() {
+    let key = "sk-ar-v1-testkey";
+    let (code, stdout, stderr) = {
+        let out = anyr()
+            .args([
+                "claude",
+                "--dry-run",
+                "--yes",
+                "--key",
+                key,
+                "--model",
+                "anyrouter/free",
+            ])
+            .env_remove("ANYROUTER_API_KEY")
+            .output()
+            .expect("dry-run");
+        (
+            out.status.code().unwrap_or(1),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+    assert_eq!(code, 0, "stderr={stderr}");
+    assert!(
+        stdout.contains("ANTHROPIC_MODEL=anyrouter/free"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("ANTHROPIC_DEFAULT_SONNET_MODEL=anthropic/claude-sonnet-4.6"),
+        "pinned session model must not overwrite sonnet:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("ANTHROPIC_DEFAULT_HAIKU_MODEL=anthropic/claude-haiku-4.5"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("ANTHROPIC_DEFAULT_OPUS_MODEL=anthropic/claude-opus-4.6"),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn claude_dry_run_haiku_flag_overrides_alias() {
+    let key = "sk-ar-v1-testkey";
+    let (code, stdout, stderr) = {
+        let out = anyr()
+            .args([
+                "claude",
+                "--dry-run",
+                "--yes",
+                "--key",
+                key,
+                "--haiku",
+                "z-ai/glm-4.7-flash",
+            ])
+            .env_remove("ANYROUTER_API_KEY")
+            .output()
+            .expect("dry-run");
+        (
+            out.status.code().unwrap_or(1),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+    assert_eq!(code, 0, "stderr={stderr}");
+    assert!(
+        stdout.contains("ANTHROPIC_DEFAULT_HAIKU_MODEL=z-ai/glm-4.7-flash"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("ANTHROPIC_DEFAULT_SONNET_MODEL=anthropic/claude-sonnet-4.6"),
+        "{stdout}"
+    );
 }
 
 #[test]

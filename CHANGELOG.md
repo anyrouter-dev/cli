@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-08-20
+
+### Fixed
+
+- `ar claude` session default is `anyrouter/auto`, not the bare word `auto`.
+  Pinning a model no longer copies it onto opus / sonnet / haiku, so Claude
+  Code's `/model` picker lists all three aliases.
+
+### Added
+
+- Persist Claude aliases: `claude_haiku`, `claude_sonnet`, `claude_opus`.
+  Set them with `ar claude --haiku|--sonnet|--opus`, `ar models use --haiku <id>`,
+  or Switch model in `ar config`.
+
 ## [0.1.6] - 2026-08-20
 
 ### Fixed
@@ -61,7 +75,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial native CLI (`anyr`) written in Rust.
 
-[Unreleased]: https://github.com/anyrouter-dev/cli/compare/v0.1.6...HEAD
+[Unreleased]: https://github.com/anyrouter-dev/cli/compare/v0.1.7...HEAD
+[0.1.7]: https://github.com/anyrouter-dev/cli/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/anyrouter-dev/cli/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/anyrouter-dev/cli/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/anyrouter-dev/cli/compare/v0.1.3...v0.1.4
