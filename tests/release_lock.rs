@@ -171,6 +171,10 @@ fn workflow_files_exist_and_do_not_auto_merge() {
         "platform builds must not be optional"
     );
     assert!(
+        binaries.contains("macos-13"),
+        "stable releases still ship Intel macOS via macos-13"
+    );
+    assert!(
         binaries.contains("bench-report.md"),
         "release notes must include the bench report"
     );
@@ -186,7 +190,6 @@ fn workflow_files_exist_and_do_not_auto_merge() {
     let ci = read(".github/workflows/ci.yml");
     for needle in [
         "macos-latest",
-        "macos-13",
         "ubuntu-latest",
         "ubuntu-24.04-arm",
         "windows-latest",
