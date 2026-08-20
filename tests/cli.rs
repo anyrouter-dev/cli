@@ -29,12 +29,13 @@ fn help_lists_login_claude_account_and_spawn_targets() {
         );
     }
     assert!(
-        stdout.contains("anyrouter.dev/setup.sh")
-            || stdout.contains("github.com/anyrouter-dev/cli")
-            || stdout.contains("raw.githubusercontent.com/anyrouter-dev/cli"),
-        "help must document the public install, got:\n{stdout}"
+        !stdout.contains("setup.sh") && !stdout.contains("Install:"),
+        "help must not tell an already-installed binary how to install, got:\n{stdout}"
     );
-    assert!(stdout.contains("setup.sh"), "{stdout}");
+    assert!(
+        !stdout.contains("anyrouter.dev/docs/cli"),
+        "help must not end with a docs URL, got:\n{stdout}"
+    );
     assert!(
         stdout.contains("anyr claude") || stdout.contains("anyr <command>"),
         "binary --help should name itself anyr, got:\n{stdout}"

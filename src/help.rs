@@ -107,11 +107,6 @@ LAUNCH
   {bin}                 Sign in if needed, then open the launcher
   {bin} auth login      Sign in
   {bin} claude          Launch Claude Code
-
-Install:
-  curl -fsSL https://anyrouter.dev/setup.sh | bash
-
-Docs: https://anyrouter.dev/docs/cli
 ",
         version = VERSION,
         bin = bin
@@ -471,7 +466,9 @@ mod tests {
             assert!(out.contains(heading), "missing {heading} in:\n{out}");
         }
         assert!(!out.contains("npx @anyr/cli"), "{out}");
-        assert!(out.contains("https://anyrouter.dev/setup.sh"), "{out}");
+        assert!(!out.contains("setup.sh"), "{out}");
+        assert!(!out.contains("Install:"), "{out}");
+        assert!(!out.contains("anyrouter.dev/docs/cli"), "{out}");
 
         set_invoked_bin("npx @anyr/cli");
         let npx = root_help();
