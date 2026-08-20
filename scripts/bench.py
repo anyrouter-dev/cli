@@ -48,12 +48,16 @@ def time_cmd(cmd: list[str], n: int = 21) -> dict:
 
 
 def measure(args: argparse.Namespace) -> None:
-    path = Path(args.bin)
+    path = Path(args.bin).expanduser()
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    path = path.resolve()
     if not path.is_file():
         raise SystemExit(f"binary not found: {path}")
+    bin_cmd = str(path)
     size = path.stat().st_size
     version = (
-        subprocess.check_output([str(path), "--version"], text=True).strip()
+        subprocess.check_output([bin_cmd, "--version"], text=True).strip()
         if args.kind == "native"
         else args.version or "wasm"
     )
@@ -68,8 +72,8 @@ def measure(args: argparse.Namespace) -> None:
         "os": args.os or "",
     }
     if args.kind == "native":
-        record["startup_version"] = time_cmd([str(path), "--version"], n=args.iters)
-        record["startup_help"] = time_cmd([str(path), "--help"], n=args.iters)
+        record["startup_version"] = time_cmd([bin_cmd, "--version"], n=args.iters)
+        record["startup_help"] = time_cmd([bin_cmd, "--help"], n=args.iters)
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
