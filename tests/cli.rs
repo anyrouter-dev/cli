@@ -55,8 +55,8 @@ fn help_lists_login_claude_account_and_spawn_targets() {
         "bare-command help should describe login-then-launcher, got:\n{stdout}"
     );
     assert!(
-        stdout.contains("⠻⠟⠿"),
-        "help should render the official dithered AR, got:\n{stdout}"
+        stdout.contains("▀█████████▄"),
+        "help should render the official AR half-block mark, got:\n{stdout}"
     );
 }
 

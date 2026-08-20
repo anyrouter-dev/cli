@@ -476,8 +476,8 @@ mod tests {
         assert!(!out.contains("Install:"), "{out}");
         assert!(!out.contains("anyrouter.dev/docs/cli"), "{out}");
         assert!(
-            out.contains("⠻⠟⠿"),
-            "help should include the official dithered AR, got:\n{out}"
+            out.contains("▀█████████▄"),
+            "help should include the official AR half-block mark, got:\n{out}"
         );
 
         set_invoked_bin("npx @anyr/cli");

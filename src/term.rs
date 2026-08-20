@@ -60,13 +60,15 @@ pub fn model_id(text: &str) -> String {
     paint(TEAL, text)
 }
 
-/// Official AR ligature as Floyd–Steinberg dithered braille (dot version).
-/// Source is `anyrouter-logo-white.png`, not the 32px favicon.
-pub const MARK_LINES: [&str; 4] = [
-    "⠀⠀⠀⣼⣜⠻⠟⠿⢻⣦⡀",
-    "⠀⠀⢀⣾⠟⢻⣧⠀⠀⢀⣽⠇",
-    "⠀⢠⣿⠋⠀⠀⠻⣷⡹⣿⡋⠀",
-    "⣰⡿⠃⠀⠀⠀⠀⠙⣷⣜⢿⣆",
+/// Official AR ligature as half-blocks. Source is `anyrouter-logo-white.png`,
+/// not the 32px favicon. Half-blocks fill the cell so the mark stays readable
+/// in fonts where braille dots collapse into noise.
+pub const MARK_LINES: [&str; 5] = [
+    "        ▄█▄▀█████████▄",
+    "      ▄█████▄       ███",
+    "    ▄███▀  ▀██▄ ▄▄▄███▀",
+    "  ▄███▀      ▀██▄▀███▄",
+    "▄███▀          ▀██▄▀███▄",
 ];
 
 const MARK_PNG: &[u8] = include_bytes!("../assets/mark.png");
@@ -237,11 +239,11 @@ fn emit_graphics_mark() -> bool {
     let seq = match kind {
         Graphics::Kitty => {
             let b64 = base64_encode(MARK_PNG);
-            format!("\x1b_Ga=T,f=100,c=8,r=3,q=2;{b64}\x1b\\")
+            format!("\x1b_Ga=T,f=100,c=12,r=4,q=2;{b64}\x1b\\")
         }
         Graphics::Iterm => {
             let b64 = base64_encode(MARK_PNG);
-            format!("\x1b]1337;File=inline=1;width=8;height=3;preserveAspectRatio=1:{b64}\x07")
+            format!("\x1b]1337;File=inline=1;width=12;height=4;preserveAspectRatio=1:{b64}\x07")
         }
         Graphics::Sixel => include_str!("../assets/mark.sixel").to_string(),
     };
@@ -277,7 +279,7 @@ pub fn brand_header(captions: &[&str]) -> String {
     out
 }
 
-/// Print the official AR mark: inline PNG/Sixel when the terminal can, else dithered braille.
+/// Print the official AR mark: inline PNG/Sixel when the terminal can, else half-blocks.
 pub fn print_brand_header(captions: &[&str]) {
     if emit_graphics_mark() {
         for caption in captions {
@@ -496,8 +498,8 @@ mod tests {
             assert!(out.contains(line), "missing {line:?} in:\n{out}");
         }
         assert!(
-            out.contains("⠻⠟⠿"),
-            "must be the dithered official AR, not the 32px icon:\n{out}"
+            out.contains("▀█████████▄"),
+            "must be the official AR half-block mark, not dithered dots:\n{out}"
         );
         assert!(out.contains("AnyRouter"), "{out}");
         assert!(out.contains("account  default"), "{out}");
@@ -511,8 +513,8 @@ mod tests {
             "assets/mark.png must be PNG"
         );
         assert!(
-            MARK_PNG.len() > 1000,
-            "official cropped AR is larger than the 32px favicon, got {}",
+            MARK_PNG.len() > 4000,
+            "hi-res official AR is larger than the 96px crop, got {}",
             MARK_PNG.len()
         );
         let b64 = base64_encode(MARK_PNG);
