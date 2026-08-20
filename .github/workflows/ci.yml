@@ -31,8 +31,11 @@ jobs:
       - name: cargo llvm-cov (full suite)
         run: cargo llvm-cov --locked --all-targets --lcov --output-path lcov.info
 
-      # Repo secret CODECOV_TOKEN: https://app.codecov.io/gh/anyrouter-dev/cli
+      # Repo secret CODECOV_TOKEN from https://app.codecov.io/gh/anyrouter-dev/cli
       - uses: codecov/codecov-action@v5
+        if: ${{ env.CODECOV_TOKEN != '' }}
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: lcov.info
