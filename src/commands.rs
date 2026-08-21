@@ -24,6 +24,61 @@ use crate::spawn::{
 use crate::term;
 use crate::VERSION;
 
+#[cfg(feature = "native")]
+fn tui_wants_dump(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> bool {
+    crate::tui::wants_dump(parsed, env)
+}
+
+#[cfg(not(feature = "native"))]
+fn tui_wants_dump(_parsed: &ParsedArgs, _env: &BTreeMap<String, String>) -> bool {
+    false
+}
+
+#[cfg(feature = "native")]
+fn tui_menu_select(
+    title: &str,
+    header: Vec<String>,
+    items: Vec<String>,
+) -> Result<Option<usize>, String> {
+    crate::tui::run_menu_select(title, header, items)
+}
+
+#[cfg(not(feature = "native"))]
+fn tui_menu_select(
+    title: &str,
+    _header: Vec<String>,
+    items: Vec<String>,
+) -> Result<Option<usize>, String> {
+    match term::pick(title, &items, Some(0)) {
+        Ok(i) => Ok(Some(i)),
+        Err(_) => Ok(None),
+    }
+}
+
+#[cfg(feature = "native")]
+fn tui_dump_menu(
+    title: &str,
+    header: Vec<String>,
+    items: Vec<String>,
+    env: &BTreeMap<String, String>,
+) -> String {
+    crate::tui::dump_menu_select(title, header, items, crate::tui::dump_cols(env))
+}
+
+#[cfg(not(feature = "native"))]
+fn tui_dump_menu(
+    title: &str,
+    header: Vec<String>,
+    items: Vec<String>,
+    _env: &BTreeMap<String, String>,
+) -> String {
+    let mut lines = vec![format!("▲ {title}")];
+    lines.extend(header);
+    lines.extend(items);
+    lines.push(String::new());
+    lines.join("\n")
+}
+
 const LAUNCH_FLAGS: &[&str] = &[
     "model",
     "effort",
@@ -106,7 +161,7 @@ fn allowed_flags(command: &str) -> Option<&'static [&'static str]> {
         ],
         "usage" => &["profile", "base-url", "config", "json", "key", "no-detail"],
         "whoami" => &["profile", "config", "json"],
-        "config" => &["config", "json", "key", "base-url", "profile"],
+        "config" => &["config", "json", "key", "base-url", "profile", "dump-tui"],
         "account" => &[
             "yes",
             "config",
@@ -181,7 +236,7 @@ fn allowed_flags(command: &str) -> Option<&'static [&'static str]> {
             "masked",
         ],
         "prompt" => &["base-url", "json"],
-        "menu" => &[],
+        "menu" => &["dump-tui", "config", "profile", "key", "base-url"],
         "onboard" | "impl" | "plan" | "fix" | "deploy" | "cp" => &["json", "copy"],
         "upgrade" => &[
             "check", "channel", "fixture", "dry-run", "yes", "auto", "force",
@@ -355,13 +410,14 @@ pub fn run(argv: Vec<String>, env: HashMap<String, String>) -> i32 {
     }
 
     // parse_cli_args maps empty argv to command "help". Check emptiness first
-    // so a real terminal gets the TUI launcher, not --help.
-    if should_open_launcher(&raw, term::is_interactive()) {
+    // so a real terminal gets the TUI launcher, not --help. Dump mode also
+    // opens the launcher without a TTY (`ANYR_TUI_DUMP=1`).
+    if should_open_launcher(&raw, term::is_interactive(), tui_wants_dump(&parsed, &env)) {
         #[cfg(feature = "native")]
         crate::upgrade::on_startup("menu", &parsed, &env);
         let empty = ParsedArgs {
             command: "menu".into(),
-            flags: HashMap::new(),
+            flags: parsed.flags.clone(),
             passthrough: Vec::new(),
         };
         return match run_menu(&empty, &env) {
@@ -921,7 +977,7 @@ fn print_config_status(
 
 fn run_config_tui(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, String> {
     let path = config_path(parsed, env);
-    if stored_api_key(parsed, env, &path).is_none() {
+    if !tui_wants_dump(parsed, env) && stored_api_key(parsed, env, &path).is_none() {
         run_login(parsed, env)?;
         if stored_api_key(parsed, env, &path).is_none() {
             return Err(hint(
@@ -929,20 +985,25 @@ fn run_config_tui(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result
             ));
         }
     }
+    let items = vec![
+        "Switch key".into(),
+        "Switch account".into(),
+        "Switch model".into(),
+        "Credits".into(),
+        "Sign in".into(),
+        "Log out".into(),
+        "Done".into(),
+    ];
+    if tui_wants_dump(parsed, env) {
+        let header = config_tui_header(&path);
+        print!("{}", tui_dump_menu("Config", header, items, env));
+        return Ok(0);
+    }
     loop {
-        println!();
-        print_config_status(parsed, env, &path)?;
-        println!();
-        let items = vec![
-            "Switch key".into(),
-            "Switch account".into(),
-            "Switch model".into(),
-            "Credits".into(),
-            "Sign in".into(),
-            "Log out".into(),
-            "Done".into(),
-        ];
-        let idx = term::pick("Config", &items, Some(0))?;
+        let header = config_tui_header(&path);
+        let Some(idx) = tui_menu_select("Config", header, items.clone())? else {
+            return Ok(0);
+        };
         let result = match idx {
             0 => {
                 let mut next = parsed.clone();
@@ -971,6 +1032,23 @@ fn run_config_tui(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result
             eprintln!("{}", term::err(&err));
         }
     }
+}
+
+fn config_tui_header(path: &std::path::Path) -> Vec<String> {
+    let cfg = load_config_if_present(path).unwrap_or_default();
+    let profile = cfg.profiles.get(&cfg.active_profile);
+    vec![
+        format!(
+            "account  {}  {}",
+            cfg.active_profile,
+            mask_api_key(profile.and_then(|p| p.api_key.as_deref()))
+        ),
+        format!(
+            "model    {}",
+            display_model_id(profile.map(|p| p.default_model()).unwrap_or("auto"))
+        ),
+        format!("file     {}", path.display()),
+    ]
 }
 
 fn run_config(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, String> {
@@ -1020,7 +1098,9 @@ fn run_config(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32
             next.passthrough = vec!["get".into()];
             run_config(&next, env)
         }
-        None if term::is_interactive() => run_config_tui(parsed, env),
+        None if tui_wants_dump(parsed, env) || term::is_interactive() => {
+            run_config_tui(parsed, env)
+        }
         None => {
             print_config_status(parsed, env, &path)?;
             println!(
@@ -1516,7 +1596,8 @@ fn stored_api_key(
 
 fn run_menu(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, String> {
     let path = config_path(parsed, env);
-    if stored_api_key(parsed, env, &path).is_none() {
+    let dumping = tui_wants_dump(parsed, env);
+    if !dumping && stored_api_key(parsed, env, &path).is_none() {
         run_login(parsed, env)?;
         if stored_api_key(parsed, env, &path).is_none() {
             return Err(hint(
@@ -1531,23 +1612,17 @@ fn run_menu(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, 
         .clone()
         .or_else(|| profile.and_then(|p| p.default_tool.clone()))
         .unwrap_or_else(|| "claude".into());
-    term::print_brand_header(&[
-        &term::bold("AnyRouter"),
-        &format!(
-            "{}  {}  {}",
-            term::dim("account"),
-            term::accent(&cfg.active_profile),
-            term::dim(&mask_api_key(profile.and_then(|p| p.api_key.as_deref())))
+    let header = vec![
+        format!(
+            "account  {}  {}",
+            cfg.active_profile,
+            mask_api_key(profile.and_then(|p| p.api_key.as_deref()))
         ),
-        &format!(
-            "{}  {}",
-            term::dim("model  "),
-            term::model_id(display_model_id(
-                profile.map(|p| p.default_model()).unwrap_or("auto"),
-            ))
+        format!(
+            "model    {}",
+            display_model_id(profile.map(|p| p.default_model()).unwrap_or("auto"))
         ),
-    ]);
-    println!();
+    ];
     let items = vec![
         format!("Launch {}", last),
         "Switch model".into(),
@@ -1557,11 +1632,17 @@ fn run_menu(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, 
         "Login / add key".into(),
         "Quit".into(),
     ];
+    if dumping {
+        print!("{}", tui_dump_menu("AnyRouter", header, items, env));
+        return Ok(0);
+    }
     if !term::is_interactive() {
         println!("{}", items.join("\n"));
         return Ok(0);
     }
-    let idx = term::pick("What next?", &items, Some(0))?;
+    let Some(idx) = tui_menu_select("AnyRouter", header, items)? else {
+        return Ok(0);
+    };
     match idx {
         0 => run_launch(&last, parsed, env),
         1 => {
@@ -1589,9 +1670,9 @@ fn run_menu(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, 
     }
 }
 
-/// Bare `ar` / `anyr` opens the TUI on a terminal; pipes still get --help.
-fn should_open_launcher(raw: &[String], interactive: bool) -> bool {
-    raw.is_empty() && interactive
+/// Bare `ar` / `anyr` opens the TUI on a terminal (or dump mode); pipes still get --help.
+fn should_open_launcher(raw: &[String], interactive: bool, dump: bool) -> bool {
+    raw.is_empty() && (interactive || dump)
 }
 
 #[cfg(test)]
@@ -1600,10 +1681,11 @@ mod tests {
 
     #[test]
     fn bare_tty_opens_launcher_not_help() {
-        assert!(should_open_launcher(&[], true));
-        assert!(!should_open_launcher(&[], false));
-        assert!(!should_open_launcher(&["help".into()], true));
-        assert!(!should_open_launcher(&["--help".into()], true));
-        assert!(!should_open_launcher(&["config".into()], true));
+        assert!(should_open_launcher(&[], true, false));
+        assert!(!should_open_launcher(&[], false, false));
+        assert!(should_open_launcher(&[], false, true));
+        assert!(!should_open_launcher(&["help".into()], true, false));
+        assert!(!should_open_launcher(&["--help".into()], true, false));
+        assert!(!should_open_launcher(&["config".into()], true, false));
     }
 }

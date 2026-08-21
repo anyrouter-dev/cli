@@ -83,17 +83,19 @@ pub fn root_help() -> String {
             crate::term::bold(&format!("AnyRouter CLI v{VERSION}")),
             crate::term::link("https://anyrouter.dev")
         ),
-        &crate::term::dim("One key. Every coding agent."),
+        &crate::term::dim("One key. Every coding agent. Interactive TUI by default."),
         "",
     ]);
     format!(
         "\
 {header}
 USAGE
+  {bin}                  Open the interactive TUI (TTY)
   {bin} <command> [flags]
   {bin} <command> --help
 
 CORE COMMANDS
+  menu:       Interactive TUI launcher (default on a TTY)
   auth:       Authenticate with AnyRouter
   config:     Interactive settings (key, credits, model)
   keys:       Manage API keys
@@ -113,7 +115,7 @@ LAUNCH
   pool      Poolside
   poolside  Alias of pool
 
-  {bin}                 Sign in if needed, then open the launcher
+  {bin}                 Sign in if needed, then open the TUI launcher
   {bin} auth login      Sign in
   {bin} onboard impl    Agent paste prompt to wire AnyRouter
   {bin} claude          Launch Claude Code
@@ -195,7 +197,7 @@ pub fn command_help(command: &str) -> Option<String> {
         ),
         "menu" => fill(
             &bin,
-            "{bin} menu — open the interactive TUI (launch, switch model, switch key, credits, onboard)\n",
+            "{bin} menu — open the interactive Ratatui TUI (launch, switch model, switch key, credits, onboard)\n\nUsage:\n  {bin} menu [--dump-tui]\n\nNo-args `{bin}` in a TTY opens this launcher. `--dump-tui` / ANYR_TUI_DUMP=1\nprints one plain frame (for tests and pipes) and exits.\n",
         ),
         "prompt" => fill(
             &bin,
@@ -349,8 +351,9 @@ USAGE
   {bin} config path            Print the config file path
   {bin} config use <account>   Switch the active account
 
-On a TTY, `{bin} config` loops until you pick Done: switch key, account,
-model (default / haiku / sonnet / opus), view credits, sign in, or log out.
+On a TTY, `{bin} config` opens a Ratatui list until you pick Done: switch
+key, account, model (default / haiku / sonnet / opus), view credits, sign
+in, or log out. `--dump-tui` prints one plain frame and exits.
 ";
 
 const KEYS: &str = "\

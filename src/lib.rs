@@ -13,6 +13,8 @@ pub mod onboard;
 pub mod parse;
 pub mod spawn;
 pub mod term;
+#[cfg(feature = "native")]
+pub mod tui;
 pub mod upgrade;
 
 #[cfg(target_arch = "wasm32")]

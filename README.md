@@ -89,6 +89,7 @@ npm install -g @anyr/cli@next
 ## Quick start
 
 ```bash
+anyr                        # interactive TUI (TTY) — launch, model, key, credits
 anyr --help
 anyr login                  # browser / device code / paste; key saved on this machine
 anyr login --device         # headless / SSH
@@ -106,6 +107,9 @@ anyr opencode --ok
 anyr pi --ok
 ```
 
+On a terminal, bare `anyr` / `anyr menu` opens the Ratatui launcher by default.
+Pipes and CI still get `--help` (or `anyr menu --dump-tui` for a plain frame).
+
 Release size is tracked on every PR (`scripts/bench.py`): stripped
 `anyr-linux-x86_64` must stay ≤ 4.0 MiB. Locally:
 
@@ -115,6 +119,9 @@ strip -s target/release/anyr 2>/dev/null || true
 python scripts/bench.py measure --bin target/release/anyr \
   --asset anyr-linux-x86_64 --kind native --out /tmp/anyr-bench.json
 ```
+
+Interactive `menu` / `config` / pickers use a Ratatui + Crossterm TUI
+(GrokNight theme). `anyr menu --dump-tui` prints one ANSI-free frame for CI.
 
 ## Version lock (0.1.x)
 
