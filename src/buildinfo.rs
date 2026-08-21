@@ -68,6 +68,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)] // days_from_civil is unix-only (its only caller is)
     fn civil_roundtrip_known_dates() {
         // (civil date, expected epoch seconds) pairs verified with `date -u`.
         for (y, mo, d, h, mi, s, epoch) in [
