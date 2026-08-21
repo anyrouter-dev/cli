@@ -197,7 +197,7 @@ pub fn command_help(command: &str) -> Option<String> {
         ),
         "menu" => fill(
             &bin,
-            "{bin} menu — open the interactive Ratatui TUI (launch, switch model, switch key, credits, onboard)\n\nUsage:\n  {bin} menu [--dump-tui]\n\nNo-args `{bin}` in a TTY opens this launcher. `--dump-tui` / ANYR_TUI_DUMP=1\nprints one plain frame (for tests and pipes) and exits.\n",
+            "{bin} menu — open the interactive Ratatui launcher (default on a TTY)\n\nUsage:\n  {bin}                 Same as `{bin} menu` on a TTY\n  {bin} menu [--dump-tui]\n\nFrom the launcher you can: launch a coding agent, open Config, switch\nmodel / account / key, view credits, run onboard prompts, or sign in.\n`--dump-tui` / ANYR_TUI_DUMP=1 prints one plain frame (for tests and pipes).\n",
         ),
         "prompt" => fill(
             &bin,

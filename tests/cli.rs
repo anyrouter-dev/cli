@@ -918,6 +918,7 @@ profiles:
     assert!(!stdout.contains('\u{1b}'), "dump must be ANSI-free: {stdout}");
     assert!(stdout.contains("▲ AnyRouter"), "{stdout}");
     assert!(stdout.contains("Launch"), "{stdout}");
+    assert!(stdout.contains("Config"), "{stdout}");
     assert!(stdout.contains("Quit"), "{stdout}");
     assert!(
         !stdout.contains("menu-dump-secret-value"),

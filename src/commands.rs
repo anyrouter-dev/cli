@@ -1597,77 +1597,229 @@ fn stored_api_key(
 fn run_menu(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, String> {
     let path = config_path(parsed, env);
     let dumping = tui_wants_dump(parsed, env);
-    if !dumping && stored_api_key(parsed, env, &path).is_none() {
-        run_login(parsed, env)?;
-        if stored_api_key(parsed, env, &path).is_none() {
-            return Err(hint(
-                "Not signed in. Run `{bin} login` or pass --key / ANYROUTER_API_KEY.",
-            ));
+
+    if dumping {
+        let (header, items) = launcher_frame(&path, parsed, env);
+        print!("{}", tui_dump_menu("AnyRouter", header, items, env));
+        return Ok(0);
+    }
+
+    if !term::is_interactive() {
+        let (_, items) = launcher_frame(&path, parsed, env);
+        println!("{}", items.join("\n"));
+        return Ok(0);
+    }
+
+    // Loop until Quit or a coding-agent launch takes over the process.
+    loop {
+        let (header, items) = launcher_frame(&path, parsed, env);
+        let Some(idx) = tui_menu_select("AnyRouter", header, items.clone())? else {
+            return Ok(0);
+        };
+        let action = items.get(idx).map(String::as_str).unwrap_or("Quit");
+        match launcher_dispatch(action, parsed, env, &path)? {
+            LauncherNext::Continue => {}
+            LauncherNext::Exit(code) => return Ok(code),
         }
     }
-    let cfg = load_config_if_present(&path).unwrap_or_default();
+}
+
+#[derive(Debug)]
+enum LauncherNext {
+    Continue,
+    Exit(i32),
+}
+
+const LAUNCH_AGENTS: &[(&str, &str)] = &[
+    ("claude", "Claude Code"),
+    ("codex", "Codex"),
+    ("grok", "Grok Build"),
+    ("opencode", "OpenCode"),
+    ("pi", "Pi"),
+    ("pool", "Poolside"),
+];
+
+fn launcher_last_tool(path: &PathBuf, parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> String {
+    let cfg = load_config_if_present(path).unwrap_or_default();
     let profile = cfg.profiles.get(&cfg.active_profile);
-    let last = cfg
-        .last_tool
+    cfg.last_tool
         .clone()
         .or_else(|| profile.and_then(|p| p.default_tool.clone()))
-        .unwrap_or_else(|| "claude".into());
+        .or_else(|| get_string_flag(&parsed.flags, "tool"))
+        .unwrap_or_else(|| {
+            let _ = env;
+            "claude".into()
+        })
+}
+
+fn launcher_signed_in(path: &PathBuf, parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> bool {
+    stored_api_key(parsed, env, path).is_some()
+}
+
+fn launcher_frame(
+    path: &PathBuf,
+    parsed: &ParsedArgs,
+    env: &BTreeMap<String, String>,
+) -> (Vec<String>, Vec<String>) {
+    let cfg = load_config_if_present(path).unwrap_or_default();
+    let profile = cfg.profiles.get(&cfg.active_profile);
+    let signed_in = launcher_signed_in(path, parsed, env);
+    let last = launcher_last_tool(path, parsed, env);
     let header = vec![
         format!(
             "account  {}  {}",
             cfg.active_profile,
-            mask_api_key(profile.and_then(|p| p.api_key.as_deref()))
+            if signed_in {
+                mask_api_key(profile.and_then(|p| p.api_key.as_deref()))
+            } else {
+                "(not signed in)".into()
+            }
         ),
         format!(
             "model    {}",
             display_model_id(profile.map(|p| p.default_model()).unwrap_or("auto"))
         ),
+        format!("agent    {last}"),
     ];
-    let items = vec![
-        format!("Launch {}", last),
-        "Switch model".into(),
-        "Switch account / key".into(),
-        "Credits".into(),
-        "Agent onboard prompt…".into(),
-        "Login / add key".into(),
-        "Quit".into(),
-    ];
-    if dumping {
-        print!("{}", tui_dump_menu("AnyRouter", header, items, env));
-        return Ok(0);
+
+    let mut items = Vec::new();
+    if signed_in {
+        items.push(format!("Launch {last}"));
+        items.push("Launch coding agent…".into());
+        items.push("Config".into());
+        items.push("Switch model".into());
+        items.push("Switch account / key".into());
+        items.push("Credits".into());
+        items.push("Agent onboard prompt…".into());
+        items.push("Login / add key".into());
+    } else {
+        items.push("Login / sign in".into());
+        items.push("Launch coding agent…".into());
+        items.push("Config".into());
+        items.push("Agent onboard prompt…".into());
     }
-    if !term::is_interactive() {
-        println!("{}", items.join("\n"));
-        return Ok(0);
+    items.push("Quit".into());
+    (header, items)
+}
+
+fn launcher_dispatch(
+    action: &str,
+    parsed: &ParsedArgs,
+    env: &BTreeMap<String, String>,
+    path: &PathBuf,
+) -> Result<LauncherNext, String> {
+    if action == "Quit" || action.starts_with("Quit") {
+        return Ok(LauncherNext::Exit(0));
     }
-    let Some(idx) = tui_menu_select("AnyRouter", header, items)? else {
-        return Ok(0);
-    };
-    match idx {
-        0 => run_launch(&last, parsed, env),
-        1 => {
-            let mut next = parsed.clone();
-            next.command = "models".into();
-            next.flags.insert("pick".into(), FlagValue::Bool(true));
-            run_models(&next, env)
+    if action.starts_with("Launch ") && action != "Launch coding agent…" {
+        let tool = action.trim_start_matches("Launch ").trim();
+        if !launcher_signed_in(path, parsed, env) {
+            eprintln!("{}", term::err("Sign in first (Login / sign in)."));
+            return Ok(LauncherNext::Continue);
         }
-        2 => {
-            let names: Vec<String> = cfg.profiles.keys().cloned().collect();
-            if names.len() > 1 {
-                let current = names.iter().position(|n| n == &cfg.active_profile);
-                let pick = term::pick("Account", &names, current)?;
-                run_account_use(parsed, env, &names[pick])?;
+        return Ok(LauncherNext::Exit(run_launch(tool, parsed, env)?));
+    }
+    if action == "Launch coding agent…" {
+        return launch_agent_picker(parsed, env, path);
+    }
+    if action == "Config" {
+        let code = run_config_tui(parsed, env)?;
+        if code != 0 {
+            return Ok(LauncherNext::Exit(code));
+        }
+        return Ok(LauncherNext::Continue);
+    }
+    if action == "Switch model" {
+        if !launcher_signed_in(path, parsed, env) {
+            eprintln!("{}", term::err("Sign in first (Login / sign in)."));
+            return Ok(LauncherNext::Continue);
+        }
+        let mut next = parsed.clone();
+        next.command = "models".into();
+        next.flags.insert("pick".into(), FlagValue::Bool(true));
+        if let Err(err) = run_models(&next, env) {
+            eprintln!("{}", term::err(&err));
+        }
+        return Ok(LauncherNext::Continue);
+    }
+    if action == "Switch account / key" {
+        let cfg = load_config_if_present(path).unwrap_or_default();
+        let names: Vec<String> = cfg.profiles.keys().cloned().collect();
+        if names.len() > 1 {
+            let current = names.iter().position(|n| n == &cfg.active_profile);
+            match term::pick("Account", &names, current) {
+                Ok(pick) => {
+                    if let Err(err) = run_account_use(parsed, env, &names[pick]) {
+                        eprintln!("{}", term::err(&err));
+                    }
+                }
+                Err(err) => {
+                    if err != "Cancelled." {
+                        eprintln!("{}", term::err(&err));
+                    }
+                }
             }
-            let mut next = parsed.clone();
-            next.command = "keys".into();
-            next.passthrough = vec!["use".into()];
-            run_keys(&next, env)
         }
-        3 => run_usage(parsed, env),
-        4 => crate::onboard::run("onboard", parsed),
-        5 => run_login(parsed, env),
-        _ => Ok(0),
+        let mut next = parsed.clone();
+        next.command = "keys".into();
+        next.passthrough = vec!["use".into()];
+        if let Err(err) = run_keys(&next, env) {
+            eprintln!("{}", term::err(&err));
+        }
+        return Ok(LauncherNext::Continue);
     }
+    if action == "Credits" {
+        if let Err(err) = run_usage(parsed, env) {
+            eprintln!("{}", term::err(&err));
+        }
+        return Ok(LauncherNext::Continue);
+    }
+    if action == "Agent onboard prompt…" {
+        if let Err(err) = crate::onboard::run("onboard", parsed) {
+            eprintln!("{}", term::err(&err));
+        }
+        return Ok(LauncherNext::Continue);
+    }
+    if action == "Login / add key" || action == "Login / sign in" {
+        if let Err(err) = run_login(parsed, env) {
+            eprintln!("{}", term::err(&err));
+        }
+        return Ok(LauncherNext::Continue);
+    }
+    Ok(LauncherNext::Continue)
+}
+
+fn launch_agent_picker(
+    parsed: &ParsedArgs,
+    env: &BTreeMap<String, String>,
+    path: &PathBuf,
+) -> Result<LauncherNext, String> {
+    if !launcher_signed_in(path, parsed, env) {
+        eprintln!("{}", term::warn("Not signed in — login first, or pass --key."));
+        if let Err(err) = run_login(parsed, env) {
+            eprintln!("{}", term::err(&err));
+            return Ok(LauncherNext::Continue);
+        }
+        if !launcher_signed_in(path, parsed, env) {
+            return Ok(LauncherNext::Continue);
+        }
+    }
+    let last = launcher_last_tool(path, parsed, env);
+    let labels: Vec<String> = LAUNCH_AGENTS
+        .iter()
+        .map(|(id, label)| format!("{id}  —  {label}"))
+        .collect();
+    let current = LAUNCH_AGENTS.iter().position(|(id, _)| *id == last.as_str());
+    let idx = match term::pick("Launch coding agent", &labels, current) {
+        Ok(i) => i,
+        Err(err) if err == "Cancelled." => return Ok(LauncherNext::Continue),
+        Err(err) => {
+            eprintln!("{}", term::err(&err));
+            return Ok(LauncherNext::Continue);
+        }
+    };
+    let tool = LAUNCH_AGENTS[idx].0;
+    Ok(LauncherNext::Exit(run_launch(tool, parsed, env)?))
 }
 
 /// Bare `ar` / `anyr` opens the TUI on a terminal (or dump mode); pipes still get --help.
