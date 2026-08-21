@@ -4,6 +4,26 @@ This file is maintained automatically by [release-please](https://github.com/goo
 
 GitHub Releases use this file as the release notes (full history through that tag).
 
+## [0.1.9](https://github.com/anyrouter-dev/cli/compare/v0.1.8...v0.1.9) (2026-08-21)
+
+
+### Features
+
+* **cli:** auto-update in the background by default ([f3d5edd](https://github.com/anyrouter-dev/cli/commit/f3d5edd43c3185153af4ac88647670ea7f1faff2))
+* **cli:** draw a small AR mark in the terminal ([b7a313b](https://github.com/anyrouter-dev/cli/commit/b7a313b68e0bc4154f957351e59836fc7dbd23e7))
+* **cli:** draw the AR mark on more terminals ([75e2a79](https://github.com/anyrouter-dev/cli/commit/75e2a79c83845cfaec0c8df446986a6d1e9be5ea))
+* **cli:** publish a beta from every main push ([ff71b81](https://github.com/anyrouter-dev/cli/commit/ff71b812b056e97eefd36914406db6c5c786752b))
+
+
+### Bug Fixes
+
+* **ci:** stamp the beta version after locked tests ([8308aeb](https://github.com/anyrouter-dev/cli/commit/8308aeb3bb168ca37cb399aebd8fe0d74561fe58))
+* **cli:** drop install and docs lines from --help ([0707efb](https://github.com/anyrouter-dev/cli/commit/0707efb2a41be16d7634b892426d38fd2e9fb224))
+* **cli:** open the TUI launcher on a bare terminal run ([0508692](https://github.com/anyrouter-dev/cli/commit/05086924c74529adbb8f098de35454603e86ad22))
+* **cli:** render a clearer AR mark ([9a2d468](https://github.com/anyrouter-dev/cli/commit/9a2d46872b7b3474ede863b57b0e601be0ba7bfb))
+* **cli:** use API key for keys CRUD; drop management-key requirement ([#2](https://github.com/anyrouter-dev/cli/issues/2)) ([53e9442](https://github.com/anyrouter-dev/cli/commit/53e94422996597d2b24d8a759bf0edfa0b1f943b))
+* **release:** show full release-please changelog on GitHub Releases ([454e6e3](https://github.com/anyrouter-dev/cli/commit/454e6e37e4da6a46d751d82f6a88e1ddd8257263))
+
 ## [0.1.8](https://github.com/anyrouter-dev/cli/compare/v0.1.7...v0.1.8) (2026-08-20)
 
 ### Bug Fixes
