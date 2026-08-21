@@ -33,7 +33,6 @@ const LAUNCH_FLAGS: &[&str] = &[
     "profile",
     "preset",
     "key",
-    "management-key",
     "base-url",
     "command-path",
     "claude-path",
@@ -51,50 +50,37 @@ const LAUNCH_FLAGS: &[&str] = &[
     "install",
 ];
 
+/// Command availability for dispatch / help honesty.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CmdKind {
+    Implemented,
+    Stub,
+    HelpOnly,
+}
+
+fn cmd_kind(command: &str) -> Option<CmdKind> {
+    let c = canonical_command(command);
+    Some(match c {
+        "setup" | "login" | "auth" | "menu" | "models" | "config" | "keys" | "whoami"
+        | "status" | "logout" | "account" | "usage" | "claude" | "codex" | "grok" | "opencode"
+        | "pool" | "pi" | "upgrade" | "onboard" | "impl" | "plan" | "fix" | "deploy" | "cp" => {
+            CmdKind::Implemented
+        }
+        "cursor" | "cline" | "windsurf" => CmdKind::HelpOnly,
+        "chat" | "task" | "delegate" | "audit" | "logs" | "transactions" | "skills" | "prompt"
+        | "relay" | "byok" => CmdKind::Stub,
+        _ => return None,
+    })
+}
+
 fn known_command(command: &str) -> bool {
-    matches!(
-        command,
-        "setup"
-            | "login"
-            | "auth"
-            | "menu"
-            | "models"
-            | "chat"
-            | "config"
-            | "task"
-            | "delegate"
-            | "keys"
-            | "whoami"
-            | "status"
-            | "audit"
-            | "logout"
-            | "account"
-            | "usage"
-            | "logs"
-            | "transactions"
-            | "skills"
-            | "prompt"
-            | "relay"
-            | "byok"
-            | "claude"
-            | "cc"
-            | "codex"
-            | "grok"
-            | "opencode"
-            | "pool"
-            | "poolside"
-            | "pi"
-            | "cursor"
-            | "cline"
-            | "windsurf"
-            | "upgrade"
-            | "update"
-    )
+    cmd_kind(command).is_some()
 }
 
 fn canonical_command(command: &str) -> &str {
     match command {
         "update" => "upgrade",
+        "implement" => "impl",
         other => canonical_tool(other),
     }
 }
@@ -114,7 +100,6 @@ fn allowed_flags(command: &str) -> Option<&'static [&'static str]> {
             "device-code",
             "paste",
             "yes",
-            "management-key",
         ],
         "models" => &[
             "profile", "config", "json", "key", "base-url", "pick", "haiku", "sonnet", "opus",
@@ -134,7 +119,6 @@ fn allowed_flags(command: &str) -> Option<&'static [&'static str]> {
             "device",
             "device-code",
             "paste",
-            "management-key",
         ],
         "logs" => &[
             "profile", "base-url", "config", "json", "key", "limit", "model", "status",
@@ -178,14 +162,7 @@ fn allowed_flags(command: &str) -> Option<&'static [&'static str]> {
         "delegate" => &[
             "to", "from", "model", "profile", "base-url", "config", "key", "yes", "dry-run",
         ],
-        "keys" => &[
-            "profile",
-            "base-url",
-            "config",
-            "management-key",
-            "json",
-            "yes",
-        ],
+        "keys" => &["profile", "base-url", "config", "json", "yes"],
         "audit" => &["profile", "config", "json", "launches", "tool", "limit"],
         "logout" => &["profile", "config"],
         "auth" => &[
@@ -200,12 +177,12 @@ fn allowed_flags(command: &str) -> Option<&'static [&'static str]> {
             "device-code",
             "paste",
             "yes",
-            "management-key",
             "json",
             "masked",
         ],
         "prompt" => &["base-url", "json"],
         "menu" => &[],
+        "onboard" | "impl" | "plan" | "fix" | "deploy" | "cp" => &["json", "copy"],
         "upgrade" => &[
             "check", "channel", "fixture", "dry-run", "yes", "auto", "force",
         ],
@@ -462,13 +439,18 @@ fn dispatch(
             Ok(0)
         }
         "upgrade" | "update" => crate::upgrade::run(parsed, env),
+        "onboard" | "impl" | "plan" | "fix" | "deploy" | "cp" => {
+            crate::onboard::run(command, parsed)
+        }
         _ => stub(command),
     }
 }
 
 fn stub(command: &str) -> Result<i32, String> {
     Err(format!(
-        "\"{command}\" is not yet implemented in native CLI. Pass --help, or use --key / ANYROUTER_API_KEY with login / spawn --dry-run."
+        "\"{command}\" is not yet implemented in the native CLI. Run \"{} --help\" for available commands, or \"{} onboard\" for agent paste prompts.",
+        crate::help::invoked_bin(),
+        crate::help::invoked_bin(),
     ))
 }
 
@@ -480,7 +462,6 @@ fn persist_login(
     parsed: &ParsedArgs,
     env: &BTreeMap<String, String>,
     key: &str,
-    management_key: Option<String>,
     source: &str,
 ) -> Result<i32, String> {
     let path = config_path(parsed, env);
@@ -504,11 +485,8 @@ fn persist_login(
         timeout_ms: timeout,
         default_model: stored.and_then(|p| p.default_model.clone()),
     });
-    if let Some(mk) = management_key.or_else(|| get_string_flag(&parsed.flags, "management-key")) {
-        profile.management_key = Some(mk);
-    } else if let Some(prev) = stored.and_then(|p| p.management_key.clone()) {
-        profile.management_key = Some(prev);
-    }
+    // Clear legacy companion management keys; API keys with Key Management permission are enough.
+    profile.management_key = None;
     if let Some(tool) = stored.and_then(|p| p.default_tool.clone()) {
         profile.default_tool = Some(tool);
     }
@@ -566,13 +544,7 @@ fn run_login(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32,
         .and_then(|c| c.profiles.get(&c.active_profile));
     let base = resolve_base_url(&parsed.flags, stored);
     let acquired = acquire_api_key(&parsed.flags, env, &base, Some("cli"))?;
-    persist_login(
-        parsed,
-        env,
-        &acquired.api_key,
-        acquired.management_key,
-        &acquired.source,
-    )
+    persist_login(parsed, env, &acquired.api_key, &acquired.source)
 }
 
 fn model_pick_label(id: &str) -> String {
@@ -835,7 +807,6 @@ fn run_whoami(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32
             "active_account": name,
             "config": path.display().to_string(),
             "api_key": mask_api_key(key.as_deref()),
-            "management_key": if profile.management_key.as_ref().is_some_and(|s| !s.is_empty()) { "present" } else { "none" },
             "default_model": display_model_id(profile.default_model()),
             "claude_haiku": profile.claude_haiku(),
             "claude_sonnet": profile.claude_sonnet(),
@@ -855,19 +826,6 @@ fn run_whoami(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32
         "{}  {}",
         term::dim("api_key        "),
         mask_api_key(key.as_deref())
-    );
-    println!(
-        "{}  {}",
-        term::dim("management_key "),
-        if profile
-            .management_key
-            .as_ref()
-            .is_some_and(|s| !s.is_empty())
-        {
-            "present"
-        } else {
-            "none"
-        }
     );
     println!(
         "{}  {}",
@@ -1092,13 +1050,7 @@ fn run_launch(
     } else {
         let base = resolve_base_url(&parsed.flags, stored);
         let acquired = acquire_api_key(&parsed.flags, env, &base, Some(tool_name))?;
-        persist_login(
-            parsed,
-            env,
-            &acquired.api_key,
-            acquired.management_key,
-            &acquired.source,
-        )?;
+        persist_login(parsed, env, &acquired.api_key, &acquired.source)?;
         acquired.api_key
     };
     let existing = load_config_if_present(&path);
@@ -1336,16 +1288,7 @@ fn run_account(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i3
 fn keys_credential(
     parsed: &ParsedArgs,
     env: &BTreeMap<String, String>,
-) -> Result<
-    (
-        std::path::PathBuf,
-        crate::config::Config,
-        String,
-        String,
-        Option<String>,
-    ),
-    String,
-> {
+) -> Result<(std::path::PathBuf, crate::config::Config, String, String), String> {
     let path = config_path(parsed, env);
     let cfg = load_config_if_present(&path).ok_or_else(no_key_error)?;
     let name =
@@ -1355,14 +1298,9 @@ fn keys_credential(
         .get(&name)
         .ok_or_else(|| format!("Profile \"{name}\" was not found in AnyRouter config."))?;
     let base = resolve_base_url(&parsed.flags, Some(profile));
-    let api_key = resolve_api_key(&parsed.flags, env, Some(profile));
-    let management =
-        get_string_flag(&parsed.flags, "management-key").or_else(|| profile.management_key.clone());
-    let credential = management
-        .clone()
-        .or_else(|| api_key.clone())
+    let api_key = resolve_api_key(&parsed.flags, env, Some(profile))
         .ok_or_else(|| hint("No stored credential. Run \"{bin} login\" first."))?;
-    Ok((path, cfg, base, credential, api_key))
+    Ok((path, cfg, base, api_key))
 }
 
 fn default_key_name() -> String {
@@ -1381,8 +1319,8 @@ fn run_keys(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, 
         .unwrap_or("list");
     match sub {
         "list" => {
-            let (_path, _cfg, base, cred, api_key) = keys_credential(parsed, env)?;
-            let rows = fetch_keys(&base, &cred)?;
+            let (_path, _cfg, base, api_key) = keys_credential(parsed, env)?;
+            let rows = fetch_keys(&base, &api_key)?;
             if parsed.flag_true("json") {
                 let payload: Vec<_> = rows
                     .iter()
@@ -1394,7 +1332,7 @@ fn run_keys(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, 
                             "created_at": r.created_at,
                             "last_used_at": r.last_used_at,
                             "active": r.active,
-                            "current": is_active_key_row(&r.masked, api_key.as_deref()),
+                            "current": is_active_key_row(&r.masked, Some(&api_key)),
                         })
                     })
                     .collect();
@@ -1413,7 +1351,7 @@ fn run_keys(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, 
             }
             let name_w = rows.iter().map(|r| r.name.len()).max().unwrap_or(4).max(4);
             for r in &rows {
-                let marker = if is_active_key_row(&r.masked, api_key.as_deref()) {
+                let marker = if is_active_key_row(&r.masked, Some(&api_key)) {
                     "*"
                 } else {
                     " "
@@ -1434,7 +1372,7 @@ fn run_keys(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, 
             Ok(0)
         }
         "create" => {
-            let (path, mut cfg, base, cred, _api) = keys_credential(parsed, env)?;
+            let (path, mut cfg, base, cred) = keys_credential(parsed, env)?;
             let name = parsed
                 .passthrough
                 .get(1)
@@ -1457,8 +1395,8 @@ fn run_keys(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, 
             Ok(0)
         }
         "use" => {
-            let (path, mut cfg, base, cred, api_key) = keys_credential(parsed, env)?;
-            let rows: Vec<_> = fetch_keys(&base, &cred)?
+            let (path, mut cfg, base, api_key) = keys_credential(parsed, env)?;
+            let rows: Vec<_> = fetch_keys(&base, &api_key)?
                 .into_iter()
                 .filter(|r| r.active)
                 .collect();
@@ -1492,7 +1430,7 @@ fn run_keys(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, 
                     .collect();
                 let current = rows
                     .iter()
-                    .position(|r| is_active_key_row(&r.masked, api_key.as_deref()));
+                    .position(|r| is_active_key_row(&r.masked, Some(&api_key)));
                 let idx = term::pick("Which key should this profile use?", &labels, current)?;
                 rows[idx].clone()
             } else {
@@ -1500,7 +1438,7 @@ fn run_keys(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, 
                     "Usage: {bin} keys use <hash>   (interactive picker needs a terminal)",
                 ));
             };
-            let revealed = reveal_key(&base, &cred, &row.hash)?;
+            let revealed = reveal_key(&base, &api_key, &row.hash)?;
             let active = cfg.active_profile.clone();
             if let Some(p) = cfg.profiles.get_mut(&active) {
                 p.api_key = Some(revealed);
@@ -1518,7 +1456,7 @@ fn run_keys(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, 
             let hash = parsed.passthrough.get(1).cloned().ok_or_else(|| {
                 hint("Usage: {bin} keys revoke <hash>   (find hashes: {bin} keys list)")
             })?;
-            let (_path, _cfg, base, cred, _api) = keys_credential(parsed, env)?;
+            let (_path, _cfg, base, cred) = keys_credential(parsed, env)?;
             let rows = fetch_keys(&base, &cred)?;
             let matches: Vec<_> = rows
                 .iter()
@@ -1615,6 +1553,7 @@ fn run_menu(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, 
         "Switch model".into(),
         "Switch account / key".into(),
         "Credits".into(),
+        "Agent onboard prompt…".into(),
         "Login / add key".into(),
         "Quit".into(),
     ];
@@ -1644,7 +1583,8 @@ fn run_menu(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, 
             run_keys(&next, env)
         }
         3 => run_usage(parsed, env),
-        4 => run_login(parsed, env),
+        4 => crate::onboard::run("onboard", parsed),
+        5 => run_login(parsed, env),
         _ => Ok(0),
     }
 }

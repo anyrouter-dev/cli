@@ -99,6 +99,9 @@ CORE COMMANDS
   keys:       Manage API keys
   models:     List catalog and set the default
   usage:      Credits remaining
+  onboard:    Paste-ready prompts for coding agents
+  impl|plan|fix|deploy|cp
+              Shortcuts for onboard modes
 
 LAUNCH
   claude    Claude Code
@@ -112,6 +115,7 @@ LAUNCH
 
   {bin}                 Sign in if needed, then open the launcher
   {bin} auth login      Sign in
+  {bin} onboard impl    Agent paste prompt to wire AnyRouter
   {bin} claude          Launch Claude Code
 ",
         header = header,
@@ -137,6 +141,7 @@ pub fn command_help(command: &str) -> Option<String> {
         "status" => "whoami",
         "update" => "upgrade",
         "setup" => "login",
+        "implement" => "impl",
         other => other,
     };
     Some(match canonical {
@@ -147,28 +152,58 @@ pub fn command_help(command: &str) -> Option<String> {
         "usage" => fill(&bin, USAGE),
         "whoami" => fill(&bin, WHOAMI),
         "account" => fill(&bin, ACCOUNT),
-        "logs" => fill(&bin, LOGS),
+        "logs" => fill(
+            &bin,
+            "{bin} logs — not yet in the native CLI (coming later).\n",
+        ),
         "models" => fill(&bin, MODELS),
         "config" => fill(&bin, CONFIG),
-        "chat" => fill(&bin, CHAT),
-        "skills" => fill(&bin, SKILLS),
-        "relay" => fill(&bin, RELAY),
-        "byok" => fill(&bin, BYOK),
-        "task" => fill(&bin, TASK),
-        "delegate" => fill(&bin, DELEGATE),
+        "chat" => fill(
+            &bin,
+            "{bin} chat — not yet in the native CLI. Use {bin} claude / codex / … to launch an agent.\n",
+        ),
+        "skills" => fill(
+            &bin,
+            "{bin} skills — not yet in the native CLI (coming later).\n",
+        ),
+        "relay" => fill(
+            &bin,
+            "{bin} relay — not yet in the native CLI (coming later).\n",
+        ),
+        "byok" => fill(
+            &bin,
+            "{bin} byok — not yet in the native CLI. Manage BYOK in the dashboard.\n",
+        ),
+        "task" => fill(
+            &bin,
+            "{bin} task — not yet in the native CLI. Try {bin} onboard plan|impl instead.\n",
+        ),
+        "delegate" => fill(
+            &bin,
+            "{bin} delegate — not yet in the native CLI (coming later).\n",
+        ),
         "keys" => fill(&bin, KEYS),
-        "audit" => fill(&bin, AUDIT),
+        "audit" => fill(
+            &bin,
+            "{bin} audit — not yet in the native CLI (coming later).\n",
+        ),
         "logout" => fill(&bin, LOGOUT),
         "upgrade" => fill(&bin, UPGRADE),
-        "transactions" => fill(&bin, TRANSACTIONS),
+        "transactions" => fill(
+            &bin,
+            "{bin} transactions — not yet in the native CLI (coming later).\n",
+        ),
         "menu" => fill(
             &bin,
-            "{bin} menu — open the interactive TUI (launch, switch model, switch key, credits)\n",
+            "{bin} menu — open the interactive TUI (launch, switch model, switch key, credits, onboard)\n",
         ),
         "prompt" => fill(
             &bin,
-            "{bin} prompt — pull prompts from the AnyRouter hub (get | url | list)\n",
+            "{bin} prompt — hub prompts not yet in the native CLI. Use {bin} onboard for agent paste prompts.\n",
         ),
+        "onboard" | "impl" | "plan" | "fix" | "deploy" | "cp" => {
+            crate::onboard::usage_hint(&bin)
+        }
         "claude" => launch_help(&bin, "claude", "Claude Code"),
         "codex" => launch_help(&bin, "codex", "Codex"),
         "grok" => launch_help(&bin, "grok", "Grok Build"),
@@ -284,19 +319,6 @@ Options:
   --yes            Skip confirmations
 ";
 
-const LOGS: &str = "\
-{bin} logs — recent requests
-
-Usage:
-  {bin} logs [options]
-
-Lists recent requests: time, status, model, tokens, cost, latency.
-
-Options:
-  --limit <n>       Rows to fetch
-  --status <s>      success | error | rejected
-";
-
 const MODELS: &str = "\
 {bin} models — list catalog model ids
 
@@ -331,59 +353,6 @@ On a TTY, `{bin} config` loops until you pick Done: switch key, account,
 model (default / haiku / sonnet / opus), view credits, sign in, or log out.
 ";
 
-const CHAT: &str = "\
-{bin} chat — chat with any model in your terminal
-
-Usage:
-  {bin} chat [options]
-
-Options:
-  --model auto|<id>   Initial model
-  --effort <level>    Reasoning effort
-  --key sk-ar-v1-...  AnyRouter API key
-";
-
-const SKILLS: &str = "\
-{bin} skills — sync your Skills & Knowledge Hub locally
-
-Usage:
-  {bin} skills sync
-  {bin} skills pull <hub>
-  {bin} skills list
-
-Options:
-  --hub <slug>     Hub slug
-  --dry-run        Show what would change without writing
-";
-
-const RELAY: &str = "\
-{bin} relay start [--target <url>] [--token <rk_...>] [--pool]
-  {bin} relay pair [--name \"My Mac\"]
-";
-
-const BYOK: &str = "\
-{bin} byok locate antigravity
-{bin} byok add antigravity --yes
-";
-
-const TASK: &str = "\
-{bin} task \"<x>\" — two-phase plan → implement
-
-Options:
-  --plan-model <id>
-  --do-model <id>
-  --yes
-";
-
-const DELEGATE: &str = "\
-{bin} delegate --to claude|codex|opencode|pi \"<task>\"
-
-Options:
-  --to <agent>
-  --yes
-  --dry-run
-";
-
 const KEYS: &str = "\
 {bin} keys — manage API keys
 
@@ -393,16 +362,8 @@ Usage:
   {bin} keys use [hash]
   {bin} keys revoke <hash> [--yes]
 
-Needs a management key (ak_…) from device/browser login, or --management-key.
-";
-
-const AUDIT: &str = "\
-{bin} audit — see everything the CLI has configured and done
-
-Options:
-  --launches
-  --tool <id>
-  --json
+The signed-in API key must have Key Management permission.
+CLI login (`{bin} auth login`) creates a key with full access.
 ";
 
 const LOGOUT: &str = "\
@@ -441,16 +402,6 @@ Downloads:
 --check reports current vs latest without installing.
 --fixture <path> / ANYR_RELEASES_JSON skips the network (tests / dry-run).
 --channel stable|beta overrides the config file for this run.
-";
-
-const TRANSACTIONS: &str = "\
-{bin} transactions — credit grants, top-ups, and spend
-
-Options:
-  --limit <n>
-  --type <t>
-  --json
-  --key sk-ar-v1-…
 ";
 
 #[cfg(test)]

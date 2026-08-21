@@ -338,47 +338,81 @@ pub fn confirm(question: &str) -> bool {
 }
 
 /// Numbered picker. `current` is pre-selected (1-based display still). Empty
-/// input keeps `current` when set, otherwise errors.
+/// input keeps `current` when set, otherwise cancels. Long lists paginate.
 pub fn pick(title: &str, items: &[String], current: Option<usize>) -> Result<usize, String> {
+    const PAGE: usize = 12;
     if items.is_empty() {
         return Err("Nothing to pick.".into());
     }
-    eprintln!("{}", bold(title));
-    for (i, item) in items.iter().enumerate() {
-        let marker = if current == Some(i) { "*" } else { " " };
-        eprintln!("  {marker} {:>2}. {item}", i + 1);
-    }
-    let hint = current
-        .map(|i| format!("Enter = {} · ", i + 1))
-        .unwrap_or_default();
-    let ans = prompt(&format!("{hint}Pick 1-{}: ", items.len()))?;
-    if ans.is_empty() {
-        return current.ok_or_else(|| "No selection.".into());
-    }
-    if let Ok(n) = ans.parse::<usize>() {
-        if n >= 1 && n <= items.len() {
-            return Ok(n - 1);
+    let mut page = current
+        .map(|i| i / PAGE)
+        .unwrap_or(0)
+        .min(items.len().saturating_sub(1) / PAGE);
+
+    loop {
+        let start = page * PAGE;
+        let end = (start + PAGE).min(items.len());
+        let pages = items.len().div_ceil(PAGE);
+        eprintln!("{}", bold(title));
+        if pages > 1 {
+            eprintln!(
+                "{}",
+                dim(&format!(
+                    "  page {}/{}  ·  n next · p prev · q cancel",
+                    page + 1,
+                    pages
+                ))
+            );
+        } else {
+            eprintln!("{}", dim("  q cancel"));
         }
+        for (i, item) in items.iter().enumerate().take(end).skip(start) {
+            let marker = if current == Some(i) { "*" } else { " " };
+            eprintln!("  {marker} {:>2}. {item}", i + 1);
+        }
+        let hint = current
+            .map(|i| format!("Enter = {} · ", i + 1))
+            .unwrap_or_default();
+        let ans = prompt(&format!("{hint}Pick 1-{}: ", items.len()))?;
+        let lower = ans.to_ascii_lowercase();
+        if ans.is_empty() {
+            return current.ok_or_else(|| "Cancelled.".into());
+        }
+        if lower == "q" || lower == "quit" || lower == "cancel" {
+            return Err("Cancelled.".into());
+        }
+        if pages > 1 && (lower == "n" || lower == "next") {
+            page = (page + 1) % pages;
+            continue;
+        }
+        if pages > 1 && (lower == "p" || lower == "prev" || lower == "previous") {
+            page = if page == 0 { pages - 1 } else { page - 1 };
+            continue;
+        }
+        if let Ok(n) = ans.parse::<usize>() {
+            if n >= 1 && n <= items.len() {
+                return Ok(n - 1);
+            }
+        }
+        let hits: Vec<usize> = items
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| {
+                item.to_ascii_lowercase() == lower || item.to_ascii_lowercase().contains(&lower)
+            })
+            .map(|(i, _)| i)
+            .collect();
+        if hits.len() == 1 {
+            return Ok(hits[0]);
+        }
+        if let Some(i) = items
+            .iter()
+            .position(|item| item.to_ascii_lowercase() == lower)
+        {
+            return Ok(i);
+        }
+        eprintln!("{}", dim(&format!("Not a valid pick: {ans}")));
     }
-    let lower = ans.to_ascii_lowercase();
-    let hits: Vec<usize> = items
-        .iter()
-        .enumerate()
-        .filter(|(_, item)| {
-            item.to_ascii_lowercase() == lower || item.to_ascii_lowercase().contains(&lower)
-        })
-        .map(|(i, _)| i)
-        .collect();
-    if hits.len() == 1 {
-        return Ok(hits[0]);
-    }
-    if let Some(i) = items
-        .iter()
-        .position(|item| item.to_ascii_lowercase() == lower)
-    {
-        return Ok(i);
-    }
-    Err(format!("Not a valid pick: {ans}"))
 }
 
 /// Port of the JS fuzzy matcher (contiguous substring + subsequence bonuses).

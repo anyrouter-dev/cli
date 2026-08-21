@@ -10,6 +10,10 @@ import sys
 import time
 from pathlib import Path
 
+# Soft gate for stripped linux x86_64 release binary (headroom above ~3 MiB).
+LINUX_X86_64_BUDGET_BYTES = 4 * 1024 * 1024
+BUDGET_ASSET = "anyr-linux-x86_64"
+
 
 def human_bytes(n: int) -> str:
     if n < 1024:
@@ -93,6 +97,24 @@ def load_records(paths: list[str]) -> list[dict]:
     return rows
 
 
+def check_budget(rows: list[dict], budget: int = LINUX_X86_64_BUDGET_BYTES) -> list[str]:
+    """Return human-readable violations (empty = ok)."""
+    violations = []
+    for row in rows:
+        asset = row.get("asset") or ""
+        if asset != BUDGET_ASSET and not asset.endswith("linux-x86_64"):
+            continue
+        if row.get("kind") != "native":
+            continue
+        nbytes = int(row.get("bytes") or 0)
+        if nbytes > budget:
+            violations.append(
+                f"{asset} is {human_bytes(nbytes)} ({nbytes} bytes), "
+                f"over budget {human_bytes(budget)} ({budget} bytes)"
+            )
+    return violations
+
+
 def to_markdown(rows: list[dict], title: str) -> str:
     lines = [
         f"## {title}",
@@ -100,6 +122,10 @@ def to_markdown(rows: list[dict], title: str) -> str:
         "Startup is wall time for a cold `anyr --version` / `anyr --help` "
         "(median of 21 runs). Size is the stripped release binary, or the "
         "`.wasm` for the browser demo.",
+        "",
+        f"**Size budget:** `{BUDGET_ASSET}` must stay ≤ "
+        f"{human_bytes(LINUX_X86_64_BUDGET_BYTES)} "
+        f"({LINUX_X86_64_BUDGET_BYTES} bytes) stripped.",
         "",
         "| Asset | Kind | Size | `--version` median | `--help` median |",
         "| --- | --- | ---: | ---: | ---: |",
@@ -113,6 +139,15 @@ def to_markdown(rows: list[dict], title: str) -> str:
             f"| `{row.get('asset', '?')}` | {row.get('kind', '?')} | "
             f"{row.get('size', '?')} | {ver_s} | {help_s} |"
         )
+    violations = check_budget(rows)
+    if violations:
+        lines.append("")
+        lines.append("**Budget check:** FAILED")
+        for v in violations:
+            lines.append(f"- {v}")
+    else:
+        lines.append("")
+        lines.append("**Budget check:** ok")
     lines.append("")
     lines.append("<details><summary>raw timings</summary>")
     lines.append("")
@@ -134,6 +169,12 @@ def report(args: argparse.Namespace) -> None:
     json_out = Path(args.json_out) if args.json_out else Path(args.out).with_suffix(".json")
     json_out.write_text(json.dumps(rows, indent=2) + "\n", encoding="utf-8")
     sys.stdout.write(md)
+    if args.check_budget:
+        violations = check_budget(rows)
+        if violations:
+            for v in violations:
+                print(v, file=sys.stderr)
+            raise SystemExit(1)
 
 
 def main() -> None:
@@ -156,6 +197,11 @@ def main() -> None:
     r.add_argument("--out", required=True)
     r.add_argument("--json-out", default="")
     r.add_argument("--title", default="anyr size and startup")
+    r.add_argument(
+        "--check-budget",
+        action="store_true",
+        help=f"fail if {BUDGET_ASSET} exceeds {LINUX_X86_64_BUDGET_BYTES} bytes",
+    )
     r.set_defaults(func=report)
 
     args = parser.parse_args()

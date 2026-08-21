@@ -9,6 +9,7 @@ pub mod help;
 pub mod http;
 pub mod install;
 pub mod key;
+pub mod onboard;
 pub mod parse;
 pub mod spawn;
 pub mod term;

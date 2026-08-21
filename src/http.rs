@@ -322,11 +322,11 @@ pub fn fetch_keys(base_url: &str, credential: &str) -> Result<Vec<RemoteKey>, St
     let url = join_api(base_url, "/v1/keys");
     let (status, body) = http_get(&url, Some(credential))?;
     if status == 401 || status == 403 {
-        return Err(
-            "Not authorized to list keys — this needs a management key (ak_…). \
-Log in again (device/browser login stores one) or pass --management-key."
-                .into(),
-        );
+        let bin = crate::help::invoked_bin();
+        return Err(format!(
+            "Not authorized to list keys. Your API key needs Key Management permission — \
+run `{bin} auth login` (creates a CLI key with full access) or enable Key Management on the key in the dashboard."
+        ));
     }
     if !(200..300).contains(&status) {
         return Err(format!("Could not list keys (HTTP {status})."));
