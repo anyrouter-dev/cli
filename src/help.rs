@@ -384,7 +384,12 @@ const UPGRADE: &str = "\
 {bin} upgrade — install the latest CLI from GitHub Releases
 
 Usage:
-  {bin} upgrade [--check] [--channel stable|beta] [--dry-run]
+  {bin} upgrade [--check] [--beta|--stable] [--channel stable|beta] [--dry-run]
+  {bin} update  [--beta|--stable]   (alias)
+
+Switch channel and update:
+  {bin} update --beta     follow GitHub prereleases (persist + install)
+  {bin} update --stable   follow latest non-prerelease (persist + install)
 
 Auto-update is on by default. On startup a background process checks
 GitHub Releases, and while a coding agent is running it rechecks every
@@ -404,7 +409,8 @@ Downloads:
 
 --check reports current vs latest without installing.
 --fixture <path> / ANYR_RELEASES_JSON skips the network (tests / dry-run).
---channel stable|beta overrides the config file for this run.
+--channel stable|beta overrides the config file for this run only.
+--beta / --stable write channel: into the config, then install that channel.
 ";
 
 #[cfg(test)]

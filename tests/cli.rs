@@ -451,6 +451,10 @@ fn claude_dry_run_haiku_flag_overrides_alias() {
                 "--yes",
                 "--key",
                 key,
+                // Keep the session model on auto so this test does not depend
+                // on the developer's ~/.anyrouter config default_model.
+                "--model",
+                "auto",
                 "--haiku",
                 "z-ai/glm-4.7-flash",
             ])
@@ -493,6 +497,8 @@ fn upgrade_help_mentions_channel_stable_beta() {
     assert!(stdout.contains("channel"), "{stdout}");
     assert!(stdout.contains("stable"), "{stdout}");
     assert!(stdout.contains("beta"), "{stdout}");
+    assert!(stdout.contains("--beta"), "{stdout}");
+    assert!(stdout.contains("--stable"), "{stdout}");
     assert!(
         stdout.contains("Auto-update") || stdout.contains("auto-update"),
         "upgrade help should mention auto-update, got:\n{stdout}"
@@ -508,6 +514,49 @@ fn update_is_upgrade_alias() {
         !combined.contains("Unknown command"),
         "update treated as unknown:\n{combined}"
     );
+    assert!(stdout.contains("--beta"), "{stdout}");
+    assert!(stdout.contains("--stable"), "{stdout}");
+}
+
+#[test]
+fn update_beta_persists_channel_and_selects_prerelease() {
+    let home = std::env::temp_dir().join(format!(
+        "anyr-cli-update-beta-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&home).expect("home");
+    let (code, stdout, stderr) = {
+        let out = anyr()
+            .args(["update", "--beta", "--check"])
+            .env("ANYROUTER_HOME", &home)
+            .env("ANYR_RELEASES_JSON", fixture_path())
+            .env_remove("ANYR_CHANNEL")
+            .output()
+            .expect("update --beta --check");
+        (
+            out.status.code().unwrap_or(1),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+    assert_eq!(code, 0, "stderr={stderr}");
+    assert!(stdout.contains("channel set to beta"), "{stdout}");
+    assert!(stdout.contains("channel: beta"), "{stdout}");
+    assert!(stdout.contains("latest: 0.2.0-beta.1"), "{stdout}");
+    let cfg = std::fs::read_to_string(home.join("config.yaml")).expect("config");
+    assert!(cfg.contains("channel: beta"), "{cfg}");
+}
+
+#[test]
+fn update_stable_and_beta_conflict() {
+    let (code, stdout, stderr) = run(&["update", "--beta", "--stable", "--check"]);
+    assert_ne!(code, 0);
+    let combined = format!("{stdout}{stderr}");
+    assert!(combined.contains("either --beta or --stable"), "{combined}");
 }
 
 #[test]

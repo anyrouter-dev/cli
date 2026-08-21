@@ -13,7 +13,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use crate::channel::{
     current_arch, current_os, release_asset_url, select_latest, Channel, GITHUB_RELEASES_API,
 };
-use crate::config::resolve_config_path;
+use crate::config::{resolve_config_path, write_config, Config};
 use crate::http::http_get;
 use crate::key::load_config_if_present;
 use crate::parse::{get_string_flag, ParsedArgs};
@@ -65,7 +65,30 @@ pub fn load_releases_json(fixture: Option<&str>) -> Result<String, String> {
     Ok(body)
 }
 
+/// `--beta` / `--stable` switch the persisted channel. Mutually exclusive with
+/// each other and with `--channel`.
+fn channel_switch_flag(parsed: &ParsedArgs) -> Result<Option<Channel>, String> {
+    let beta = parsed.flag_true("beta");
+    let stable = parsed.flag_true("stable");
+    if beta && stable {
+        return Err("Use either --beta or --stable, not both.".into());
+    }
+    if (beta || stable) && get_string_flag(&parsed.flags, "channel").is_some() {
+        return Err("--beta/--stable cannot be combined with --channel.".into());
+    }
+    if beta {
+        return Ok(Some(Channel::Beta));
+    }
+    if stable {
+        return Ok(Some(Channel::Stable));
+    }
+    Ok(None)
+}
+
 fn resolve_channel(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<Channel, String> {
+    if let Some(ch) = channel_switch_flag(parsed)? {
+        return Ok(ch);
+    }
     if let Some(flag) = get_string_flag(&parsed.flags, "channel") {
         return Channel::parse(&flag);
     }
@@ -81,6 +104,29 @@ fn resolve_channel(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Resul
         return Channel::parse(&ch);
     }
     Ok(Channel::Stable)
+}
+
+/// Persist `channel:` so future auto-updates follow the switched track.
+fn persist_channel(channel: Channel, env: &BTreeMap<String, String>) -> Result<bool, String> {
+    let path = resolve_config_path(None, env);
+    let mut cfg = load_config_if_present(&path).unwrap_or_else(Config::default);
+    let next = channel.as_str().to_string();
+    let changed = cfg.channel.as_deref() != Some(next.as_str());
+    if !changed && cfg.channel.is_some() {
+        return Ok(false);
+    }
+    // Also write when channel was previously unset and we are pinning stable/beta,
+    // so subsequent runs don't depend on defaults alone.
+    let was_unset = cfg.channel.is_none();
+    cfg.channel = Some(next);
+    write_config(&cfg, &path)?;
+    Ok(changed || was_unset)
+}
+
+fn version_eq(a: &str, b: &str) -> bool {
+    let a = a.trim().strip_prefix('v').unwrap_or(a.trim());
+    let b = b.trim().strip_prefix('v').unwrap_or(b.trim());
+    a == b
 }
 
 fn wants_check(parsed: &ParsedArgs) -> bool {
@@ -427,6 +473,13 @@ pub fn run(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, S
     if parsed.flag_true("auto") {
         return run_auto(parsed, env);
     }
+    let switch = channel_switch_flag(parsed)?;
+    if let Some(ch) = switch {
+        let changed = persist_channel(ch, env)?;
+        if changed {
+            println!("channel set to {}", ch.as_str());
+        }
+    }
     let channel = resolve_channel(parsed, env)?;
     let fixture = fixture_path(parsed, env);
     let json = load_releases_json(fixture.as_deref())?;
@@ -435,7 +488,13 @@ pub fn run(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, S
     let arch = current_arch();
     let url = release_asset_url(&latest, os, arch);
     let latest_ver = latest.version_str();
-    let update = needs_upgrade(VERSION, latest_ver);
+    // Channel switches may need a "downgrade" (beta → older stable). Compare
+    // equality instead of semver-newer when --beta/--stable was used.
+    let update = if switch.is_some() {
+        !version_eq(VERSION, latest_ver)
+    } else {
+        needs_upgrade(VERSION, latest_ver)
+    };
     let check = wants_check(parsed);
     let dry = parsed.flag_true("dry-run") || fixture.is_some();
 
@@ -611,5 +670,66 @@ mod tests {
             resolve_channel(&parsed_check(), &env).unwrap(),
             Channel::Stable
         );
+    }
+
+    fn parsed_with(flags: &[(&str, bool)]) -> ParsedArgs {
+        ParsedArgs {
+            command: "update".into(),
+            flags: flags
+                .iter()
+                .map(|(k, v)| ((*k).into(), crate::parse::FlagValue::Bool(*v)))
+                .collect(),
+            passthrough: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn beta_stable_flags_resolve_and_conflict() {
+        assert_eq!(
+            resolve_channel(&parsed_with(&[("beta", true)]), &BTreeMap::new()).unwrap(),
+            Channel::Beta
+        );
+        assert_eq!(
+            resolve_channel(&parsed_with(&[("stable", true)]), &BTreeMap::new()).unwrap(),
+            Channel::Stable
+        );
+        let err =
+            channel_switch_flag(&parsed_with(&[("beta", true), ("stable", true)])).unwrap_err();
+        assert!(err.contains("either --beta or --stable"), "{err}");
+    }
+
+    #[test]
+    fn beta_flag_conflicts_with_channel() {
+        let parsed = ParsedArgs {
+            command: "update".into(),
+            flags: std::collections::HashMap::from([
+                ("beta".into(), crate::parse::FlagValue::Bool(true)),
+                (
+                    "channel".into(),
+                    crate::parse::FlagValue::Value("stable".into()),
+                ),
+            ]),
+            passthrough: Vec::new(),
+        };
+        let err = channel_switch_flag(&parsed).unwrap_err();
+        assert!(err.contains("--channel"), "{err}");
+    }
+
+    #[test]
+    fn persist_channel_writes_config() {
+        let (env, dir) = isolated_home();
+        assert!(persist_channel(Channel::Beta, &env).unwrap());
+        let raw = fs::read_to_string(dir.join("config.yaml")).unwrap();
+        assert!(raw.contains("channel: beta"), "{raw}");
+        assert!(!persist_channel(Channel::Beta, &env).unwrap());
+        assert!(persist_channel(Channel::Stable, &env).unwrap());
+        let raw = fs::read_to_string(dir.join("config.yaml")).unwrap();
+        assert!(raw.contains("channel: stable"), "{raw}");
+    }
+
+    #[test]
+    fn version_eq_ignores_v_prefix() {
+        assert!(version_eq("0.1.1", "v0.1.1"));
+        assert!(!version_eq("0.1.1", "0.1.2"));
     }
 }

@@ -239,7 +239,7 @@ fn allowed_flags(command: &str) -> Option<&'static [&'static str]> {
         "menu" => &["dump-tui", "config", "profile", "key", "base-url"],
         "onboard" | "impl" | "plan" | "fix" | "deploy" | "cp" => &["json", "copy"],
         "upgrade" => &[
-            "check", "channel", "fixture", "dry-run", "yes", "auto", "force",
+            "check", "channel", "fixture", "dry-run", "yes", "auto", "force", "beta", "stable",
         ],
         "claude" | "codex" | "grok" | "opencode" | "pool" | "pi" => LAUNCH_FLAGS,
         "cursor" | "cline" | "windsurf" => &["profile", "key", "base-url", "config", "yes"],

@@ -70,7 +70,16 @@ asset (`anyr-linux-x86_64`, `anyr-linux-arm64`, `anyr-darwin-x86_64`, `anyr-darw
 
 ## Upgrade
 
-Re-run the installer for your channel, or bump the npm `next` tag:
+```bash
+anyr update                 # install latest for your current channel
+anyr update --beta          # switch to beta (prereleases) and update
+anyr update --stable        # switch to stable and update
+
+anyr upgrade --check
+anyr upgrade --check --channel beta   # one-shot, does not persist
+```
+
+Or re-run the installer / bump the npm `next` tag:
 
 ```bash
 # curl, stable
@@ -78,9 +87,6 @@ curl -fsSL https://raw.githubusercontent.com/anyrouter-dev/cli/main/setup.sh | b
 
 # curl, beta
 curl -fsSL https://raw.githubusercontent.com/anyrouter-dev/cli/main/setup.sh | bash -s -- --channel beta
-
-anyr upgrade
-anyr upgrade --check --channel beta
 
 # npm
 npm install -g @anyr/cli@next
