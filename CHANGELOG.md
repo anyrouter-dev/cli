@@ -4,6 +4,28 @@ This file is maintained automatically by [release-please](https://github.com/goo
 
 GitHub Releases use this file as the release notes (full history through that tag).
 
+## [0.1.11](https://github.com/anyrouter-dev/cli/compare/v0.1.10...v0.1.11) (2026-08-21)
+
+
+### Features
+
+* **cli:** ar update --beta|--stable switches channel and updates ([4b3db1b](https://github.com/anyrouter-dev/cli/commit/4b3db1b3ecf903805b9a52f12020a366da6fc6e6))
+* **cli:** ar update --beta|--stable switches channel and updates ([dcf1b60](https://github.com/anyrouter-dev/cli/commit/dcf1b6035966b1c1f9eb7c7e0a554e51ce3e601e))
+* **cli:** embed build time, shown in local timezone ([2fd669d](https://github.com/anyrouter-dev/cli/commit/2fd669dd8af37123a994932ce04f71024dd5e9d7))
+* **cli:** looping launcher with config, login, and agent pick ([3b901c1](https://github.com/anyrouter-dev/cli/commit/3b901c1bc38782ee99825349020c71e9b9e5bc25))
+* **cli:** model pin collapses alias slots; fable slot; build time ([256e0cb](https://github.com/anyrouter-dev/cli/commit/256e0cbcf5c84aaaf8eea419dbdbd155d5c67ec7))
+* **cli:** pin model collapses claude alias slots; add fable slot ([96ef51a](https://github.com/anyrouter-dev/cli/commit/96ef51ae14ebe4471cfcf3539018bc21a3b2bc07))
+* **cli:** Ratatui interactive TUI as the default launcher ([ee93b54](https://github.com/anyrouter-dev/cli/commit/ee93b54f0789dc9140db60dc305254c993db126c))
+* **cli:** Ratatui launcher TUI as default ([aa7d4fb](https://github.com/anyrouter-dev/cli/commit/aa7d4fb3f22773840a394df1c912e5d58f19693d))
+* **cli:** two-pane launcher with icons and cached credits ([26f9980](https://github.com/anyrouter-dev/cli/commit/26f9980649c2b4895b45f5844fd4cacabbc0167d))
+* **tui:** centered dialog welcome launcher ([61a22ee](https://github.com/anyrouter-dev/cli/commit/61a22ee98e6d8130dce27f153497ebf0349c1ba5))
+
+
+### Bug Fixes
+
+* **ci:** unblock stable release binaries ([99ba2bc](https://github.com/anyrouter-dev/cli/commit/99ba2bcb09a985249bf191e706e73d9a3e35af2c))
+* **cli:** gate days_from_civil test to unix ([276098d](https://github.com/anyrouter-dev/cli/commit/276098d459d3d5576b7a1533738b96bab2312ba9))
+
 ## [0.1.10](https://github.com/anyrouter-dev/cli/compare/v0.1.9...v0.1.10) (2026-08-21)
 
 
