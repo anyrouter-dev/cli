@@ -498,7 +498,7 @@ pub fn run(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, S
     let check = wants_check(parsed);
     let dry = parsed.flag_true("dry-run") || fixture.is_some();
 
-    println!("anyr {VERSION}");
+    println!("anyr {VERSION} (built {})", crate::buildinfo::display_time());
     println!("channel: {}", channel.as_str());
     println!("latest: {latest_ver}");
     println!("asset: {url}");

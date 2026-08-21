@@ -399,7 +399,7 @@ fn claude_dry_run_with_key_prints_base_and_redacts_secret() {
 }
 
 #[test]
-fn claude_dry_run_pinned_model_keeps_distinct_aliases() {
+fn claude_dry_run_pinned_model_collapses_aliases() {
     let key = "sk-ar-v1-testkey";
     let (code, stdout, stderr) = {
         let out = anyr()
@@ -410,7 +410,7 @@ fn claude_dry_run_pinned_model_keeps_distinct_aliases() {
                 "--key",
                 key,
                 "--model",
-                "anyrouter/free",
+                "stealth/ox-alpha",
             ])
             .env_remove("ANYROUTER_API_KEY")
             .output()
@@ -423,21 +423,95 @@ fn claude_dry_run_pinned_model_keeps_distinct_aliases() {
     };
     assert_eq!(code, 0, "stderr={stderr}");
     assert!(
-        stdout.contains("ANTHROPIC_MODEL=anyrouter/free"),
+        stdout.contains("ANTHROPIC_MODEL=stealth/ox-alpha"),
+        "{stdout}"
+    );
+    // Unset alias slots follow the pinned model so nothing falls back to
+    // haiku/sonnet/opus behind the user's back.
+    for key_line in [
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL=stealth/ox-alpha",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL=stealth/ox-alpha",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL=stealth/ox-alpha",
+        "CLAUDE_CODE_SUBAGENT_MODEL=stealth/ox-alpha",
+    ] {
+        assert!(stdout.contains(key_line), "missing {key_line}:\n{stdout}");
+    }
+}
+
+#[test]
+fn claude_dry_run_haiku_flag_beats_pinned_model() {
+    let key = "sk-ar-v1-testkey";
+    let (code, stdout, stderr) = {
+        let out = anyr()
+            .args([
+                "claude",
+                "--dry-run",
+                "--yes",
+                "--key",
+                key,
+                "--model",
+                "stealth/ox-alpha",
+                "--haiku",
+                "z-ai/glm-4.7-flash",
+            ])
+            .env_remove("ANYROUTER_API_KEY")
+            .output()
+            .expect("dry-run");
+        (
+            out.status.code().unwrap_or(1),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+    assert_eq!(code, 0, "stderr={stderr}");
+    assert!(
+        stdout.contains("ANTHROPIC_DEFAULT_HAIKU_MODEL=z-ai/glm-4.7-flash"),
         "{stdout}"
     );
     assert!(
-        stdout.contains("ANTHROPIC_DEFAULT_SONNET_MODEL=anthropic/claude-sonnet-4.6"),
-        "pinned session model must not overwrite sonnet:\n{stdout}"
-    );
-    assert!(
-        stdout.contains("ANTHROPIC_DEFAULT_HAIKU_MODEL=anthropic/claude-haiku-4.5"),
+        stdout.contains("ANTHROPIC_DEFAULT_SONNET_MODEL=stealth/ox-alpha"),
         "{stdout}"
     );
+}
+
+#[test]
+fn claude_dry_run_fable_flag_beats_pinned_model() {
+    let key = "sk-ar-v1-testkey";
+    let (code, stdout, stderr) = {
+        let out = anyr()
+            .args([
+                "claude",
+                "--dry-run",
+                "--yes",
+                "--key",
+                key,
+                "--model",
+                "stealth/ox-alpha",
+                "--fable",
+                "anthropic/claude-fable-5",
+            ])
+            .env_remove("ANYROUTER_API_KEY")
+            .output()
+            .expect("dry-run");
+        (
+            out.status.code().unwrap_or(1),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+    assert_eq!(code, 0, "stderr={stderr}");
+    // Explicit --fable wins over the pinned session model...
     assert!(
-        stdout.contains("ANTHROPIC_DEFAULT_OPUS_MODEL=anthropic/claude-opus-4.6"),
+        stdout.contains("ANTHROPIC_DEFAULT_FABLE_MODEL=anthropic/claude-fable-5"),
         "{stdout}"
     );
+    // ...while every other unset slot still follows the pin.
+    for key_line in [
+        "ANTHROPIC_DEFAULT_SONNET_MODEL=stealth/ox-alpha",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL=stealth/ox-alpha",
+    ] {
+        assert!(stdout.contains(key_line), "missing {key_line}:\n{stdout}");
+    }
 }
 
 #[test]
