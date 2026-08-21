@@ -1620,20 +1620,21 @@ fn run_menu(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, 
     let dumping = tui_wants_dump(parsed, env);
 
     if dumping {
-        let (header, items) = launcher_frame(&path, parsed, env);
+        let (header, items) = launcher_frame(&path, parsed, env, &mut CreditsCache::fresh());
         print!("{}", tui_dump_menu("AnyRouter", header, items, env));
         return Ok(0);
     }
 
     if !term::is_interactive() {
-        let (_, items) = launcher_frame(&path, parsed, env);
+        let (_, items) = launcher_frame(&path, parsed, env, &mut CreditsCache::fresh());
         println!("{}", items.join("\n"));
         return Ok(0);
     }
 
     // Loop until Quit or a coding-agent launch takes over the process.
+    let mut credits = CreditsCache::fresh();
     loop {
-        let (header, items) = launcher_frame(&path, parsed, env);
+        let (header, items) = launcher_frame(&path, parsed, env, &mut credits);
         let Some(idx) = tui_menu_select("AnyRouter", header, items.clone())? else {
             return Ok(0);
         };
@@ -1677,15 +1678,65 @@ fn launcher_signed_in(path: &PathBuf, parsed: &ParsedArgs, env: &BTreeMap<String
     stored_api_key(parsed, env, path).is_some()
 }
 
+/// Credits cache for the launcher loop: one fetch per TTL instead of one per
+/// frame render. `None` = never fetched / fetch failed (shown as unknown).
+struct CreditsCache {
+    value: Option<Result<String, ()>>,
+    fetched_at: Option<std::time::Instant>,
+}
+
+const CREDITS_TTL: std::time::Duration = std::time::Duration::from_secs(300);
+
+impl CreditsCache {
+    fn fresh() -> Self {
+        Self {
+            value: None,
+            fetched_at: None,
+        }
+    }
+
+    /// Return the cached display string, refreshing when stale.
+    fn get(&mut self, base_url: &str, api_key: Option<&str>) -> String {
+        let expired = self
+            .fetched_at
+            .map(|t| t.elapsed() > CREDITS_TTL)
+            .unwrap_or(true);
+        if expired {
+            self.value = match api_key {
+                Some(key) => Some(
+                    fetch_credits(base_url, key)
+                        .map(|c| crate::http::format_usd(c["balance"].as_f64().unwrap_or(0.0)))
+                        .map_err(|_| ()),
+                ),
+                None => Some(Err(())),
+            };
+            self.fetched_at = Some(std::time::Instant::now());
+        }
+        match &self.value {
+            Some(Ok(s)) => s.clone(),
+            _ => "(unknown)".into(),
+        }
+    }
+}
+
 fn launcher_frame(
     path: &PathBuf,
     parsed: &ParsedArgs,
     env: &BTreeMap<String, String>,
+    credits: &mut CreditsCache,
 ) -> (Vec<String>, Vec<String>) {
     let cfg = load_config_if_present(path).unwrap_or_default();
     let profile = cfg.profiles.get(&cfg.active_profile);
     let signed_in = launcher_signed_in(path, parsed, env);
     let last = launcher_last_tool(path, parsed, env);
+    let base = resolve_base_url(&parsed.flags, profile);
+    let key = resolve_api_key(&parsed.flags, env, profile);
+    let credits_line = if tui_wants_dump(parsed, env) || !term::is_interactive() {
+        // Dump mode and pipes must stay offline-deterministic.
+        "credits  -".to_string()
+    } else {
+        format!("credits  {}", credits.get(&base, key.as_deref()))
+    };
     let header = vec![
         format!(
             "account  {}  {}",
@@ -1701,6 +1752,7 @@ fn launcher_frame(
             display_model_id(profile.map(|p| p.default_model()).unwrap_or("auto"))
         ),
         format!("agent    {last}"),
+        credits_line,
     ];
 
     let mut items = Vec::new();

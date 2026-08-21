@@ -1,6 +1,11 @@
 //! Ratatui widgets + ANSI-free plain frames for dump / tests.
+//!
+//! The launcher renders as a two-pane layout on wide terminals (info panel
+//! left, action list right) and stacks vertically when narrow. Pickers stay
+//! single-pane. All plain_* dumps remain ANSI-free for CI.
 
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
@@ -23,11 +28,16 @@ pub fn render_picker(frame: &mut Frame, state: &PickerState) {
     render_header(frame, chunks[0], &state.title, &state.header);
 
     let search = Paragraph::new(Line::from(vec![
-        Span::styled("search: ", theme::muted()),
+        Span::styled("⌕ ", theme::accent()),
         Span::styled(state.query.as_str(), theme::white()),
         Span::styled("█", theme::accent()),
     ]))
-    .block(Block::default().borders(Borders::ALL).border_style(theme::muted()));
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(theme::muted())
+            .title(Span::styled(" search ", theme::muted())),
+    );
     frame.render_widget(search, chunks[1]);
 
     let filtered = state.filtered();
@@ -35,13 +45,16 @@ pub fn render_picker(frame: &mut Frame, state: &PickerState) {
         .iter()
         .enumerate()
         .map(|(i, (_, label))| {
-            let marker = if i == state.cursor { "◆ " } else { "  " };
             let style = if i == state.cursor {
                 theme::selected()
             } else {
                 theme::white()
             };
-            ListItem::new(Line::from(Span::styled(format!("{marker}{label}"), style)))
+            ListItem::new(Line::from(vec![
+                Span::styled(if i == state.cursor { "❯ " } else { "  " }, theme::accent()),
+                Span::styled(item_icon(label), item_icon_style(label)),
+                Span::styled(format!("{label}"), style),
+            ]))
         })
         .collect();
 
@@ -65,46 +78,89 @@ pub fn render_picker(frame: &mut Frame, state: &PickerState) {
 
 pub fn render_menu(frame: &mut Frame, state: &MenuState) {
     let area = frame.area();
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1 + state.header.len() as u16),
-            Constraint::Min(3),
-            Constraint::Length(1),
-        ])
-        .split(area);
+    // Two panes side by side only when there is room; stack otherwise.
+    let wide = area.width >= 60 && state.header.len() <= 6;
+    let (header_area, body_area) = if wide {
+        let cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(42), Constraint::Percentage(58)])
+            .split(area);
+        (cols[0], cols[1])
+    } else {
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(2 + state.header.len() as u16),
+                Constraint::Min(3),
+            ])
+            .split(area);
+        (rows[0], rows[1])
+    };
 
-    render_header(frame, chunks[0], &state.title, &state.header);
+    if wide {
+        render_info_panel(frame, header_area, &state.title, &state.header);
+    } else {
+        render_header(frame, header_area, &state.title, &state.header);
+    }
 
     let items: Vec<ListItem> = state
         .items
         .iter()
         .enumerate()
         .map(|(i, label)| {
-            let marker = if i == state.cursor { "◆ " } else { "  " };
             let style = if i == state.cursor {
                 theme::selected()
             } else {
                 theme::white()
             };
-            ListItem::new(Line::from(Span::styled(format!("{marker}{label}"), style)))
+            ListItem::new(Line::from(vec![
+                Span::styled(if i == state.cursor { "❯ " } else { "  " }, theme::accent()),
+                Span::styled(item_icon(label), item_icon_style(label)),
+                Span::styled(label.as_str(), style),
+            ]))
         })
         .collect();
 
     let list = List::new(items).block(
         Block::default()
             .borders(Borders::ALL)
-            .border_style(theme::muted())
+            .border_style(if wide { theme::brand() } else { theme::muted() })
             .title(Span::styled(
                 format!(" {} ", state.title),
                 theme::title(),
             )),
     );
     let mut list_state = ListState::default().with_selected(Some(state.cursor));
-    frame.render_stateful_widget(list, chunks[1], &mut list_state);
+    frame.render_stateful_widget(list, body_area, &mut list_state);
 
+    let footer_area = Rect::new(area.x, area.bottom().saturating_sub(1), area.width, 1);
     let footer = Paragraph::new(Span::styled(state.hint(), theme::muted()));
-    frame.render_widget(footer, chunks[2]);
+    frame.render_widget(footer, footer_area);
+}
+
+/// Bordered panel showing account / model / agent / credits lines.
+fn render_info_panel(frame: &mut Frame, area: Rect, title: &str, header: &[String]) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(theme::muted())
+        .title(Span::styled(format!(" {title} "), theme::brand()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(Span::styled("▲", theme::brand())));
+    lines.push(Line::from(""));
+    for h in header {
+        let Some((key, rest)) = h.split_once("  ") else {
+            lines.push(Line::from(Span::styled(h.clone(), theme::white())));
+            continue;
+        };
+        lines.push(Line::from(vec![
+            Span::styled(format!("{key:<9}"), theme::muted()),
+            Span::styled(rest.to_string(), theme::white()),
+        ]));
+    }
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 fn render_header(frame: &mut Frame, area: Rect, title: &str, header: &[String]) {
@@ -116,6 +172,45 @@ fn render_header(frame: &mut Frame, area: Rect, title: &str, header: &[String]) 
         lines.push(Line::from(Span::styled(h.clone(), theme::muted())));
     }
     frame.render_widget(Paragraph::new(lines), area);
+}
+
+/// Icon for a launcher/picker row, derived from its label.
+pub fn item_icon(label: &str) -> &'static str {
+    let l = label.to_ascii_lowercase();
+    if label.starts_with("Launch") || l.contains("claude") || l.contains("codex") {
+        "⚡ "
+    } else if l.contains("config") {
+        "⚙  "
+    } else if l.contains("switch") || l.contains("account") {
+        "⇄  "
+    } else if l.contains("credit") {
+        "¤  "
+    } else if l.contains("login") || l.contains("sign in") {
+        "🔑 "
+    } else if l.contains("logout") || l.contains("log out") {
+        "🚪 "
+    } else if l.contains("onboard") {
+        "📋 "
+    } else if l.contains("quit") {
+        "✕  "
+    } else if l.contains("model") {
+        "◆  "
+    } else {
+        "·  "
+    }
+}
+
+fn item_icon_style(label: &str) -> Style {
+    let l = label.to_ascii_lowercase();
+    if label.starts_with("Launch") {
+        theme::success()
+    } else if l.contains("quit") {
+        theme::muted()
+    } else if l.contains("credit") {
+        theme::model()
+    } else {
+        theme::accent()
+    }
 }
 
 /// ANSI-free plain frame for `--dump-tui` and unit tests.
@@ -207,5 +302,21 @@ mod tests {
         let frame = plain_picker_frame(&state, 80);
         assert!(frame.contains("search: a"));
         assert!(!frame.contains('\u{1b}'));
+    }
+
+    #[test]
+    fn icons_cover_launcher_actions() {
+        for (label, icon) in [
+            ("Launch claude", "⚡"),
+            ("Config", "⚙"),
+            ("Switch model", "⇄"),
+            ("Credits", "¤"),
+            ("Login / sign in", "🔑"),
+            ("Log out", "🚪"),
+            ("Agent onboard prompt…", "📋"),
+            ("Quit", "✕"),
+        ] {
+            assert_eq!(item_icon(label).trim(), icon, "icon for {label}");
+        }
     }
 }
