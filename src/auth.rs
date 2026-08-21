@@ -29,7 +29,6 @@ pub struct DeviceStart {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceToken {
     pub api_key: String,
-    pub management_key: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -118,16 +117,9 @@ pub fn parse_device_token(status: u16, body: &str) -> DevicePoll {
         else {
             return DevicePoll::Failed("Device login response did not include an API key.".into());
         };
-        let management_key = value
-            .get("management_key")
-            .and_then(|v| v.get("secret"))
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-            .map(str::to_string);
-        return DevicePoll::Ready(DeviceToken {
-            api_key,
-            management_key,
-        });
+        // Legacy servers may still send `management_key`; ignore it — API keys
+        // with Key Management permission are enough.
+        return DevicePoll::Ready(DeviceToken { api_key });
     }
     let value: serde_json::Value = serde_json::from_str(body).unwrap_or(serde_json::Value::Null);
     match error_code(&value).as_str() {
@@ -285,7 +277,6 @@ pub fn login_via_device(
 #[derive(Debug, Clone)]
 pub struct AcquiredKey {
     pub api_key: String,
-    pub management_key: Option<String>,
     pub source: String,
 }
 
@@ -301,7 +292,6 @@ pub fn acquire_api_key(
         if !trimmed.is_empty() {
             return Ok(AcquiredKey {
                 api_key: trimmed.to_string(),
-                management_key: get_string_flag(flags, "management-key"),
                 source: "--key".into(),
             });
         }
@@ -313,7 +303,6 @@ pub fn acquire_api_key(
     {
         return Ok(AcquiredKey {
             api_key: key.to_string(),
-            management_key: get_string_flag(flags, "management-key"),
             source: "ANYROUTER_API_KEY".into(),
         });
     }
@@ -324,9 +313,6 @@ pub fn acquire_api_key(
         let token = login_via_device(base_url, tool, browser_likely_available(env))?;
         return Ok(AcquiredKey {
             api_key: token.api_key,
-            management_key: token
-                .management_key
-                .or_else(|| get_string_flag(flags, "management-key")),
             source: "device code".into(),
         });
     }
@@ -352,7 +338,6 @@ pub fn acquire_api_key(
         }
         return Ok(AcquiredKey {
             api_key,
-            management_key: get_string_flag(flags, "management-key"),
             source: "paste".into(),
         });
     }
@@ -361,9 +346,6 @@ pub fn acquire_api_key(
     match login_via_device(base_url, tool, open_browser) {
         Ok(token) => Ok(AcquiredKey {
             api_key: token.api_key,
-            management_key: token
-                .management_key
-                .or_else(|| get_string_flag(flags, "management-key")),
             source: if open_browser {
                 "browser".into()
             } else {
@@ -378,7 +360,6 @@ pub fn acquire_api_key(
             }
             Ok(AcquiredKey {
                 api_key,
-                management_key: get_string_flag(flags, "management-key"),
                 source: "paste".into(),
             })
         }
@@ -423,7 +404,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_device_token_ready_with_management_key() {
+    fn parse_device_token_ready_ignores_legacy_management_key() {
         let poll = parse_device_token(
             200,
             r#"{"key":"sk-ar-v1-secret","management_key":{"secret":"ak_mgmt"}}"#,
@@ -431,7 +412,6 @@ mod tests {
         match poll {
             DevicePoll::Ready(t) => {
                 assert_eq!(t.api_key, "sk-ar-v1-secret");
-                assert_eq!(t.management_key.as_deref(), Some("ak_mgmt"));
             }
             other => panic!("expected ready, got {other:?}"),
         }

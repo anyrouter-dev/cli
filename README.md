@@ -96,11 +96,24 @@ anyr usage                  # credit balance
 anyr models use <id>        # persist default model
 anyr keys list              # switch with: anyr keys use
 anyr account use work       # switch saved profiles
+anyr onboard impl           # paste-ready prompt for a coding agent
+anyr plan                   # migration plan prompt (no code changes)
+anyr fix                    # repair LLM wiring through AnyRouter
 anyr claude --ok            # launch through the gateway
 anyr claude --install --ok  # install Claude Code first if missing
 anyr codex --ok
 anyr opencode --ok
 anyr pi --ok
+```
+
+Release size is tracked on every PR (`scripts/bench.py`): stripped
+`anyr-linux-x86_64` must stay ≤ 4.0 MiB. Locally:
+
+```bash
+cargo build --release
+strip -s target/release/anyr 2>/dev/null || true
+python scripts/bench.py measure --bin target/release/anyr \
+  --asset anyr-linux-x86_64 --kind native --out /tmp/anyr-bench.json
 ```
 
 ## Version lock (0.1.x)

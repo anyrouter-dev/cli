@@ -7,7 +7,6 @@ pub static VALUE_FLAGS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
         "effort",
         "preset",
         "key",
-        "management-key",
         "profile",
         "base-url",
         "config",

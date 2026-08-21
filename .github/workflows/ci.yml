@@ -203,7 +203,9 @@ jobs:
 
       - name: compose markdown
         run: |
-          python scripts/bench.py report artifacts --out bench-report.md --json-out bench-report.json
+          python scripts/bench.py report artifacts \
+            --out bench-report.md --json-out bench-report.json \
+            --check-budget
           cat bench-report.md >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v4

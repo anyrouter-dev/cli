@@ -19,7 +19,7 @@ fn run(args: &[&str]) -> (i32, String, String) {
 fn help_lists_login_claude_account_and_spawn_targets() {
     let (code, stdout, stderr) = run(&["--help"]);
     assert_eq!(code, 0, "stderr={stderr}");
-    for word in ["auth", "claude", "keys", "usage", "models"] {
+    for word in ["auth", "claude", "keys", "usage", "models", "onboard"] {
         assert!(stdout.contains(word), "missing {word} in:\n{stdout}");
     }
     for target in [
@@ -188,6 +188,12 @@ fn documented_commands_are_known_not_unknown() {
         "poolside",
         "upgrade",
         "update",
+        "onboard",
+        "impl",
+        "plan",
+        "fix",
+        "deploy",
+        "cp",
     ];
     for cmd in commands {
         let (code, stdout, stderr) = run(&[cmd, "--help"]);
@@ -199,6 +205,52 @@ fn documented_commands_are_known_not_unknown() {
         );
         assert!(!stdout.is_empty(), "{cmd} --help printed nothing");
     }
+}
+
+#[test]
+fn onboard_impl_prints_contract_prompt() {
+    let (code, stdout, stderr) = run(&["onboard", "impl"]);
+    assert_eq!(code, 0, "stderr={stderr}");
+    assert!(stdout.contains("ANYROUTER_API_KEY"), "{stdout}");
+    assert!(stdout.contains("https://anyrouter.dev/api/v1"), "{stdout}");
+    assert!(stdout.contains("https://anyrouter.dev/api"), "{stdout}");
+}
+
+#[test]
+fn onboard_shortcuts_and_json() {
+    for cmd in ["impl", "plan", "fix", "deploy"] {
+        let (code, stdout, stderr) = run(&[cmd]);
+        assert_eq!(code, 0, "{cmd} stderr={stderr}");
+        assert!(!stdout.is_empty(), "{cmd} empty");
+    }
+    let (code, stdout, stderr) = run(&["onboard", "plan", "--json"]);
+    assert_eq!(code, 0, "stderr={stderr}");
+    assert!(stdout.contains("\"mode\":\"plan\"") || stdout.contains("\"mode\": \"plan\""), "{stdout}");
+    assert!(
+        stdout.to_ascii_lowercase().contains("do not change"),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn onboard_without_mode_non_tty_errors() {
+    let (code, stdout, stderr) = run(&["onboard"]);
+    assert_ne!(code, 0);
+    let combined = format!("{stdout}{stderr}");
+    assert!(
+        combined.contains("Specify a mode") || combined.contains("onboard --help"),
+        "{combined}"
+    );
+}
+
+#[test]
+fn stub_help_is_honest() {
+    let (code, stdout, stderr) = run(&["task", "--help"]);
+    assert_eq!(code, 0, "{stderr}");
+    assert!(
+        stdout.contains("not yet in the native CLI"),
+        "expected honest stub help, got:\n{stdout}"
+    );
 }
 
 #[test]
