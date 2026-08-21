@@ -85,6 +85,7 @@ const LAUNCH_FLAGS: &[&str] = &[
     "haiku",
     "sonnet",
     "opus",
+    "fable",
     "profile",
     "preset",
     "key",
@@ -158,6 +159,7 @@ fn allowed_flags(command: &str) -> Option<&'static [&'static str]> {
         ],
         "models" => &[
             "profile", "config", "json", "key", "base-url", "pick", "haiku", "sonnet", "opus",
+            "fable",
         ],
         "usage" => &["profile", "base-url", "config", "json", "key", "no-detail"],
         "whoami" => &["profile", "config", "json"],
@@ -405,7 +407,7 @@ pub fn run(argv: Vec<String>, env: HashMap<String, String>) -> i32 {
 
     let command = parsed.command.as_str();
     if command == "--version" || command == "-v" {
-        println!("{VERSION}");
+        println!("{VERSION} (built {})", crate::buildinfo::display_time());
         return 0;
     }
 
@@ -550,6 +552,7 @@ fn persist_login(
         profile.claude_haiku = prev.claude_haiku.clone();
         profile.claude_sonnet = prev.claude_sonnet.clone();
         profile.claude_opus = prev.claude_opus.clone();
+        profile.claude_fable = prev.claude_fable.clone();
     }
     let mut cfg = upsert_profile(existing.unwrap_or_default(), &name, profile);
     cfg.active_profile = name.clone();
@@ -651,6 +654,7 @@ fn set_model_slot(profile: &mut Profile, slot: &str, id: String) {
         "haiku" => profile.claude_haiku = Some(id),
         "sonnet" => profile.claude_sonnet = Some(id),
         "opus" => profile.claude_opus = Some(id),
+        "fable" => profile.claude_fable = Some(id),
         _ => profile.default_model = Some(id),
     }
 }
@@ -661,11 +665,13 @@ fn pick_claude_slot(profile: &Profile) -> Result<&'static str, String> {
         format!("Haiku    ·  {}", profile.claude_haiku()),
         format!("Sonnet   ·  {}", profile.claude_sonnet()),
         format!("Opus     ·  {}", profile.claude_opus()),
+        format!("Fable    ·  {}", profile.claude_fable()),
     ];
     Ok(match term::pick("Which Claude model?", &items, Some(0))? {
         1 => "haiku",
         2 => "sonnet",
         3 => "opus",
+        4 => "fable",
         _ => "default",
     })
 }
@@ -675,6 +681,7 @@ fn slot_title(slot: &str) -> &'static str {
         "haiku" => "Haiku model",
         "sonnet" => "Sonnet model",
         "opus" => "Opus model",
+        "fable" => "Fable model",
         _ => "Default model",
     }
 }
@@ -684,6 +691,7 @@ fn slot_current<'a>(profile: &'a Profile, slot: &str) -> &'a str {
         "haiku" => profile.claude_haiku(),
         "sonnet" => profile.claude_sonnet(),
         "opus" => profile.claude_opus(),
+        "fable" => profile.claude_fable(),
         _ => profile.default_model(),
     }
 }
@@ -700,6 +708,10 @@ fn apply_claude_alias_flags(profile: &mut Profile, parsed: &ParsedArgs) -> bool 
     }
     if let Some(v) = get_string_flag(&parsed.flags, "opus") {
         profile.claude_opus = Some(v);
+        changed = true;
+    }
+    if let Some(v) = get_string_flag(&parsed.flags, "fable") {
+        profile.claude_fable = Some(v);
         changed = true;
     }
     changed
@@ -726,6 +738,7 @@ fn save_model_slot(
         "haiku" => "haiku",
         "sonnet" => "sonnet",
         "opus" => "opus",
+        "fable" => "fable",
         _ => "default model",
     };
     println!("{}  {}  {}", term::ok("Saved"), label, term::model_id(id));
@@ -746,6 +759,7 @@ fn run_models(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32
         ("haiku", get_string_flag(&parsed.flags, "haiku")),
         ("sonnet", get_string_flag(&parsed.flags, "sonnet")),
         ("opus", get_string_flag(&parsed.flags, "opus")),
+        ("fable", get_string_flag(&parsed.flags, "fable")),
     ];
     let has_alias_flags = flag_slots.iter().any(|(_, v)| v.is_some());
     if sub == Some("use") || has_alias_flags {
@@ -867,6 +881,7 @@ fn run_whoami(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32
             "claude_haiku": profile.claude_haiku(),
             "claude_sonnet": profile.claude_sonnet(),
             "claude_opus": profile.claude_opus(),
+            "claude_fable": profile.claude_fable(),
             "default_tool": profile.default_tool,
             "base_url": profile.base_url(),
         });
@@ -957,6 +972,11 @@ fn print_config_status(
             "{}  {}",
             term::dim("opus    "),
             term::model_id(p.claude_opus())
+        );
+        println!(
+            "{}  {}",
+            term::dim("fable   "),
+            term::model_id(p.claude_fable())
         );
     }
     if let Some(tool) = profile.and_then(|p| p.default_tool.as_deref()) {
@@ -1185,6 +1205,7 @@ fn run_launch(
                 p.claude_haiku = profile.claude_haiku.clone();
                 p.claude_sonnet = profile.claude_sonnet.clone();
                 p.claude_opus = profile.claude_opus.clone();
+                p.claude_fable = profile.claude_fable.clone();
             }
         }
         let _ = write_config(&cfg, &path);

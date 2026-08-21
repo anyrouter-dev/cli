@@ -18,6 +18,7 @@ Options:
   --haiku <id>          Claude /model haiku and subagents
   --sonnet <id>         Claude /model sonnet
   --opus <id>           Claude /model opus
+  --fable <id>          Claude /model fable (also the auto-fallback target)
   --effort <level>      Reasoning effort: minimal | low | medium | high | xhigh | max
   --hub <slug>          Load a hub: sync ~/.anyrouter/hubs + claude --plugin-dir
   --profile <name>      Use a named profile
@@ -327,18 +328,19 @@ const MODELS: &str = "\
 Usage:
   {bin} models [options]
   {bin} models use <id>
-  {bin} models use --haiku|--sonnet|--opus <id>
+  {bin} models use --haiku|--sonnet|--opus|--fable <id>
   {bin} models --pick
 
 Lists every model id usable with --model. `use` / `--pick` persist the session
-default, or Claude Code's opus / sonnet / haiku aliases.
+default, or Claude Code's opus / sonnet / haiku / fable aliases.
 
 Options:
   --json            Print as JSON
-  --pick            Interactive picker (TTY) — default / haiku / sonnet / opus
+  --pick            Interactive picker (TTY) — default / haiku / sonnet / opus / fable
   --haiku <id>      Persist Claude haiku alias
   --sonnet <id>     Persist Claude sonnet alias
   --opus <id>       Persist Claude opus alias
+  --fable <id>      Persist Claude fable alias (auto-fallback target)
   --key sk-ar-v1-…  Optional inference key
 ";
 
@@ -352,7 +354,7 @@ USAGE
   {bin} config use <account>   Switch the active account
 
 On a TTY, `{bin} config` opens a Ratatui list until you pick Done: switch
-key, account, model (default / haiku / sonnet / opus), view credits, sign
+key, account, model (default / haiku / sonnet / opus / fable), view credits, sign
 in, or log out. `--dump-tui` prints one plain frame and exits.
 ";
 

@@ -378,24 +378,50 @@ pub fn build_tool_env(input: BuildToolEnvInput<'_>) -> BTreeMap<String, String> 
             }
             .into(),
         );
-        // Keep opus/sonnet/haiku independent so Claude Code's /model picker
-        // lists all three instead of collapsing onto the session model.
-        env.insert(
-            "ANTHROPIC_DEFAULT_HAIKU_MODEL".into(),
-            input.profile.claude_haiku().to_string(),
-        );
+        // A concrete pinned model takes over every Claude Code alias slot
+        // (haiku / sonnet / opus / fable and subagents) so nothing — including
+        // automatic model fallback, which rides the fable alias on third-party
+        // providers — falls back to a different model. Slots set explicitly
+        // (--haiku/--sonnet/--opus/--fable or the profile config) still win.
+        let pinned = (!is_auto_model(input.model)).then_some(input.model);
+        let alias = |slot: &Option<String>, default: &str| -> String {
+            let explicit = slot.as_deref().map(str::trim).filter(|s| !s.is_empty());
+            match (pinned, explicit) {
+                (Some(id), None) => id.to_string(),
+                _ => default.to_string(),
+            }
+        };
+        let haiku = alias(&input.profile.claude_haiku, input.profile.claude_haiku());
+        env.insert("ANTHROPIC_DEFAULT_HAIKU_MODEL".into(), haiku.clone());
         env.insert(
             "ANTHROPIC_DEFAULT_SONNET_MODEL".into(),
-            input.profile.claude_sonnet().to_string(),
+            alias(&input.profile.claude_sonnet, input.profile.claude_sonnet()),
         );
         env.insert(
             "ANTHROPIC_DEFAULT_OPUS_MODEL".into(),
-            input.profile.claude_opus().to_string(),
+            alias(&input.profile.claude_opus, input.profile.claude_opus()),
         );
         env.insert(
-            "CLAUDE_CODE_SUBAGENT_MODEL".into(),
-            input.profile.claude_haiku().to_string(),
+            "ANTHROPIC_DEFAULT_FABLE_MODEL".into(),
+            alias(&input.profile.claude_fable, input.profile.claude_fable()),
         );
+        env.insert("CLAUDE_CODE_SUBAGENT_MODEL".into(), haiku);
+        // Label each picker entry with its role; otherwise four identical IDs
+        // all render as "Custom <Alias> model".
+        for (key, value) in [
+            (
+                "ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION",
+                "Background & subagents",
+            ),
+            ("ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION", "Sonnet alias"),
+            ("ANTHROPIC_DEFAULT_OPUS_MODEL_DESCRIPTION", "Opus alias"),
+            (
+                "ANTHROPIC_DEFAULT_FABLE_MODEL_DESCRIPTION",
+                "Fable alias + fallback",
+            ),
+        ] {
+            env.insert(key.into(), value.into());
+        }
         if let Some(effort) = harness_effort("claude", input.effort) {
             if let Some((_, tokens)) = CLAUDE_EFFORT_TOKENS.iter().find(|(k, _)| *k == effort) {
                 env.insert("MAX_THINKING_TOKENS".into(), tokens.to_string());
@@ -701,35 +727,70 @@ mod tests {
     }
 
     #[test]
-    fn claude_pinned_model_does_not_collapse_aliases() {
+    fn claude_pinned_model_collapses_unset_aliases() {
         let tool = builtin("claude").unwrap();
         let env = build_tool_env(BuildToolEnvInput {
             tool_name: "claude",
             tool: &tool,
             profile: &profile(),
             api_key: "sk-ar-v1-secret",
-            model: "anyrouter/free",
+            model: "stealth/ox-alpha",
             effort: None,
             context_window: None,
             model_map: None,
         });
         assert_eq!(
             env.get("ANTHROPIC_MODEL").map(String::as_str),
-            Some("anyrouter/free")
+            Some("stealth/ox-alpha")
         );
+        // Every unset alias slot follows the pinned model so nothing
+        // (subagents, automatic fallback) silently falls back to another model.
+        for key in [
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL",
+            "ANTHROPIC_DEFAULT_OPUS_MODEL",
+            "ANTHROPIC_DEFAULT_FABLE_MODEL",
+            "CLAUDE_CODE_SUBAGENT_MODEL",
+        ] {
+            assert_eq!(
+                env.get(key).map(String::as_str),
+                Some("stealth/ox-alpha"),
+                "{key} should follow the pinned model"
+            );
+        }
+    }
+
+    #[test]
+    fn claude_explicit_alias_beats_pinned_model() {
+        let tool = builtin("claude").unwrap();
+        let mut p = profile();
+        p.claude_sonnet = Some("z-ai/glm-4.7-flash".into());
+        let env = build_tool_env(BuildToolEnvInput {
+            tool_name: "claude",
+            tool: &tool,
+            profile: &p,
+            api_key: "sk-ar-v1-secret",
+            model: "stealth/ox-alpha",
+            effort: None,
+            context_window: None,
+            model_map: None,
+        });
         assert_eq!(
-            env.get("ANTHROPIC_DEFAULT_SONNET_MODEL")
-                .map(String::as_str),
-            Some("anthropic/claude-sonnet-4.6")
+            env.get("ANTHROPIC_DEFAULT_SONNET_MODEL").map(String::as_str),
+            Some("z-ai/glm-4.7-flash")
         );
-        assert_ne!(
-            env.get("ANTHROPIC_DEFAULT_HAIKU_MODEL").map(String::as_str),
-            Some("anyrouter/free")
-        );
-        assert_ne!(
-            env.get("ANTHROPIC_DEFAULT_OPUS_MODEL").map(String::as_str),
-            Some("anyrouter/free")
-        );
+        for key in [
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+            "ANTHROPIC_DEFAULT_OPUS_MODEL",
+            "ANTHROPIC_DEFAULT_FABLE_MODEL",
+            "CLAUDE_CODE_SUBAGENT_MODEL",
+        ] {
+            assert_eq!(
+                env.get(key).map(String::as_str),
+                Some("stealth/ox-alpha"),
+                "{key} should follow the pinned model"
+            );
+        }
     }
 
     #[test]

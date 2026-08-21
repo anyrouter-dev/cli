@@ -11,6 +11,7 @@ pub const DEFAULT_PRESET: &str = "@preset/coding-stack";
 pub const DEFAULT_CLAUDE_HAIKU: &str = "anthropic/claude-haiku-4.5";
 pub const DEFAULT_CLAUDE_SONNET: &str = "anthropic/claude-sonnet-4.6";
 pub const DEFAULT_CLAUDE_OPUS: &str = "anthropic/claude-opus-4.6";
+pub const DEFAULT_CLAUDE_FABLE: &str = "anthropic/claude-fable-5";
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum YamlValue {
@@ -58,6 +59,7 @@ pub struct Profile {
     pub claude_haiku: Option<String>,
     pub claude_sonnet: Option<String>,
     pub claude_opus: Option<String>,
+    pub claude_fable: Option<String>,
     pub timeout_ms: Option<i64>,
     pub extra: BTreeMap<String, YamlValue>,
 }
@@ -85,6 +87,10 @@ impl Profile {
 
     pub fn claude_opus(&self) -> &str {
         nonempty(&self.claude_opus).unwrap_or(DEFAULT_CLAUDE_OPUS)
+    }
+
+    pub fn claude_fable(&self) -> &str {
+        nonempty(&self.claude_fable).unwrap_or(DEFAULT_CLAUDE_FABLE)
     }
 
     pub fn timeout_ms(&self) -> i64 {
@@ -355,6 +361,7 @@ fn profile_from_map(map: &BTreeMap<String, YamlValue>) -> Profile {
                 p.claude_sonnet = Some(v.as_string_lossy()).filter(|s| !s.is_empty())
             }
             "claude_opus" => p.claude_opus = Some(v.as_string_lossy()).filter(|s| !s.is_empty()),
+            "claude_fable" => p.claude_fable = Some(v.as_string_lossy()).filter(|s| !s.is_empty()),
             "timeout_ms" => {
                 p.timeout_ms = match v {
                     YamlValue::Int(n) => Some(*n),
@@ -464,6 +471,9 @@ pub fn serialize_config(config: &Config) -> String {
         }
         if let Some(m) = &profile.claude_opus {
             lines.push(format!("    claude_opus: {}", yaml_scalar(m)));
+        }
+        if let Some(m) = &profile.claude_fable {
+            lines.push(format!("    claude_fable: {}", yaml_scalar(m)));
         }
         if let Some(t) = profile.timeout_ms {
             lines.push(format!("    timeout_ms: {t}"));
