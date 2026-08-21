@@ -19,6 +19,7 @@ name = "anyr-cli"
 version = "0.1.10"
 dependencies = [
  "crossterm",
+ "libc",
  "ratatui",
  "serde_json",
  "ureq",
