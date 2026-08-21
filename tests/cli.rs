@@ -57,6 +57,10 @@ fn help_lists_login_claude_account_and_spawn_targets() {
         "bare-command help should describe login-then-launcher, got:\n{stdout}"
     );
     assert!(
+        stdout.contains("Open the interactive TUI") && stdout.contains("menu:"),
+        "help should present the TUI as the default entry, got:\n{stdout}"
+    );
+    assert!(
         stdout.contains("▀█████████▄"),
         "help should render the official AR half-block mark, got:\n{stdout}"
     );
@@ -91,7 +95,8 @@ fn help_follows_anyr_display_bin() {
             "ANYR_DISPLAY_BIN={name} missing {needle:?} in:\n{stdout}"
         );
         assert!(
-            stdout.contains(&format!("{name} <command>")),
+            stdout.contains(&format!("{name} <command>"))
+                || stdout.contains(&format!("{name}                  Open the interactive TUI")),
             "ANYR_DISPLAY_BIN={name} missing usage line in:\n{stdout}"
         );
     }
@@ -884,5 +889,61 @@ fn upgrade_auto_is_quiet_when_up_to_date() {
     assert!(
         !stdout.contains("would update") && !stdout.contains("update available"),
         "up-to-date auto-update should be silent, got:\n{stdout}"
+    );
+}
+
+#[test]
+fn menu_dump_tui_prints_plain_frame() {
+    let dir = std::env::temp_dir().join(format!("anyr-cli-menu-dump-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("config.yaml");
+    std::fs::write(
+        &path,
+        "\
+active_profile: default
+profiles:
+  default:
+    api_key: sk-ar-v1-menu-dump-secret-value-abcdef
+    default_model: auto
+",
+    )
+    .unwrap();
+    let out = anyr()
+        .args(["menu", "--dump-tui", "--config", path.to_str().unwrap()])
+        .output()
+        .expect("menu dump");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code().unwrap_or(1), 0, "{stdout}{stderr}");
+    assert!(!stdout.contains('\u{1b}'), "dump must be ANSI-free: {stdout}");
+    assert!(stdout.contains("▲ AnyRouter"), "{stdout}");
+    assert!(stdout.contains("Launch"), "{stdout}");
+    assert!(stdout.contains("Config"), "{stdout}");
+    assert!(stdout.contains("Quit"), "{stdout}");
+    assert!(
+        !stdout.contains("menu-dump-secret-value"),
+        "dump must not leak full secret: {stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn config_dump_tui_prints_plain_frame() {
+    let (code, stdout, stderr) = run(&["config", "--dump-tui"]);
+    assert_eq!(code, 0, "{stdout}{stderr}");
+    assert!(!stdout.contains('\u{1b}'), "dump must be ANSI-free: {stdout}");
+    assert!(stdout.contains("▲ Config"), "{stdout}");
+    assert!(stdout.contains("Switch key"), "{stdout}");
+    assert!(stdout.contains("Done"), "{stdout}");
+}
+
+#[test]
+fn menu_help_mentions_dump_tui() {
+    let (code, stdout, stderr) = run(&["menu", "--help"]);
+    assert_eq!(code, 0, "{stdout}{stderr}");
+    let combined = format!("{stdout}{stderr}");
+    assert!(
+        combined.contains("dump-tui") || combined.contains("Ratatui"),
+        "{combined}"
     );
 }

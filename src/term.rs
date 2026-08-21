@@ -337,8 +337,14 @@ pub fn confirm(question: &str) -> bool {
     }
 }
 
-/// Numbered picker. `current` is pre-selected (1-based display still). Empty
-/// input keeps `current` when set, otherwise cancels. Long lists paginate.
+/// Interactive picker (Ratatui when `native`). `current` is pre-selected.
+#[cfg(feature = "native")]
+pub fn pick(title: &str, items: &[String], current: Option<usize>) -> Result<usize, String> {
+    crate::tui::pick(title, items, current)
+}
+
+/// Fallback readline picker when the native TUI feature is off.
+#[cfg(not(feature = "native"))]
 pub fn pick(title: &str, items: &[String], current: Option<usize>) -> Result<usize, String> {
     const PAGE: usize = 12;
     if items.is_empty() {

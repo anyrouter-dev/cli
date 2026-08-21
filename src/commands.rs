@@ -24,6 +24,61 @@ use crate::spawn::{
 use crate::term;
 use crate::VERSION;
 
+#[cfg(feature = "native")]
+fn tui_wants_dump(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> bool {
+    crate::tui::wants_dump(parsed, env)
+}
+
+#[cfg(not(feature = "native"))]
+fn tui_wants_dump(_parsed: &ParsedArgs, _env: &BTreeMap<String, String>) -> bool {
+    false
+}
+
+#[cfg(feature = "native")]
+fn tui_menu_select(
+    title: &str,
+    header: Vec<String>,
+    items: Vec<String>,
+) -> Result<Option<usize>, String> {
+    crate::tui::run_menu_select(title, header, items)
+}
+
+#[cfg(not(feature = "native"))]
+fn tui_menu_select(
+    title: &str,
+    _header: Vec<String>,
+    items: Vec<String>,
+) -> Result<Option<usize>, String> {
+    match term::pick(title, &items, Some(0)) {
+        Ok(i) => Ok(Some(i)),
+        Err(_) => Ok(None),
+    }
+}
+
+#[cfg(feature = "native")]
+fn tui_dump_menu(
+    title: &str,
+    header: Vec<String>,
+    items: Vec<String>,
+    env: &BTreeMap<String, String>,
+) -> String {
+    crate::tui::dump_menu_select(title, header, items, crate::tui::dump_cols(env))
+}
+
+#[cfg(not(feature = "native"))]
+fn tui_dump_menu(
+    title: &str,
+    header: Vec<String>,
+    items: Vec<String>,
+    _env: &BTreeMap<String, String>,
+) -> String {
+    let mut lines = vec![format!("▲ {title}")];
+    lines.extend(header);
+    lines.extend(items);
+    lines.push(String::new());
+    lines.join("\n")
+}
+
 const LAUNCH_FLAGS: &[&str] = &[
     "model",
     "effort",
@@ -106,7 +161,7 @@ fn allowed_flags(command: &str) -> Option<&'static [&'static str]> {
         ],
         "usage" => &["profile", "base-url", "config", "json", "key", "no-detail"],
         "whoami" => &["profile", "config", "json"],
-        "config" => &["config", "json", "key", "base-url", "profile"],
+        "config" => &["config", "json", "key", "base-url", "profile", "dump-tui"],
         "account" => &[
             "yes",
             "config",
@@ -181,7 +236,7 @@ fn allowed_flags(command: &str) -> Option<&'static [&'static str]> {
             "masked",
         ],
         "prompt" => &["base-url", "json"],
-        "menu" => &[],
+        "menu" => &["dump-tui", "config", "profile", "key", "base-url"],
         "onboard" | "impl" | "plan" | "fix" | "deploy" | "cp" => &["json", "copy"],
         "upgrade" => &[
             "check", "channel", "fixture", "dry-run", "yes", "auto", "force",
@@ -355,13 +410,14 @@ pub fn run(argv: Vec<String>, env: HashMap<String, String>) -> i32 {
     }
 
     // parse_cli_args maps empty argv to command "help". Check emptiness first
-    // so a real terminal gets the TUI launcher, not --help.
-    if should_open_launcher(&raw, term::is_interactive()) {
+    // so a real terminal gets the TUI launcher, not --help. Dump mode also
+    // opens the launcher without a TTY (`ANYR_TUI_DUMP=1`).
+    if should_open_launcher(&raw, term::is_interactive(), tui_wants_dump(&parsed, &env)) {
         #[cfg(feature = "native")]
         crate::upgrade::on_startup("menu", &parsed, &env);
         let empty = ParsedArgs {
             command: "menu".into(),
-            flags: HashMap::new(),
+            flags: parsed.flags.clone(),
             passthrough: Vec::new(),
         };
         return match run_menu(&empty, &env) {
@@ -921,7 +977,7 @@ fn print_config_status(
 
 fn run_config_tui(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, String> {
     let path = config_path(parsed, env);
-    if stored_api_key(parsed, env, &path).is_none() {
+    if !tui_wants_dump(parsed, env) && stored_api_key(parsed, env, &path).is_none() {
         run_login(parsed, env)?;
         if stored_api_key(parsed, env, &path).is_none() {
             return Err(hint(
@@ -929,20 +985,25 @@ fn run_config_tui(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result
             ));
         }
     }
+    let items = vec![
+        "Switch key".into(),
+        "Switch account".into(),
+        "Switch model".into(),
+        "Credits".into(),
+        "Sign in".into(),
+        "Log out".into(),
+        "Done".into(),
+    ];
+    if tui_wants_dump(parsed, env) {
+        let header = config_tui_header(&path);
+        print!("{}", tui_dump_menu("Config", header, items, env));
+        return Ok(0);
+    }
     loop {
-        println!();
-        print_config_status(parsed, env, &path)?;
-        println!();
-        let items = vec![
-            "Switch key".into(),
-            "Switch account".into(),
-            "Switch model".into(),
-            "Credits".into(),
-            "Sign in".into(),
-            "Log out".into(),
-            "Done".into(),
-        ];
-        let idx = term::pick("Config", &items, Some(0))?;
+        let header = config_tui_header(&path);
+        let Some(idx) = tui_menu_select("Config", header, items.clone())? else {
+            return Ok(0);
+        };
         let result = match idx {
             0 => {
                 let mut next = parsed.clone();
@@ -971,6 +1032,23 @@ fn run_config_tui(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result
             eprintln!("{}", term::err(&err));
         }
     }
+}
+
+fn config_tui_header(path: &std::path::Path) -> Vec<String> {
+    let cfg = load_config_if_present(path).unwrap_or_default();
+    let profile = cfg.profiles.get(&cfg.active_profile);
+    vec![
+        format!(
+            "account  {}  {}",
+            cfg.active_profile,
+            mask_api_key(profile.and_then(|p| p.api_key.as_deref()))
+        ),
+        format!(
+            "model    {}",
+            display_model_id(profile.map(|p| p.default_model()).unwrap_or("auto"))
+        ),
+        format!("file     {}", path.display()),
+    ]
 }
 
 fn run_config(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, String> {
@@ -1020,7 +1098,9 @@ fn run_config(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32
             next.passthrough = vec!["get".into()];
             run_config(&next, env)
         }
-        None if term::is_interactive() => run_config_tui(parsed, env),
+        None if tui_wants_dump(parsed, env) || term::is_interactive() => {
+            run_config_tui(parsed, env)
+        }
         None => {
             print_config_status(parsed, env, &path)?;
             println!(
@@ -1516,82 +1596,235 @@ fn stored_api_key(
 
 fn run_menu(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, String> {
     let path = config_path(parsed, env);
-    if stored_api_key(parsed, env, &path).is_none() {
-        run_login(parsed, env)?;
-        if stored_api_key(parsed, env, &path).is_none() {
-            return Err(hint(
-                "Not signed in. Run `{bin} login` or pass --key / ANYROUTER_API_KEY.",
-            ));
-        }
+    let dumping = tui_wants_dump(parsed, env);
+
+    if dumping {
+        let (header, items) = launcher_frame(&path, parsed, env);
+        print!("{}", tui_dump_menu("AnyRouter", header, items, env));
+        return Ok(0);
     }
-    let cfg = load_config_if_present(&path).unwrap_or_default();
-    let profile = cfg.profiles.get(&cfg.active_profile);
-    let last = cfg
-        .last_tool
-        .clone()
-        .or_else(|| profile.and_then(|p| p.default_tool.clone()))
-        .unwrap_or_else(|| "claude".into());
-    term::print_brand_header(&[
-        &term::bold("AnyRouter"),
-        &format!(
-            "{}  {}  {}",
-            term::dim("account"),
-            term::accent(&cfg.active_profile),
-            term::dim(&mask_api_key(profile.and_then(|p| p.api_key.as_deref())))
-        ),
-        &format!(
-            "{}  {}",
-            term::dim("model  "),
-            term::model_id(display_model_id(
-                profile.map(|p| p.default_model()).unwrap_or("auto"),
-            ))
-        ),
-    ]);
-    println!();
-    let items = vec![
-        format!("Launch {}", last),
-        "Switch model".into(),
-        "Switch account / key".into(),
-        "Credits".into(),
-        "Agent onboard prompt…".into(),
-        "Login / add key".into(),
-        "Quit".into(),
-    ];
+
     if !term::is_interactive() {
+        let (_, items) = launcher_frame(&path, parsed, env);
         println!("{}", items.join("\n"));
         return Ok(0);
     }
-    let idx = term::pick("What next?", &items, Some(0))?;
-    match idx {
-        0 => run_launch(&last, parsed, env),
-        1 => {
-            let mut next = parsed.clone();
-            next.command = "models".into();
-            next.flags.insert("pick".into(), FlagValue::Bool(true));
-            run_models(&next, env)
+
+    // Loop until Quit or a coding-agent launch takes over the process.
+    loop {
+        let (header, items) = launcher_frame(&path, parsed, env);
+        let Some(idx) = tui_menu_select("AnyRouter", header, items.clone())? else {
+            return Ok(0);
+        };
+        let action = items.get(idx).map(String::as_str).unwrap_or("Quit");
+        match launcher_dispatch(action, parsed, env, &path)? {
+            LauncherNext::Continue => {}
+            LauncherNext::Exit(code) => return Ok(code),
         }
-        2 => {
-            let names: Vec<String> = cfg.profiles.keys().cloned().collect();
-            if names.len() > 1 {
-                let current = names.iter().position(|n| n == &cfg.active_profile);
-                let pick = term::pick("Account", &names, current)?;
-                run_account_use(parsed, env, &names[pick])?;
-            }
-            let mut next = parsed.clone();
-            next.command = "keys".into();
-            next.passthrough = vec!["use".into()];
-            run_keys(&next, env)
-        }
-        3 => run_usage(parsed, env),
-        4 => crate::onboard::run("onboard", parsed),
-        5 => run_login(parsed, env),
-        _ => Ok(0),
     }
 }
 
-/// Bare `ar` / `anyr` opens the TUI on a terminal; pipes still get --help.
-fn should_open_launcher(raw: &[String], interactive: bool) -> bool {
-    raw.is_empty() && interactive
+#[derive(Debug)]
+enum LauncherNext {
+    Continue,
+    Exit(i32),
+}
+
+const LAUNCH_AGENTS: &[(&str, &str)] = &[
+    ("claude", "Claude Code"),
+    ("codex", "Codex"),
+    ("grok", "Grok Build"),
+    ("opencode", "OpenCode"),
+    ("pi", "Pi"),
+    ("pool", "Poolside"),
+];
+
+fn launcher_last_tool(path: &PathBuf, parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> String {
+    let cfg = load_config_if_present(path).unwrap_or_default();
+    let profile = cfg.profiles.get(&cfg.active_profile);
+    cfg.last_tool
+        .clone()
+        .or_else(|| profile.and_then(|p| p.default_tool.clone()))
+        .or_else(|| get_string_flag(&parsed.flags, "tool"))
+        .unwrap_or_else(|| {
+            let _ = env;
+            "claude".into()
+        })
+}
+
+fn launcher_signed_in(path: &PathBuf, parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> bool {
+    stored_api_key(parsed, env, path).is_some()
+}
+
+fn launcher_frame(
+    path: &PathBuf,
+    parsed: &ParsedArgs,
+    env: &BTreeMap<String, String>,
+) -> (Vec<String>, Vec<String>) {
+    let cfg = load_config_if_present(path).unwrap_or_default();
+    let profile = cfg.profiles.get(&cfg.active_profile);
+    let signed_in = launcher_signed_in(path, parsed, env);
+    let last = launcher_last_tool(path, parsed, env);
+    let header = vec![
+        format!(
+            "account  {}  {}",
+            cfg.active_profile,
+            if signed_in {
+                mask_api_key(profile.and_then(|p| p.api_key.as_deref()))
+            } else {
+                "(not signed in)".into()
+            }
+        ),
+        format!(
+            "model    {}",
+            display_model_id(profile.map(|p| p.default_model()).unwrap_or("auto"))
+        ),
+        format!("agent    {last}"),
+    ];
+
+    let mut items = Vec::new();
+    if signed_in {
+        items.push(format!("Launch {last}"));
+        items.push("Launch coding agent…".into());
+        items.push("Config".into());
+        items.push("Switch model".into());
+        items.push("Switch account / key".into());
+        items.push("Credits".into());
+        items.push("Agent onboard prompt…".into());
+        items.push("Login / add key".into());
+    } else {
+        items.push("Login / sign in".into());
+        items.push("Launch coding agent…".into());
+        items.push("Config".into());
+        items.push("Agent onboard prompt…".into());
+    }
+    items.push("Quit".into());
+    (header, items)
+}
+
+fn launcher_dispatch(
+    action: &str,
+    parsed: &ParsedArgs,
+    env: &BTreeMap<String, String>,
+    path: &PathBuf,
+) -> Result<LauncherNext, String> {
+    if action == "Quit" || action.starts_with("Quit") {
+        return Ok(LauncherNext::Exit(0));
+    }
+    if action.starts_with("Launch ") && action != "Launch coding agent…" {
+        let tool = action.trim_start_matches("Launch ").trim();
+        if !launcher_signed_in(path, parsed, env) {
+            eprintln!("{}", term::err("Sign in first (Login / sign in)."));
+            return Ok(LauncherNext::Continue);
+        }
+        return Ok(LauncherNext::Exit(run_launch(tool, parsed, env)?));
+    }
+    if action == "Launch coding agent…" {
+        return launch_agent_picker(parsed, env, path);
+    }
+    if action == "Config" {
+        let code = run_config_tui(parsed, env)?;
+        if code != 0 {
+            return Ok(LauncherNext::Exit(code));
+        }
+        return Ok(LauncherNext::Continue);
+    }
+    if action == "Switch model" {
+        if !launcher_signed_in(path, parsed, env) {
+            eprintln!("{}", term::err("Sign in first (Login / sign in)."));
+            return Ok(LauncherNext::Continue);
+        }
+        let mut next = parsed.clone();
+        next.command = "models".into();
+        next.flags.insert("pick".into(), FlagValue::Bool(true));
+        if let Err(err) = run_models(&next, env) {
+            eprintln!("{}", term::err(&err));
+        }
+        return Ok(LauncherNext::Continue);
+    }
+    if action == "Switch account / key" {
+        let cfg = load_config_if_present(path).unwrap_or_default();
+        let names: Vec<String> = cfg.profiles.keys().cloned().collect();
+        if names.len() > 1 {
+            let current = names.iter().position(|n| n == &cfg.active_profile);
+            match term::pick("Account", &names, current) {
+                Ok(pick) => {
+                    if let Err(err) = run_account_use(parsed, env, &names[pick]) {
+                        eprintln!("{}", term::err(&err));
+                    }
+                }
+                Err(err) => {
+                    if err != "Cancelled." {
+                        eprintln!("{}", term::err(&err));
+                    }
+                }
+            }
+        }
+        let mut next = parsed.clone();
+        next.command = "keys".into();
+        next.passthrough = vec!["use".into()];
+        if let Err(err) = run_keys(&next, env) {
+            eprintln!("{}", term::err(&err));
+        }
+        return Ok(LauncherNext::Continue);
+    }
+    if action == "Credits" {
+        if let Err(err) = run_usage(parsed, env) {
+            eprintln!("{}", term::err(&err));
+        }
+        return Ok(LauncherNext::Continue);
+    }
+    if action == "Agent onboard prompt…" {
+        if let Err(err) = crate::onboard::run("onboard", parsed) {
+            eprintln!("{}", term::err(&err));
+        }
+        return Ok(LauncherNext::Continue);
+    }
+    if action == "Login / add key" || action == "Login / sign in" {
+        if let Err(err) = run_login(parsed, env) {
+            eprintln!("{}", term::err(&err));
+        }
+        return Ok(LauncherNext::Continue);
+    }
+    Ok(LauncherNext::Continue)
+}
+
+fn launch_agent_picker(
+    parsed: &ParsedArgs,
+    env: &BTreeMap<String, String>,
+    path: &PathBuf,
+) -> Result<LauncherNext, String> {
+    if !launcher_signed_in(path, parsed, env) {
+        eprintln!("{}", term::warn("Not signed in — login first, or pass --key."));
+        if let Err(err) = run_login(parsed, env) {
+            eprintln!("{}", term::err(&err));
+            return Ok(LauncherNext::Continue);
+        }
+        if !launcher_signed_in(path, parsed, env) {
+            return Ok(LauncherNext::Continue);
+        }
+    }
+    let last = launcher_last_tool(path, parsed, env);
+    let labels: Vec<String> = LAUNCH_AGENTS
+        .iter()
+        .map(|(id, label)| format!("{id}  —  {label}"))
+        .collect();
+    let current = LAUNCH_AGENTS.iter().position(|(id, _)| *id == last.as_str());
+    let idx = match term::pick("Launch coding agent", &labels, current) {
+        Ok(i) => i,
+        Err(err) if err == "Cancelled." => return Ok(LauncherNext::Continue),
+        Err(err) => {
+            eprintln!("{}", term::err(&err));
+            return Ok(LauncherNext::Continue);
+        }
+    };
+    let tool = LAUNCH_AGENTS[idx].0;
+    Ok(LauncherNext::Exit(run_launch(tool, parsed, env)?))
+}
+
+/// Bare `ar` / `anyr` opens the TUI on a terminal (or dump mode); pipes still get --help.
+fn should_open_launcher(raw: &[String], interactive: bool, dump: bool) -> bool {
+    raw.is_empty() && (interactive || dump)
 }
 
 #[cfg(test)]
@@ -1600,10 +1833,11 @@ mod tests {
 
     #[test]
     fn bare_tty_opens_launcher_not_help() {
-        assert!(should_open_launcher(&[], true));
-        assert!(!should_open_launcher(&[], false));
-        assert!(!should_open_launcher(&["help".into()], true));
-        assert!(!should_open_launcher(&["--help".into()], true));
-        assert!(!should_open_launcher(&["config".into()], true));
+        assert!(should_open_launcher(&[], true, false));
+        assert!(!should_open_launcher(&[], false, false));
+        assert!(should_open_launcher(&[], false, true));
+        assert!(!should_open_launcher(&["help".into()], true, false));
+        assert!(!should_open_launcher(&["--help".into()], true, false));
+        assert!(!should_open_launcher(&["config".into()], true, false));
     }
 }
