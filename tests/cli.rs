@@ -1044,6 +1044,10 @@ profiles:
     assert!(stdout.contains("Config"), "{stdout}");
     assert!(stdout.contains("Quit"), "{stdout}");
     assert!(
+        stdout.contains('╭') && stdout.contains('╯'),
+        "dump should look like a dialog card: {stdout}"
+    );
+    assert!(
         !stdout.contains("menu-dump-secret-value"),
         "dump must not leak full secret: {stdout}"
     );

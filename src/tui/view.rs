@@ -1,17 +1,22 @@
 //! Ratatui widgets + ANSI-free plain frames for dump / tests.
 //!
-//! The launcher renders as a two-pane layout on wide terminals (info panel
-//! left, action list right) and stacks vertically when narrow. Pickers stay
-//! single-pane. All plain_* dumps remain ANSI-free for CI.
+//! The launcher / config menu renders as a **centered dialog card** (title,
+//! status, actions) — not a full-bleed two-pane sprawl. Pickers stay
+//! single-pane and fill the terminal. All plain_* dumps remain ANSI-free for CI.
 
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::Style;
+use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
 
 use super::state::{MenuState, PickerState};
 use super::theme;
+
+/// Preferred dialog width; shrinks on narrow terminals.
+const DIALOG_PREF_WIDTH: u16 = 52;
+/// Minimum usable dialog width before we fill almost the whole terminal.
+const DIALOG_MIN_WIDTH: u16 = 28;
 
 pub fn render_picker(frame: &mut Frame, state: &PickerState) {
     let area = frame.area();
@@ -78,30 +83,46 @@ pub fn render_picker(frame: &mut Frame, state: &PickerState) {
 
 pub fn render_menu(frame: &mut Frame, state: &MenuState) {
     let area = frame.area();
-    // Two panes side by side only when there is room; stack otherwise.
-    let wide = area.width >= 60 && state.header.len() <= 6;
-    let (header_area, body_area) = if wide {
-        let cols = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(42), Constraint::Percentage(58)])
-            .split(area);
-        (cols[0], cols[1])
-    } else {
-        let rows = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(2 + state.header.len() as u16),
-                Constraint::Min(3),
-            ])
-            .split(area);
-        (rows[0], rows[1])
-    };
 
-    if wide {
-        render_info_panel(frame, header_area, &state.title, &state.header);
-    } else {
-        render_header(frame, header_area, &state.title, &state.header);
-    }
+    // Dim full-screen backdrop so the card reads as a modal.
+    frame.render_widget(
+        Block::default().style(Style::default().bg(theme::backdrop_rgb()).fg(Color::Reset)),
+        area,
+    );
+
+    let dialog = centered_dialog(area, dialog_height(state), DIALOG_PREF_WIDTH);
+    frame.render_widget(Clear, dialog);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(theme::brand())
+        .title(Span::styled(
+            format!(" ▲ {} ", state.title),
+            theme::brand(),
+        ))
+        .style(Style::default().bg(theme::surface_rgb()));
+    let inner = block.inner(dialog);
+    frame.render_widget(block, dialog);
+
+    // status | actions | hint
+    let status_h = state.header.len().max(1) as u16;
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(status_h),
+            Constraint::Length(1),
+            Constraint::Min(state.items.len().max(1) as u16),
+            Constraint::Length(1),
+        ])
+        .split(inner);
+
+    render_status_lines(frame, chunks[0], &state.header);
+
+    let rule = Paragraph::new(Span::styled(
+        "─".repeat(chunks[1].width as usize),
+        theme::muted(),
+    ));
+    frame.render_widget(rule, chunks[1]);
 
     let items: Vec<ListItem> = state
         .items
@@ -121,46 +142,54 @@ pub fn render_menu(frame: &mut Frame, state: &MenuState) {
         })
         .collect();
 
-    let list = List::new(items).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(if wide { theme::brand() } else { theme::muted() })
-            .title(Span::styled(
-                format!(" {} ", state.title),
-                theme::title(),
-            )),
-    );
+    let list = List::new(items);
     let mut list_state = ListState::default().with_selected(Some(state.cursor));
-    frame.render_stateful_widget(list, body_area, &mut list_state);
+    frame.render_stateful_widget(list, chunks[2], &mut list_state);
 
-    let footer_area = Rect::new(area.x, area.bottom().saturating_sub(1), area.width, 1);
     let footer = Paragraph::new(Span::styled(state.hint(), theme::muted()));
-    frame.render_widget(footer, footer_area);
+    frame.render_widget(footer, chunks[3]);
 }
 
-/// Bordered panel showing account / model / agent / credits lines.
-fn render_info_panel(frame: &mut Frame, area: Rect, title: &str, header: &[String]) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(theme::muted())
-        .title(Span::styled(format!(" {title} "), theme::brand()));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+fn dialog_height(state: &MenuState) -> u16 {
+    // borders(2) + status + rule(1) + items + hint(1)
+    let status = state.header.len().max(1) as u16;
+    let items = state.items.len().max(1) as u16;
+    2 + status + 1 + items + 1
+}
 
-    let mut lines: Vec<Line> = Vec::new();
-    lines.push(Line::from(Span::styled("▲", theme::brand())));
-    lines.push(Line::from(""));
-    for h in header {
-        let Some((key, rest)) = h.split_once("  ") else {
-            lines.push(Line::from(Span::styled(h.clone(), theme::white())));
-            continue;
-        };
-        lines.push(Line::from(vec![
-            Span::styled(format!("{key:<9}"), theme::muted()),
-            Span::styled(rest.to_string(), theme::white()),
-        ]));
+/// Center a fixed-size dialog; clamp to terminal so narrow TTYs never clip badly.
+fn centered_dialog(area: Rect, content_height: u16, pref_width: u16) -> Rect {
+    if area.width == 0 || area.height == 0 {
+        return area;
     }
-    frame.render_widget(Paragraph::new(lines), inner);
+    let max_w = area.width.saturating_sub(2).max(1);
+    let width = pref_width
+        .min(max_w)
+        .max(DIALOG_MIN_WIDTH.min(max_w));
+    let max_h = area.height.saturating_sub(0).max(1);
+    let height = content_height.min(max_h).max(5.min(max_h));
+    let x = area.x + (area.width.saturating_sub(width)) / 2;
+    let y = area.y + (area.height.saturating_sub(height)) / 2;
+    Rect::new(x, y, width, height)
+}
+
+fn render_status_lines(frame: &mut Frame, area: Rect, header: &[String]) {
+    let mut lines: Vec<Line> = Vec::new();
+    if header.is_empty() {
+        lines.push(Line::from(Span::styled("—", theme::muted())));
+    } else {
+        for h in header {
+            if let Some((key, rest)) = h.split_once("  ") {
+                lines.push(Line::from(vec![
+                    Span::styled(format!("{key:<9}"), theme::muted()),
+                    Span::styled(rest.to_string(), theme::white()),
+                ]));
+            } else {
+                lines.push(Line::from(Span::styled(h.clone(), theme::white())));
+            }
+        }
+    }
+    frame.render_widget(Paragraph::new(lines), area);
 }
 
 fn render_header(frame: &mut Frame, area: Rect, title: &str, header: &[String]) {
@@ -179,7 +208,7 @@ pub fn item_icon(label: &str) -> &'static str {
     let l = label.to_ascii_lowercase();
     if label.starts_with("Launch") || l.contains("claude") || l.contains("codex") {
         "⚡ "
-    } else if l.contains("config") {
+    } else if l.contains("config") || l.contains("settings") {
         "⚙  "
     } else if l.contains("switch") || l.contains("account") {
         "⇄  "
@@ -191,7 +220,7 @@ pub fn item_icon(label: &str) -> &'static str {
         "🚪 "
     } else if l.contains("onboard") {
         "📋 "
-    } else if l.contains("quit") {
+    } else if l.contains("quit") || l.contains("done") {
         "✕  "
     } else if l.contains("model") {
         "◆  "
@@ -204,7 +233,7 @@ fn item_icon_style(label: &str) -> Style {
     let l = label.to_ascii_lowercase();
     if label.starts_with("Launch") {
         theme::success()
-    } else if l.contains("quit") {
+    } else if l.contains("quit") || l.contains("done") {
         theme::muted()
     } else if l.contains("credit") {
         theme::model()
@@ -237,19 +266,53 @@ pub fn plain_picker_lines(state: &PickerState, cols: usize) -> Vec<String> {
 }
 
 pub fn plain_menu_lines(state: &MenuState, cols: usize) -> Vec<String> {
-    let width = cols.max(40);
+    // Dialog-shaped dump: fixed inner width, centered with padding when wide.
+    let term_w = cols.max(DIALOG_MIN_WIDTH as usize);
+    let inner = (DIALOG_PREF_WIDTH as usize)
+        .min(term_w.saturating_sub(2))
+        .max(DIALOG_MIN_WIDTH as usize)
+        .min(term_w);
+    let pad = term_w.saturating_sub(inner) / 2;
+    let pad_s = " ".repeat(pad);
+    let content_w = inner.saturating_sub(2); // inside │…│
+
     let mut lines = Vec::new();
-    lines.push(truncate(&format!("▲ {}", state.title), width));
-    for h in &state.header {
-        lines.push(truncate(h, width));
+    let title_raw = format!(" ▲ {} ", state.title);
+    let title = truncate(&title_raw, content_w);
+    let dash_n = content_w.saturating_sub(title.chars().count());
+    lines.push(format!("{pad_s}╭{title}{}╮", "─".repeat(dash_n)));
+
+    if state.header.is_empty() {
+        lines.push(format!("{pad_s}│{}│", pad_content("—", content_w)));
+    } else {
+        for h in &state.header {
+            lines.push(format!("{pad_s}│{}│", pad_content(h, content_w)));
+        }
     }
-    lines.push(truncate(&"─".repeat(width.min(48)), width));
+    lines.push(format!("{pad_s}├{}┤", "─".repeat(content_w)));
+
     for (i, label) in state.items.iter().enumerate() {
         let marker = if i == state.cursor { "◆" } else { " " };
-        lines.push(truncate(&format!("{marker} {label}"), width));
+        let row = format!("{marker} {label}");
+        lines.push(format!("{pad_s}│{}│", pad_content(&row, content_w)));
     }
-    lines.push(truncate(state.hint(), width));
+
+    lines.push(format!("{pad_s}├{}┤", "─".repeat(content_w)));
+    lines.push(format!(
+        "{pad_s}│{}│",
+        pad_content(state.hint(), content_w)
+    ));
+    lines.push(format!("{pad_s}╰{}╯", "─".repeat(content_w)));
     lines
+}
+
+fn pad_content(s: &str, width: usize) -> String {
+    let truncated = truncate(s, width);
+    let chars: Vec<char> = truncated.chars().collect();
+    if chars.len() >= width {
+        return truncated;
+    }
+    format!("{truncated}{}", " ".repeat(width - chars.len()))
 }
 
 pub fn plain_picker_frame(state: &PickerState, cols: usize) -> String {
@@ -286,13 +349,28 @@ mod tests {
         let state = MenuState::new(
             "AnyRouter",
             vec!["account  default".into()],
-            vec!["Launch claude".into(), "Quit".into()],
+            vec!["Launch claude".into(), "Config".into(), "Quit".into()],
         );
         let frame = plain_menu_frame(&state, 80);
         assert!(!frame.contains('\u{1b}'));
-        assert!(frame.contains("▲ AnyRouter"));
-        assert!(frame.contains("◆ Launch claude"));
-        assert!(frame.contains("Quit"));
+        assert!(frame.contains("▲ AnyRouter"), "{frame}");
+        assert!(frame.contains("◆ Launch claude"), "{frame}");
+        assert!(frame.contains("Config"), "{frame}");
+        assert!(frame.contains("Quit"), "{frame}");
+        assert!(frame.contains('╭') && frame.contains('╯'), "dialog box: {frame}");
+    }
+
+    #[test]
+    fn dump_menu_narrow_terminal() {
+        let state = MenuState::new(
+            "AnyRouter",
+            vec!["model  auto".into()],
+            vec!["Login / sign in".into(), "Quit".into()],
+        );
+        let frame = plain_menu_frame(&state, 32);
+        assert!(!frame.contains('\u{1b}'));
+        assert!(frame.contains("▲ AnyRouter"), "{frame}");
+        assert!(frame.contains("Quit"), "{frame}");
     }
 
     #[test]
@@ -309,6 +387,7 @@ mod tests {
         for (label, icon) in [
             ("Launch claude", "⚡"),
             ("Config", "⚙"),
+            ("Settings", "⚙"),
             ("Switch model", "⇄"),
             ("Credits", "¤"),
             ("Login / sign in", "🔑"),
@@ -318,5 +397,14 @@ mod tests {
         ] {
             assert_eq!(item_icon(label).trim(), icon, "icon for {label}");
         }
+    }
+
+    #[test]
+    fn centered_dialog_clamps_to_area() {
+        let tiny = Rect::new(0, 0, 20, 8);
+        let d = centered_dialog(tiny, 20, 52);
+        assert!(d.width <= tiny.width);
+        assert!(d.height <= tiny.height);
+        assert!(d.width >= 1);
     }
 }

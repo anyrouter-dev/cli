@@ -126,8 +126,8 @@ python scripts/bench.py measure --bin target/release/anyr \
   --asset anyr-linux-x86_64 --kind native --out /tmp/anyr-bench.json
 ```
 
-Interactive `menu` / `config` / pickers use a Ratatui + Crossterm TUI
-(GrokNight theme). `anyr menu --dump-tui` prints one ANSI-free frame for CI.
+Interactive `menu` / `config` use a centered Ratatui dialog (GrokNight theme);
+pickers stay full-pane. `anyr menu --dump-tui` prints one ANSI-free frame for CI.
 
 ## Version lock (0.1.x)
 

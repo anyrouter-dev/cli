@@ -6,6 +6,16 @@ pub fn rgb(r: u8, g: u8, b: u8) -> Color {
     Color::Rgb(r, g, b)
 }
 
+/// Dim backdrop behind the centered launcher dialog.
+pub fn backdrop_rgb() -> Color {
+    rgb(12, 12, 14)
+}
+
+/// Dialog card surface (slightly lifted from backdrop).
+pub fn surface_rgb() -> Color {
+    rgb(22, 22, 26)
+}
+
 pub fn brand() -> Style {
     Style::default()
         .fg(rgb(246, 130, 31))

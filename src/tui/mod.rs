@@ -2,7 +2,7 @@
 //!
 //! Public surface used by `commands.rs` / `onboard.rs`:
 //!   * `pick` / `pick_with_header` — fuzzy list picker
-//!   * `run_menu_select` — launcher list
+//!   * `run_menu_select` — centered dialog launcher / config list
 //!   * `wants_dump` / `dump_*` — ANSI-free frames for CI (`--dump-tui`)
 
 pub mod keys;

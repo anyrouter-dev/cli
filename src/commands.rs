@@ -1755,21 +1755,15 @@ fn launcher_frame(
         credits_line,
     ];
 
+    // Compact dialog actions — model / account / key / credits live under Config.
     let mut items = Vec::new();
     if signed_in {
         items.push(format!("Launch {last}"));
         items.push("Launch coding agent…".into());
         items.push("Config".into());
-        items.push("Switch model".into());
-        items.push("Switch account / key".into());
-        items.push("Credits".into());
-        items.push("Agent onboard prompt…".into());
-        items.push("Login / add key".into());
     } else {
         items.push("Login / sign in".into());
-        items.push("Launch coding agent…".into());
         items.push("Config".into());
-        items.push("Agent onboard prompt…".into());
     }
     items.push("Quit".into());
     (header, items)

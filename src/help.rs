@@ -198,7 +198,7 @@ pub fn command_help(command: &str) -> Option<String> {
         ),
         "menu" => fill(
             &bin,
-            "{bin} menu — open the interactive Ratatui launcher (default on a TTY)\n\nUsage:\n  {bin}                 Same as `{bin} menu` on a TTY\n  {bin} menu [--dump-tui]\n\nFrom the launcher you can: launch a coding agent, open Config, switch\nmodel / account / key, view credits, run onboard prompts, or sign in.\n`--dump-tui` / ANYR_TUI_DUMP=1 prints one plain frame (for tests and pipes).\n",
+            "{bin} menu — open the centered TUI launcher (default on a TTY)\n\nUsage:\n  {bin}                 Same as `{bin} menu` on a TTY\n  {bin} menu [--dump-tui]\n\nA compact dialog: brand + status (account / model / agent / credits),\nthen actions — launch an agent, open Config, sign in, or quit.\n\nKeys: ↑↓ / j k move · ↵ select · q / esc quit\n\nConfig opens the existing settings flow (model, account, key, credits).\n`--dump-tui` / ANYR_TUI_DUMP=1 prints one plain frame (for tests and pipes).\n",
         ),
         "prompt" => fill(
             &bin,
@@ -353,9 +353,10 @@ USAGE
   {bin} config path            Print the config file path
   {bin} config use <account>   Switch the active account
 
-On a TTY, `{bin} config` opens a Ratatui list until you pick Done: switch
+On a TTY, `{bin} config` opens a centered dialog until you pick Done: switch
 key, account, model (default / haiku / sonnet / opus / fable), view credits, sign
-in, or log out. `--dump-tui` prints one plain frame and exits.
+in, or log out. Also reachable from the launcher via Config.
+`--dump-tui` prints one plain frame and exits.
 ";
 
 const KEYS: &str = "\

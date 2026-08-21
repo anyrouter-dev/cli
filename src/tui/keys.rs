@@ -63,7 +63,7 @@ pub fn map_key(surface: Surface, key: KeyEvent) -> Action {
 
 pub fn hint_line(surface: Surface) -> &'static str {
     match surface {
-        Surface::Launcher => "↑↓ move  ↵ select  q quit",
+        Surface::Launcher => "↑↓/jk move  ↵ select  q/esc quit",
         Surface::Picker => "type to search  ↑↓ move  ↵ select  esc cancel",
     }
 }
