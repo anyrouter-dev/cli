@@ -230,7 +230,10 @@ fn onboard_shortcuts_and_json() {
     }
     let (code, stdout, stderr) = run(&["onboard", "plan", "--json"]);
     assert_eq!(code, 0, "stderr={stderr}");
-    assert!(stdout.contains("\"mode\":\"plan\"") || stdout.contains("\"mode\": \"plan\""), "{stdout}");
+    assert!(
+        stdout.contains("\"mode\":\"plan\"") || stdout.contains("\"mode\": \"plan\""),
+        "{stdout}"
+    );
     assert!(
         stdout.to_ascii_lowercase().contains("do not change"),
         "{stdout}"
@@ -635,7 +638,13 @@ fn update_stable_and_beta_conflict() {
 
 #[test]
 fn upgrade_check_flag_is_known() {
-    let fixture = std::env::temp_dir().join("anyr-cli-upgrade-check.json");
+    // Isolate from a real ~/.anyrouter whose channel would skew the check.
+    let home = std::env::temp_dir().join(format!("anyr-cli-upgrade-home-{}", std::process::id()));
+    std::fs::create_dir_all(&home).unwrap();
+    let fixture = std::env::temp_dir().join(format!(
+        "anyr-cli-upgrade-check-{}.json",
+        std::process::id()
+    ));
     std::fs::write(
         &fixture,
         r#"[{"tag_name":"v0.1.0","prerelease":false,"draft":false,"assets":[{"name":"anyr-linux-x86_64"}]}]"#,
@@ -644,6 +653,8 @@ fn upgrade_check_flag_is_known() {
     let out = anyr()
         .args(["upgrade", "--check"])
         .env("ANYR_RELEASES_JSON", &fixture)
+        .env("ANYROUTER_HOME", &home)
+        .env_remove("ANYR_CHANNEL")
         .output()
         .expect("upgrade --check");
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -1038,7 +1049,10 @@ profiles:
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(out.status.code().unwrap_or(1), 0, "{stdout}{stderr}");
-    assert!(!stdout.contains('\u{1b}'), "dump must be ANSI-free: {stdout}");
+    assert!(
+        !stdout.contains('\u{1b}'),
+        "dump must be ANSI-free: {stdout}"
+    );
     assert!(stdout.contains("▲ AnyRouter"), "{stdout}");
     assert!(stdout.contains("Launch"), "{stdout}");
     assert!(stdout.contains("Config"), "{stdout}");
@@ -1056,12 +1070,58 @@ profiles:
 
 #[test]
 fn config_dump_tui_prints_plain_frame() {
-    let (code, stdout, stderr) = run(&["config", "--dump-tui"]);
-    assert_eq!(code, 0, "{stdout}{stderr}");
-    assert!(!stdout.contains('\u{1b}'), "dump must be ANSI-free: {stdout}");
-    assert!(stdout.contains("▲ Config"), "{stdout}");
-    assert!(stdout.contains("Switch key"), "{stdout}");
-    assert!(stdout.contains("Done"), "{stdout}");
+    let dir = std::env::temp_dir().join(format!("anyr-cli-config-dump-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("config.yaml");
+    std::fs::write(
+        &path,
+        "\
+active_profile: default
+profiles:
+  default:
+    api_key: sk-ar-v1-config-dump-secret-value-abcdef
+    default_model: auto
+",
+    )
+    .unwrap();
+    let out = anyr()
+        .args(["config", "--dump-tui", "--config", path.to_str().unwrap()])
+        .output()
+        .expect("config dump");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code().unwrap_or(1), 0, "{stdout}{stderr}");
+    assert!(
+        !stdout.contains('\u{1b}'),
+        "dump must be ANSI-free: {stdout}"
+    );
+    assert!(
+        stdout.contains('╭') && stdout.contains('╯'),
+        "dialog card: {stdout}"
+    );
+    // Grouped sections with current values.
+    for section in ["ACCOUNT", "MODEL", "AGENT", "GENERAL"] {
+        assert!(stdout.contains(section), "missing {section} in:\n{stdout}");
+    }
+    for row in [
+        "account",
+        "api key",
+        "default",
+        "haiku",
+        "sonnet",
+        "opus",
+        "fable",
+        "coding agent",
+        "auto-update",
+        "update channel",
+    ] {
+        assert!(stdout.contains(row), "missing row \"{row}\" in:\n{stdout}");
+    }
+    assert!(
+        !stdout.contains("config-dump-secret-value"),
+        "dump must not leak full secret: {stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
