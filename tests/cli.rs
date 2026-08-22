@@ -587,8 +587,9 @@ fn model_without_value_errors() {
 #[test]
 fn launch_remembers_explicit_model_as_session_default() {
     // Launching with --model must persist it as default_model so a bare
-    // `{bin} claude` next time starts with the same model. /bin/true stands
-    // in for claude so the spawn succeeds without the real binary.
+    // `{bin} claude` next time starts with the same model. A trivially
+    // successful binary stands in for claude so the spawn works everywhere.
+    let stub = if cfg!(windows) { "cmd" } else { "true" };
     let home = temp_home();
     let out = anyr()
         .args([
@@ -600,7 +601,7 @@ fn launch_remembers_explicit_model_as_session_default() {
             "z-ai/glm-4.7-flash",
         ])
         .env("ANYROUTER_HOME", &home)
-        .env("ANYROUTER_CLAUDE_PATH", "/bin/true")
+        .env("ANYROUTER_CLAUDE_PATH", stub)
         .env_remove("ANYROUTER_API_KEY")
         .output()
         .expect("launch");
