@@ -12,8 +12,11 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
 use super::keys::{map_key, KeyCode, KeyEvent, Surface};
-use super::state::{MenuState, Outcome, PickerState};
-use super::view::{plain_menu_frame, plain_picker_frame, render_menu, render_picker};
+use super::state::{MenuState, Outcome, PickerState, SettingsOutcome, SettingsState};
+use super::view::{
+    plain_menu_frame, plain_picker_frame, plain_settings_frame, render_menu, render_picker,
+    render_settings,
+};
 
 pub fn is_interactive() -> bool {
     use std::io::IsTerminal;
@@ -124,4 +127,35 @@ pub fn dump_picker(state: &PickerState, cols: usize) -> String {
 
 pub fn dump_menu(state: &MenuState, cols: usize) -> String {
     plain_menu_frame(state, cols)
+}
+
+pub fn run_settings_live(mut state: SettingsState) -> Result<SettingsOutcome, String> {
+    let mut live = LiveTerminal::start()?;
+    loop {
+        live.terminal
+            .draw(|f| render_settings(f, &state))
+            .map_err(|e| e.to_string())?;
+        if !event::poll(Duration::from_millis(200)).map_err(|e| e.to_string())? {
+            continue;
+        }
+        match event::read().map_err(|e| e.to_string())? {
+            Event::Resize(_, _) => {
+                state.apply(super::keys::Action::Resize);
+            }
+            Event::Key(ev) => {
+                let Some(key) = translate_key(ev) else {
+                    continue;
+                };
+                let outcome = state.apply(map_key(Surface::Settings, key));
+                if outcome != SettingsOutcome::Stay {
+                    return Ok(outcome);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+pub fn dump_settings(state: &SettingsState, cols: usize) -> String {
+    plain_settings_frame(state, cols)
 }

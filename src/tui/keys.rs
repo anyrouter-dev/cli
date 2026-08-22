@@ -4,6 +4,7 @@
 pub enum Surface {
     Launcher,
     Picker,
+    Settings,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -12,6 +13,8 @@ pub enum Action {
     Enter,
     Up,
     Down,
+    /// Reset the focused settings row to its default (`x`).
+    Unset,
     Backspace,
     Esc,
     Char(char),
@@ -54,8 +57,10 @@ pub fn map_key(surface: Surface, key: KeyEvent) -> Action {
         KeyCode::Backspace | KeyCode::Delete => Action::Backspace,
         KeyCode::Char(c) => match (surface, c) {
             (Surface::Launcher, 'q' | 'x' | 'Q' | 'X') => Action::Quit,
-            (Surface::Launcher, 'j') => Action::Down,
-            (Surface::Launcher, 'k') => Action::Up,
+            (Surface::Settings, 'q') => Action::Quit,
+            (Surface::Settings, 'x' | 'X') => Action::Unset,
+            (Surface::Launcher | Surface::Settings, 'j') => Action::Down,
+            (Surface::Launcher | Surface::Settings, 'k') => Action::Up,
             (_, c) => Action::Char(c),
         },
     }
@@ -64,6 +69,7 @@ pub fn map_key(surface: Surface, key: KeyEvent) -> Action {
 pub fn hint_line(surface: Surface) -> &'static str {
     match surface {
         Surface::Launcher => "↑↓/jk move  ↵ select  q/esc quit",
+        Surface::Settings => "↑↓/jk move  ↵ edit  x reset  q/esc close",
         Surface::Picker => "type to search  ↑↓ move  ↵ select  esc cancel",
     }
 }
@@ -106,5 +112,25 @@ mod tests {
             },
         );
         assert_eq!(a, Action::Quit);
+    }
+
+    #[test]
+    fn settings_x_resets_and_q_quits() {
+        let x = map_key(
+            Surface::Settings,
+            KeyEvent {
+                code: KeyCode::Char('x'),
+                ctrl: false,
+            },
+        );
+        assert_eq!(x, Action::Unset);
+        let q = map_key(
+            Surface::Settings,
+            KeyEvent {
+                code: KeyCode::Char('q'),
+                ctrl: false,
+            },
+        );
+        assert_eq!(q, Action::Quit);
     }
 }

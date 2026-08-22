@@ -82,7 +82,11 @@ impl PickerState {
             Action::Up => {
                 let n = self.filtered().len();
                 if n > 0 {
-                    self.cursor = if self.cursor == 0 { n - 1 } else { self.cursor - 1 };
+                    self.cursor = if self.cursor == 0 {
+                        n - 1
+                    } else {
+                        self.cursor - 1
+                    };
                 }
                 Outcome::Continue
             }
@@ -106,6 +110,7 @@ impl PickerState {
                 self.cursor = 0;
                 Outcome::Continue
             }
+            Action::Unset => Outcome::Continue,
         }
     }
 
@@ -149,7 +154,11 @@ impl MenuState {
             Action::Up => {
                 let n = self.items.len();
                 if n > 0 {
-                    self.cursor = if self.cursor == 0 { n - 1 } else { self.cursor - 1 };
+                    self.cursor = if self.cursor == 0 {
+                        n - 1
+                    } else {
+                        self.cursor - 1
+                    };
                 }
                 Outcome::Continue
             }
@@ -161,12 +170,118 @@ impl MenuState {
                 Outcome::Continue
             }
             Action::Backspace => Outcome::Continue,
-            Action::Char(_) => Outcome::Continue,
+            Action::Char(_) | Action::Unset => Outcome::Continue,
         }
     }
 
     pub fn hint(&self) -> &'static str {
         hint_line(Surface::Launcher)
+    }
+}
+
+/// Color tone for a settings value — drives TUI color and dump annotations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tone {
+    /// Plain white value.
+    Normal,
+    /// Green — enabled / healthy.
+    Good,
+    /// Teal — a model id.
+    Model,
+    /// Orange — needs attention.
+    Warn,
+    /// Dim — unset / default.
+    Muted,
+}
+
+/// One row of the settings screen: a section header or an editable entry.
+#[derive(Debug, Clone)]
+pub enum SettingRow {
+    Section(String),
+    Entry {
+        label: String,
+        value: String,
+        tone: Tone,
+    },
+}
+
+impl SettingRow {
+    pub fn selectable(&self) -> bool {
+        matches!(self, SettingRow::Entry { .. })
+    }
+}
+
+/// What the settings screen wants the caller to do after a key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsOutcome {
+    Stay,
+    /// Edit the entry at the given row index.
+    Edit(usize),
+    /// Reset the entry at the given row index to its default (`x`).
+    Reset(usize),
+    Close,
+}
+
+/// Cursor-style settings screen: grouped rows, right-aligned current values.
+pub struct SettingsState {
+    pub title: String,
+    pub header: Vec<String>,
+    pub rows: Vec<SettingRow>,
+    /// Cursor index into `rows`; always points at an Entry.
+    pub cursor: usize,
+}
+
+impl SettingsState {
+    pub fn new(title: impl Into<String>, header: Vec<String>, rows: Vec<SettingRow>) -> Self {
+        let mut state = Self {
+            title: title.into(),
+            header,
+            rows,
+            cursor: 0,
+        };
+        state.cursor = state.rows.iter().position(|r| r.selectable()).unwrap_or(0);
+        state
+    }
+
+    /// Indices of selectable (Entry) rows.
+    pub fn entries(&self) -> Vec<usize> {
+        self.rows
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| r.selectable())
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    pub fn apply(&mut self, action: Action) -> SettingsOutcome {
+        let entries = self.entries();
+        if entries.is_empty() {
+            return match action {
+                Action::Quit | Action::Esc => SettingsOutcome::Close,
+                _ => SettingsOutcome::Stay,
+            };
+        }
+        let pos = entries.iter().position(|i| *i == self.cursor).unwrap_or(0);
+        match action {
+            Action::Quit | Action::Esc => SettingsOutcome::Close,
+            Action::Enter => SettingsOutcome::Edit(self.cursor),
+            Action::Unset => SettingsOutcome::Reset(self.cursor),
+            Action::Up => {
+                let prev = if pos == 0 { entries.len() - 1 } else { pos - 1 };
+                self.cursor = entries[prev];
+                SettingsOutcome::Stay
+            }
+            Action::Down => {
+                let next = (pos + 1) % entries.len();
+                self.cursor = entries[next];
+                SettingsOutcome::Stay
+            }
+            Action::Resize | Action::Backspace | Action::Char(_) => SettingsOutcome::Stay,
+        }
+    }
+
+    pub fn hint(&self) -> &'static str {
+        hint_line(Surface::Settings)
     }
 }
 
@@ -209,7 +324,11 @@ mod tests {
     fn picker_filter_narrows() {
         let mut s = PickerState::new(
             "Pick",
-            vec!["openai/gpt".into(), "anthropic/claude".into(), "google/gemma".into()],
+            vec![
+                "openai/gpt".into(),
+                "anthropic/claude".into(),
+                "google/gemma".into(),
+            ],
             Some(0),
         );
         s.apply(Action::Char('c'));
@@ -245,5 +364,58 @@ mod tests {
         let mut s = MenuState::new("M", vec![], vec!["a".into(), "b".into()]);
         let out = drive_menu(&mut s, &[Action::Down, Action::Enter]);
         assert_eq!(out, Outcome::Selected(1));
+    }
+
+    fn sample_settings() -> SettingsState {
+        SettingsState::new(
+            "Config",
+            vec![],
+            vec![
+                SettingRow::Section("Account".into()),
+                SettingRow::Entry {
+                    label: "account".into(),
+                    value: "duyet".into(),
+                    tone: Tone::Normal,
+                },
+                SettingRow::Entry {
+                    label: "api key".into(),
+                    value: "sk-ar-v1-ab…wxyz".into(),
+                    tone: Tone::Muted,
+                },
+                SettingRow::Section("Model".into()),
+                SettingRow::Entry {
+                    label: "default".into(),
+                    value: "auto".into(),
+                    tone: Tone::Model,
+                },
+            ],
+        )
+    }
+
+    #[test]
+    fn settings_cursor_skips_sections() {
+        let mut s = sample_settings();
+        // Cursor starts on the first Entry (row 1), never the Section (row 0).
+        assert_eq!(s.cursor, 1);
+        s.apply(Action::Down);
+        assert_eq!(s.cursor, 2);
+        s.apply(Action::Down);
+        assert_eq!(s.cursor, 4);
+        s.apply(Action::Down); // wraps back to first entry
+        assert_eq!(s.cursor, 1);
+        s.apply(Action::Up); // wraps up to last entry
+        assert_eq!(s.cursor, 4);
+    }
+
+    #[test]
+    fn settings_edit_and_reset_report_row_index() {
+        let mut s = sample_settings();
+        s.cursor = 2;
+        assert_eq!(s.apply(Action::Enter), SettingsOutcome::Edit(2));
+        assert_eq!(s.apply(Action::Unset), SettingsOutcome::Reset(2));
+        assert_eq!(s.apply(Action::Esc), SettingsOutcome::Close);
+        assert_eq!(s.apply(Action::Quit), SettingsOutcome::Close);
+        // Typing does nothing on a settings screen.
+        assert_eq!(s.apply(Action::Char('a')), SettingsOutcome::Stay);
     }
 }
