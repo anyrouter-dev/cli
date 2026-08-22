@@ -1664,18 +1664,35 @@ fn run_launch(
         return Ok(0);
     }
     let resolved = ensure_tool_installed(tool_name, &command, parsed.flag_true("install"))?;
-    if let Some(mut cfg) = existing.clone() {
-        cfg.last_tool = Some(tool_name.to_string());
-        if aliases_changed {
-            if let Some(p) = cfg.profiles.get_mut(&cfg.active_profile) {
-                p.claude_haiku = profile.claude_haiku.clone();
-                p.claude_sonnet = profile.claude_sonnet.clone();
-                p.claude_opus = profile.claude_opus.clone();
-                p.claude_fable = profile.claude_fable.clone();
-            }
+    // Persist on top of the existing config when there is one; a fresh setup
+    // (no config yet) gets one so last_tool and the model are remembered.
+    let mut cfg = existing.clone().unwrap_or_else(|| crate::config::Config {
+        active_profile: DEFAULT_PROFILE.into(),
+        ..crate::config::Config::default()
+    });
+    // First launch on this machine: no stored profile yet — seed one from
+    // what this launch resolved so the key, base URL, and model stick.
+    cfg.profiles
+        .entry(cfg.active_profile.clone())
+        .or_insert_with(|| profile.clone());
+    cfg.last_tool = Some(tool_name.to_string());
+    if aliases_changed {
+        if let Some(p) = cfg.profiles.get_mut(&cfg.active_profile) {
+            p.claude_haiku = profile.claude_haiku.clone();
+            p.claude_sonnet = profile.claude_sonnet.clone();
+            p.claude_opus = profile.claude_opus.clone();
+            p.claude_fable = profile.claude_fable.clone();
         }
-        let _ = write_config(&cfg, &path);
     }
+    // Remember the model this launch used as the session default, so a bare
+    // `{bin} claude` next time starts with it.
+    if let Some(flag_model) = get_string_flag(&parsed.flags, "model") {
+        let id = display_model_id(&flag_model).to_string();
+        if let Some(p) = cfg.profiles.get_mut(&cfg.active_profile) {
+            p.default_model = Some(id);
+        }
+    }
+    let _ = write_config(&cfg, &path);
     let _updater = crate::upgrade::start_session_checker(env);
     Ok(spawn_child(&resolved, &args, &env_map))
 }

@@ -6,6 +6,21 @@ fn anyr() -> Command {
     cmd
 }
 
+/// Fresh empty ANYROUTER_HOME so launch tests assert on built-in defaults
+/// instead of whatever happens to live in the developer's real config.
+fn temp_home() -> std::path::PathBuf {
+    let home = std::env::temp_dir().join(format!(
+        "anyr-cli-test-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&home).expect("create temp home");
+    home
+}
+
 fn run(args: &[&str]) -> (i32, String, String) {
     let out = anyr().args(args).output().expect("spawn anyr");
     (
@@ -285,6 +300,7 @@ fn spawn_targets_dry_run_inject_gateway_and_redact_key() {
     for (args, marker) in cases {
         let out = anyr()
             .args(*args)
+            .env("ANYROUTER_HOME", temp_home())
             .env_remove("ANYROUTER_API_KEY")
             .output()
             .expect("dry-run");
@@ -323,6 +339,7 @@ fn pi_dry_run_uses_anyrouter_provider() {
                 "--config",
                 cfg.to_str().unwrap(),
             ])
+            .env("ANYROUTER_HOME", temp_home())
             .env_remove("ANYROUTER_API_KEY")
             .output()
             .expect("pi dry-run");
@@ -371,6 +388,7 @@ fn claude_dry_run_with_key_prints_base_and_redacts_secret() {
                 "--model",
                 "auto",
             ])
+            .env("ANYROUTER_HOME", temp_home())
             .env_remove("ANYROUTER_API_KEY")
             .output()
             .expect("dry-run");
@@ -415,6 +433,7 @@ fn claude_dry_run_pinned_model_collapses_aliases() {
                 "--model",
                 "stealth/ox-alpha",
             ])
+            .env("ANYROUTER_HOME", temp_home())
             .env_remove("ANYROUTER_API_KEY")
             .output()
             .expect("dry-run");
@@ -457,6 +476,7 @@ fn claude_dry_run_haiku_flag_beats_pinned_model() {
                 "--haiku",
                 "z-ai/glm-4.7-flash",
             ])
+            .env("ANYROUTER_HOME", temp_home())
             .env_remove("ANYROUTER_API_KEY")
             .output()
             .expect("dry-run");
@@ -493,6 +513,7 @@ fn claude_dry_run_fable_flag_beats_pinned_model() {
                 "--fable",
                 "anthropic/claude-fable-5",
             ])
+            .env("ANYROUTER_HOME", temp_home())
             .env_remove("ANYROUTER_API_KEY")
             .output()
             .expect("dry-run");
@@ -535,6 +556,7 @@ fn claude_dry_run_haiku_flag_overrides_alias() {
                 "--haiku",
                 "z-ai/glm-4.7-flash",
             ])
+            .env("ANYROUTER_HOME", temp_home())
             .env_remove("ANYROUTER_API_KEY")
             .output()
             .expect("dry-run");
@@ -560,6 +582,47 @@ fn model_without_value_errors() {
     let (code, stdout, stderr) = run(&["claude", "--model"]);
     assert_ne!(code, 0);
     assert!(format!("{stdout}{stderr}").contains("requires a value"));
+}
+
+#[test]
+fn launch_remembers_explicit_model_as_session_default() {
+    // Launching with --model must persist it as default_model so a bare
+    // `{bin} claude` next time starts with the same model. /bin/true stands
+    // in for claude so the spawn succeeds without the real binary.
+    let home = temp_home();
+    let out = anyr()
+        .args([
+            "claude",
+            "--yes",
+            "--key",
+            "sk-ar-v1-testkey",
+            "--model",
+            "z-ai/glm-4.7-flash",
+        ])
+        .env("ANYROUTER_HOME", &home)
+        .env("ANYROUTER_CLAUDE_PATH", "/bin/true")
+        .env_remove("ANYROUTER_API_KEY")
+        .output()
+        .expect("launch");
+    assert_eq!(out.status.code().unwrap_or(1), 0);
+
+    // Second launch with no --model: dry-run reveals which model was picked.
+    let out = anyr()
+        .args(["claude", "--yes", "--dry-run", "--key", "sk-ar-v1-testkey"])
+        .env("ANYROUTER_HOME", &home)
+        .env_remove("ANYROUTER_API_KEY")
+        .output()
+        .expect("relaunch");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("ANTHROPIC_MODEL=z-ai/glm-4.7-flash"),
+        "session default not remembered:\n{stdout}"
+    );
+
+    // And the persisted config records it too.
+    let cfg = std::fs::read_to_string(home.join("config.yaml")).expect("config written");
+    assert!(cfg.contains("default_model: z-ai/glm-4.7-flash"), "{cfg}");
+    let _ = std::fs::remove_dir_all(&home);
 }
 
 #[test]
