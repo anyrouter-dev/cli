@@ -6,6 +6,21 @@ fn anyr() -> Command {
     cmd
 }
 
+/// Fresh empty ANYROUTER_HOME so launch tests assert on built-in defaults
+/// instead of whatever happens to live in the developer's real config.
+fn temp_home() -> std::path::PathBuf {
+    let home = std::env::temp_dir().join(format!(
+        "anyr-cli-test-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&home).expect("create temp home");
+    home
+}
+
 fn run(args: &[&str]) -> (i32, String, String) {
     let out = anyr().args(args).output().expect("spawn anyr");
     (
@@ -230,7 +245,10 @@ fn onboard_shortcuts_and_json() {
     }
     let (code, stdout, stderr) = run(&["onboard", "plan", "--json"]);
     assert_eq!(code, 0, "stderr={stderr}");
-    assert!(stdout.contains("\"mode\":\"plan\"") || stdout.contains("\"mode\": \"plan\""), "{stdout}");
+    assert!(
+        stdout.contains("\"mode\":\"plan\"") || stdout.contains("\"mode\": \"plan\""),
+        "{stdout}"
+    );
     assert!(
         stdout.to_ascii_lowercase().contains("do not change"),
         "{stdout}"
@@ -282,6 +300,7 @@ fn spawn_targets_dry_run_inject_gateway_and_redact_key() {
     for (args, marker) in cases {
         let out = anyr()
             .args(*args)
+            .env("ANYROUTER_HOME", temp_home())
             .env_remove("ANYROUTER_API_KEY")
             .output()
             .expect("dry-run");
@@ -320,6 +339,7 @@ fn pi_dry_run_uses_anyrouter_provider() {
                 "--config",
                 cfg.to_str().unwrap(),
             ])
+            .env("ANYROUTER_HOME", temp_home())
             .env_remove("ANYROUTER_API_KEY")
             .output()
             .expect("pi dry-run");
@@ -368,6 +388,7 @@ fn claude_dry_run_with_key_prints_base_and_redacts_secret() {
                 "--model",
                 "auto",
             ])
+            .env("ANYROUTER_HOME", temp_home())
             .env_remove("ANYROUTER_API_KEY")
             .output()
             .expect("dry-run");
@@ -412,6 +433,7 @@ fn claude_dry_run_pinned_model_collapses_aliases() {
                 "--model",
                 "stealth/ox-alpha",
             ])
+            .env("ANYROUTER_HOME", temp_home())
             .env_remove("ANYROUTER_API_KEY")
             .output()
             .expect("dry-run");
@@ -454,6 +476,7 @@ fn claude_dry_run_haiku_flag_beats_pinned_model() {
                 "--haiku",
                 "z-ai/glm-4.7-flash",
             ])
+            .env("ANYROUTER_HOME", temp_home())
             .env_remove("ANYROUTER_API_KEY")
             .output()
             .expect("dry-run");
@@ -490,6 +513,7 @@ fn claude_dry_run_fable_flag_beats_pinned_model() {
                 "--fable",
                 "anthropic/claude-fable-5",
             ])
+            .env("ANYROUTER_HOME", temp_home())
             .env_remove("ANYROUTER_API_KEY")
             .output()
             .expect("dry-run");
@@ -532,6 +556,7 @@ fn claude_dry_run_haiku_flag_overrides_alias() {
                 "--haiku",
                 "z-ai/glm-4.7-flash",
             ])
+            .env("ANYROUTER_HOME", temp_home())
             .env_remove("ANYROUTER_API_KEY")
             .output()
             .expect("dry-run");
@@ -557,6 +582,48 @@ fn model_without_value_errors() {
     let (code, stdout, stderr) = run(&["claude", "--model"]);
     assert_ne!(code, 0);
     assert!(format!("{stdout}{stderr}").contains("requires a value"));
+}
+
+#[test]
+fn launch_remembers_explicit_model_as_session_default() {
+    // Launching with --model must persist it as default_model so a bare
+    // `{bin} claude` next time starts with the same model. A trivially
+    // successful binary stands in for claude so the spawn works everywhere.
+    let stub = if cfg!(windows) { "cmd" } else { "true" };
+    let home = temp_home();
+    let out = anyr()
+        .args([
+            "claude",
+            "--yes",
+            "--key",
+            "sk-ar-v1-testkey",
+            "--model",
+            "z-ai/glm-4.7-flash",
+        ])
+        .env("ANYROUTER_HOME", &home)
+        .env("ANYROUTER_CLAUDE_PATH", stub)
+        .env_remove("ANYROUTER_API_KEY")
+        .output()
+        .expect("launch");
+    assert_eq!(out.status.code().unwrap_or(1), 0);
+
+    // Second launch with no --model: dry-run reveals which model was picked.
+    let out = anyr()
+        .args(["claude", "--yes", "--dry-run", "--key", "sk-ar-v1-testkey"])
+        .env("ANYROUTER_HOME", &home)
+        .env_remove("ANYROUTER_API_KEY")
+        .output()
+        .expect("relaunch");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("ANTHROPIC_MODEL=z-ai/glm-4.7-flash"),
+        "session default not remembered:\n{stdout}"
+    );
+
+    // And the persisted config records it too.
+    let cfg = std::fs::read_to_string(home.join("config.yaml")).expect("config written");
+    assert!(cfg.contains("default_model: z-ai/glm-4.7-flash"), "{cfg}");
+    let _ = std::fs::remove_dir_all(&home);
 }
 
 #[test]
@@ -635,7 +702,13 @@ fn update_stable_and_beta_conflict() {
 
 #[test]
 fn upgrade_check_flag_is_known() {
-    let fixture = std::env::temp_dir().join("anyr-cli-upgrade-check.json");
+    // Isolate from a real ~/.anyrouter whose channel would skew the check.
+    let home = std::env::temp_dir().join(format!("anyr-cli-upgrade-home-{}", std::process::id()));
+    std::fs::create_dir_all(&home).unwrap();
+    let fixture = std::env::temp_dir().join(format!(
+        "anyr-cli-upgrade-check-{}.json",
+        std::process::id()
+    ));
     std::fs::write(
         &fixture,
         r#"[{"tag_name":"v0.1.0","prerelease":false,"draft":false,"assets":[{"name":"anyr-linux-x86_64"}]}]"#,
@@ -644,6 +717,8 @@ fn upgrade_check_flag_is_known() {
     let out = anyr()
         .args(["upgrade", "--check"])
         .env("ANYR_RELEASES_JSON", &fixture)
+        .env("ANYROUTER_HOME", &home)
+        .env_remove("ANYR_CHANNEL")
         .output()
         .expect("upgrade --check");
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -1038,7 +1113,10 @@ profiles:
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(out.status.code().unwrap_or(1), 0, "{stdout}{stderr}");
-    assert!(!stdout.contains('\u{1b}'), "dump must be ANSI-free: {stdout}");
+    assert!(
+        !stdout.contains('\u{1b}'),
+        "dump must be ANSI-free: {stdout}"
+    );
     assert!(stdout.contains("▲ AnyRouter"), "{stdout}");
     assert!(stdout.contains("Launch"), "{stdout}");
     assert!(stdout.contains("Config"), "{stdout}");
@@ -1056,12 +1134,58 @@ profiles:
 
 #[test]
 fn config_dump_tui_prints_plain_frame() {
-    let (code, stdout, stderr) = run(&["config", "--dump-tui"]);
-    assert_eq!(code, 0, "{stdout}{stderr}");
-    assert!(!stdout.contains('\u{1b}'), "dump must be ANSI-free: {stdout}");
-    assert!(stdout.contains("▲ Config"), "{stdout}");
-    assert!(stdout.contains("Switch key"), "{stdout}");
-    assert!(stdout.contains("Done"), "{stdout}");
+    let dir = std::env::temp_dir().join(format!("anyr-cli-config-dump-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("config.yaml");
+    std::fs::write(
+        &path,
+        "\
+active_profile: default
+profiles:
+  default:
+    api_key: sk-ar-v1-config-dump-secret-value-abcdef
+    default_model: auto
+",
+    )
+    .unwrap();
+    let out = anyr()
+        .args(["config", "--dump-tui", "--config", path.to_str().unwrap()])
+        .output()
+        .expect("config dump");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code().unwrap_or(1), 0, "{stdout}{stderr}");
+    assert!(
+        !stdout.contains('\u{1b}'),
+        "dump must be ANSI-free: {stdout}"
+    );
+    assert!(
+        stdout.contains('╭') && stdout.contains('╯'),
+        "dialog card: {stdout}"
+    );
+    // Grouped sections with current values.
+    for section in ["ACCOUNT", "MODEL", "AGENT", "GENERAL"] {
+        assert!(stdout.contains(section), "missing {section} in:\n{stdout}");
+    }
+    for row in [
+        "account",
+        "api key",
+        "default",
+        "haiku",
+        "sonnet",
+        "opus",
+        "fable",
+        "coding agent",
+        "auto-update",
+        "update channel",
+    ] {
+        assert!(stdout.contains(row), "missing row \"{row}\" in:\n{stdout}");
+    }
+    assert!(
+        !stdout.contains("config-dump-secret-value"),
+        "dump must not leak full secret: {stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

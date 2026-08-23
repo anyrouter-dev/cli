@@ -10,13 +10,15 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
 
-use super::state::{MenuState, PickerState};
+use super::state::{MenuState, PickerState, SettingRow, SettingsState, Tone};
 use super::theme;
 
 /// Preferred dialog width; shrinks on narrow terminals.
 const DIALOG_PREF_WIDTH: u16 = 52;
 /// Minimum usable dialog width before we fill almost the whole terminal.
 const DIALOG_MIN_WIDTH: u16 = 28;
+/// Settings screen is wider — model ids need room next to their labels.
+const SETTINGS_PREF_WIDTH: u16 = 64;
 
 pub fn render_picker(frame: &mut Frame, state: &PickerState) {
     let area = frame.area();
@@ -67,14 +69,10 @@ pub fn render_picker(frame: &mut Frame, state: &PickerState) {
         Block::default()
             .borders(Borders::ALL)
             .border_style(theme::muted())
-            .title(Span::styled(
-                format!(" {} ", state.title),
-                theme::title(),
-            )),
+            .title(Span::styled(format!(" {} ", state.title), theme::title())),
     );
-    let mut list_state = ListState::default().with_selected(Some(state.cursor.min(
-        filtered.len().saturating_sub(1),
-    )));
+    let mut list_state = ListState::default()
+        .with_selected(Some(state.cursor.min(filtered.len().saturating_sub(1))));
     frame.render_stateful_widget(list, chunks[2], &mut list_state);
 
     let footer = Paragraph::new(Span::styled(state.hint(), theme::muted()));
@@ -96,10 +94,7 @@ pub fn render_menu(frame: &mut Frame, state: &MenuState) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(theme::brand())
-        .title(Span::styled(
-            format!(" ▲ {} ", state.title),
-            theme::brand(),
-        ))
+        .title(Span::styled(format!(" ▲ {} ", state.title), theme::brand()))
         .style(Style::default().bg(theme::surface_rgb()));
     let inner = block.inner(dialog);
     frame.render_widget(block, dialog);
@@ -157,15 +152,114 @@ fn dialog_height(state: &MenuState) -> u16 {
     2 + status + 1 + items + 1
 }
 
+/// Settings screen: same centered-dialog shape, grouped rows with
+/// right-aligned colored values.
+pub fn render_settings(frame: &mut Frame, state: &SettingsState) {
+    let area = frame.area();
+    frame.render_widget(
+        Block::default().style(Style::default().bg(theme::backdrop_rgb()).fg(Color::Reset)),
+        area,
+    );
+
+    let dialog = centered_dialog(area, settings_dialog_height(state), SETTINGS_PREF_WIDTH);
+    frame.render_widget(Clear, dialog);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(theme::brand())
+        .title(Span::styled(format!(" ▲ {} ", state.title), theme::brand()))
+        .style(Style::default().bg(theme::surface_rgb()));
+    let inner = block.inner(dialog);
+    frame.render_widget(block, dialog);
+
+    let status_h = state.header.len().max(1) as u16;
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(status_h),
+            Constraint::Length(1),
+            Constraint::Min(state.rows.len().max(1) as u16),
+            Constraint::Length(1),
+        ])
+        .split(inner);
+
+    render_status_lines(frame, chunks[0], &state.header);
+
+    let rule = Paragraph::new(Span::styled(
+        "─".repeat(chunks[1].width as usize),
+        theme::muted(),
+    ));
+    frame.render_widget(rule, chunks[1]);
+
+    let inner_w = chunks[2].width as usize;
+    let lines: Vec<Line> = state
+        .rows
+        .iter()
+        .enumerate()
+        .map(|(i, row)| settings_row_line(row, i == state.cursor, inner_w))
+        .collect();
+    frame.render_widget(Paragraph::new(lines), chunks[2]);
+
+    let footer = Paragraph::new(Span::styled(state.hint(), theme::muted()));
+    frame.render_widget(footer, chunks[3]);
+}
+
+fn settings_dialog_height(state: &SettingsState) -> u16 {
+    // borders(2) + status + rule(1) + rows + hint(1)
+    let status = state.header.len().max(1) as u16;
+    let rows = state.rows.len().max(1) as u16;
+    2 + status + 1 + rows + 1
+}
+
+fn tone_style(tone: Tone) -> Style {
+    match tone {
+        Tone::Normal => theme::white(),
+        Tone::Good => theme::success(),
+        Tone::Model => theme::model(),
+        Tone::Warn => Style::default().fg(theme::rgb(230, 160, 60)),
+        Tone::Muted => theme::muted(),
+    }
+}
+
+/// One settings row as styled spans: `❯ label      value` (value right-aligned).
+fn settings_row_line(row: &SettingRow, selected: bool, inner_w: usize) -> Line<'static> {
+    match row {
+        SettingRow::Section(name) => Line::from(Span::styled(
+            format!("  {}", name.to_ascii_uppercase()),
+            theme::muted(),
+        )),
+        SettingRow::Entry { label, value, tone } => {
+            let marker = if selected { "❯ " } else { "  " };
+            let marker_style = if selected {
+                theme::accent()
+            } else {
+                theme::muted()
+            };
+            let label_style = if selected {
+                theme::selected()
+            } else {
+                theme::white()
+            };
+            // Right-align the value: pad the label column to fill the gap.
+            let used = 2 + label.chars().count() + value.chars().count();
+            let gap = inner_w.saturating_sub(used).max(1);
+            let padded_label = format!("{label}{}", " ".repeat(gap));
+            Line::from(vec![
+                Span::styled(marker.to_string(), marker_style),
+                Span::styled(padded_label, label_style),
+                Span::styled(value.clone(), tone_style(*tone)),
+            ])
+        }
+    }
+}
+
 /// Center a fixed-size dialog; clamp to terminal so narrow TTYs never clip badly.
 fn centered_dialog(area: Rect, content_height: u16, pref_width: u16) -> Rect {
     if area.width == 0 || area.height == 0 {
         return area;
     }
     let max_w = area.width.saturating_sub(2).max(1);
-    let width = pref_width
-        .min(max_w)
-        .max(DIALOG_MIN_WIDTH.min(max_w));
+    let width = pref_width.min(max_w).max(DIALOG_MIN_WIDTH.min(max_w));
     let max_h = area.height.saturating_sub(0).max(1);
     let height = content_height.min(max_h).max(5.min(max_h));
     let x = area.x + (area.width.saturating_sub(width)) / 2;
@@ -298,10 +392,7 @@ pub fn plain_menu_lines(state: &MenuState, cols: usize) -> Vec<String> {
     }
 
     lines.push(format!("{pad_s}├{}┤", "─".repeat(content_w)));
-    lines.push(format!(
-        "{pad_s}│{}│",
-        pad_content(state.hint(), content_w)
-    ));
+    lines.push(format!("{pad_s}│{}│", pad_content(state.hint(), content_w)));
     lines.push(format!("{pad_s}╰{}╯", "─".repeat(content_w)));
     lines
 }
@@ -323,6 +414,57 @@ pub fn plain_picker_frame(state: &PickerState, cols: usize) -> String {
 
 pub fn plain_menu_frame(state: &MenuState, cols: usize) -> String {
     let mut lines = plain_menu_lines(state, cols);
+    lines.push(String::new());
+    lines.join("\n")
+}
+
+/// ANSI-free settings frame for `--dump-tui` and unit tests.
+pub fn plain_settings_lines(state: &SettingsState, cols: usize) -> Vec<String> {
+    let term_w = cols.max(DIALOG_MIN_WIDTH as usize);
+    let inner = (SETTINGS_PREF_WIDTH as usize)
+        .min(term_w.saturating_sub(2))
+        .max(DIALOG_MIN_WIDTH as usize)
+        .min(term_w);
+    let pad = term_w.saturating_sub(inner) / 2;
+    let pad_s = " ".repeat(pad);
+    let content_w = inner.saturating_sub(2);
+
+    let mut lines = Vec::new();
+    let title_raw = format!(" ▲ {} ", state.title);
+    let title = truncate(&title_raw, content_w);
+    let dash_n = content_w.saturating_sub(title.chars().count());
+    lines.push(format!("{pad_s}╭{title}{}╮", "─".repeat(dash_n)));
+
+    if state.header.is_empty() {
+        lines.push(format!("{pad_s}│{}│", pad_content("—", content_w)));
+    } else {
+        for h in &state.header {
+            lines.push(format!("{pad_s}│{}│", pad_content(h, content_w)));
+        }
+    }
+    lines.push(format!("{pad_s}├{}┤", "─".repeat(content_w)));
+
+    for (i, row) in state.rows.iter().enumerate() {
+        let line = match row {
+            SettingRow::Section(name) => format!("  {}", name.to_ascii_uppercase()),
+            SettingRow::Entry { label, value, .. } => {
+                let marker = if i == state.cursor { "◆" } else { " " };
+                let used = 4 + label.chars().count() + value.chars().count();
+                let gap = content_w.saturating_sub(used).max(1);
+                format!("{marker} {label}{}{value}", " ".repeat(gap))
+            }
+        };
+        lines.push(format!("{pad_s}│{}│", pad_content(&line, content_w)));
+    }
+
+    lines.push(format!("{pad_s}├{}┤", "─".repeat(content_w)));
+    lines.push(format!("{pad_s}│{}│", pad_content(state.hint(), content_w)));
+    lines.push(format!("{pad_s}╰{}╯", "─".repeat(content_w)));
+    lines
+}
+
+pub fn plain_settings_frame(state: &SettingsState, cols: usize) -> String {
+    let mut lines = plain_settings_lines(state, cols);
     lines.push(String::new());
     lines.join("\n")
 }
@@ -357,7 +499,10 @@ mod tests {
         assert!(frame.contains("◆ Launch claude"), "{frame}");
         assert!(frame.contains("Config"), "{frame}");
         assert!(frame.contains("Quit"), "{frame}");
-        assert!(frame.contains('╭') && frame.contains('╯'), "dialog box: {frame}");
+        assert!(
+            frame.contains('╭') && frame.contains('╯'),
+            "dialog box: {frame}"
+        );
     }
 
     #[test]
@@ -406,5 +551,52 @@ mod tests {
         assert!(d.width <= tiny.width);
         assert!(d.height <= tiny.height);
         assert!(d.width >= 1);
+    }
+
+    #[test]
+    fn dump_settings_is_ansi_free_and_grouped() {
+        use super::super::state::{SettingRow, SettingsState, Tone};
+        let state = SettingsState::new(
+            "Config",
+            vec!["account  duyet · me@example.co".into()],
+            vec![
+                SettingRow::Section("Account".into()),
+                SettingRow::Entry {
+                    label: "account".into(),
+                    value: "duyet".into(),
+                    tone: Tone::Normal,
+                },
+                SettingRow::Section("Model".into()),
+                SettingRow::Entry {
+                    label: "default".into(),
+                    value: "auto".into(),
+                    tone: Tone::Model,
+                },
+            ],
+        );
+        let frame = plain_settings_frame(&state, 80);
+        assert!(!frame.contains('\u{1b}'), "must be ANSI-free: {frame}");
+        assert!(frame.contains("▲ Config"), "{frame}");
+        assert!(frame.contains("ACCOUNT"), "{frame}");
+        assert!(frame.contains("MODEL"), "{frame}");
+        assert!(frame.contains("◆ account"), "{frame}");
+        assert!(frame.contains('╭') && frame.contains('╯'), "{frame}");
+        // Values right-aligned inside the card (before the right border).
+        let row_line = frame
+            .lines()
+            .find(|l| l.contains("default") && l.contains("auto"))
+            .expect("default row");
+        assert!(
+            row_line
+                .trim_end()
+                .trim_end_matches('│')
+                .trim_end()
+                .ends_with("auto"),
+            "{row_line}"
+        );
+        // Narrow terminals still render.
+        let narrow = plain_settings_frame(&state, 30);
+        assert!(!narrow.contains('\u{1b}'));
+        assert!(narrow.contains("▲ Config"), "{narrow}");
     }
 }

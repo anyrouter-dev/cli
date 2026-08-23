@@ -65,6 +65,27 @@ fn tui_dump_menu(
     crate::tui::dump_menu_select(title, header, items, crate::tui::dump_cols(env))
 }
 
+#[cfg(feature = "native")]
+fn tui_settings_select(
+    state: crate::tui::SettingsState,
+) -> Result<Option<crate::tui::SettingsOutcome>, String> {
+    if !crate::tui::is_interactive() {
+        return Ok(None);
+    }
+    match crate::tui::run_settings_live(state)? {
+        outcome
+        @ (crate::tui::SettingsOutcome::Edit(_) | crate::tui::SettingsOutcome::Reset(_)) => {
+            Ok(Some(outcome))
+        }
+        crate::tui::SettingsOutcome::Close | crate::tui::SettingsOutcome::Stay => Ok(None),
+    }
+}
+
+#[cfg(feature = "native")]
+fn tui_dump_settings(state: crate::tui::SettingsState, env: &BTreeMap<String, String>) -> String {
+    crate::tui::dump_settings(&state, crate::tui::dump_cols(env))
+}
+
 #[cfg(not(feature = "native"))]
 fn tui_dump_menu(
     title: &str,
@@ -995,6 +1016,19 @@ fn print_config_status(
     Ok(())
 }
 
+/// Which edit a focused settings row triggers.
+#[cfg_attr(not(feature = "native"), allow(dead_code))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SettingKind {
+    Account,
+    ApiKey,
+    /// Model slot: "default", "haiku", "sonnet", "opus", "fable".
+    Model(&'static str),
+    Agent,
+    AutoUpdate,
+    Channel,
+}
+
 fn run_config_tui(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, String> {
     let path = config_path(parsed, env);
     if !tui_wants_dump(parsed, env) && stored_api_key(parsed, env, &path).is_none() {
@@ -1005,6 +1039,442 @@ fn run_config_tui(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result
             ));
         }
     }
+    #[cfg(feature = "native")]
+    {
+        if tui_wants_dump(parsed, env) {
+            let (state, _) =
+                config_settings_frame(parsed, env, &path, false, &mut CreditsCache::fresh());
+            print!("{}", tui_dump_settings(state, env));
+            return Ok(0);
+        }
+        config_settings_loop(parsed, env, &path)
+    }
+    #[cfg(not(feature = "native"))]
+    config_menu_loop_legacy(parsed, env, &path)
+}
+
+/// Build one settings frame: grouped rows with current values, plus a parallel
+/// list mapping row index → edit kind. `online` gates network (dump stays
+/// offline-deterministic).
+#[cfg(feature = "native")]
+fn config_settings_frame(
+    parsed: &ParsedArgs,
+    env: &BTreeMap<String, String>,
+    path: &PathBuf,
+    online: bool,
+    cache: &mut CreditsCache,
+) -> (crate::tui::SettingsState, Vec<Option<SettingKind>>) {
+    use crate::tui::{SettingRow, SettingsState, Tone};
+
+    let cfg = load_config_if_present(path).unwrap_or_default();
+    let profile = cfg.profiles.get(&cfg.active_profile);
+    let key = stored_api_key(parsed, env, path);
+    let base = resolve_base_url(&parsed.flags, profile);
+    let signed_in = key.is_some();
+
+    let identity = if online {
+        cache.identity(&base, key.as_deref())
+    } else {
+        None
+    };
+    let account_value = match (&identity, signed_in) {
+        (Some(me), _) => me.display_label(),
+        (None, true) => cfg.active_profile.clone(),
+        (None, false) => "(not signed in)".into(),
+    };
+    let account_tone = if signed_in { Tone::Normal } else { Tone::Warn };
+    let credits_value = if !online {
+        "-".into()
+    } else {
+        match identity.as_ref().and_then(|me| me.balance) {
+            Some(b) => crate::http::format_usd(b),
+            None => cache.get(&base, key.as_deref()),
+        }
+    };
+
+    let header = vec![
+        format!("account  {account_value}"),
+        format!("credits  {credits_value}"),
+        format!("file     {}", path.display()),
+    ];
+
+    let mut rows: Vec<SettingRow> = Vec::new();
+    let mut kinds: Vec<Option<SettingKind>> = Vec::new();
+    fn section(rows: &mut Vec<SettingRow>, kinds: &mut Vec<Option<SettingKind>>, name: &str) {
+        rows.push(SettingRow::Section(name.into()));
+        kinds.push(None);
+    }
+    fn entry(
+        rows: &mut Vec<SettingRow>,
+        kinds: &mut Vec<Option<SettingKind>>,
+        label: &str,
+        value: String,
+        tone: Tone,
+        kind: SettingKind,
+    ) {
+        rows.push(SettingRow::Entry {
+            label: label.into(),
+            value,
+            tone,
+        });
+        kinds.push(Some(kind));
+    }
+
+    section(&mut rows, &mut kinds, "Account");
+    entry(
+        &mut rows,
+        &mut kinds,
+        "account",
+        account_value.clone(),
+        account_tone,
+        SettingKind::Account,
+    );
+    let key_value = if signed_in {
+        mask_api_key(key.as_deref())
+    } else {
+        "(not set)".into()
+    };
+    entry(
+        &mut rows,
+        &mut kinds,
+        "api key",
+        key_value,
+        if signed_in { Tone::Normal } else { Tone::Muted },
+        SettingKind::ApiKey,
+    );
+
+    section(&mut rows, &mut kinds, "Model");
+    entry(
+        &mut rows,
+        &mut kinds,
+        "default",
+        display_model_id(profile.map(|p| p.default_model()).unwrap_or("auto")).into(),
+        Tone::Model,
+        SettingKind::Model("default"),
+    );
+    for (label, slot) in [
+        ("haiku", "haiku"),
+        ("sonnet", "sonnet"),
+        ("opus", "opus"),
+        ("fable", "fable"),
+    ] {
+        let pinned = match slot {
+            "haiku" => nonempty_slot(&profile.and_then(|p| p.claude_haiku.clone())),
+            "sonnet" => nonempty_slot(&profile.and_then(|p| p.claude_sonnet.clone())),
+            "opus" => nonempty_slot(&profile.and_then(|p| p.claude_opus.clone())),
+            _ => nonempty_slot(&profile.and_then(|p| p.claude_fable.clone())),
+        };
+        let value = match &pinned {
+            Some(id) => display_model_id(id).to_string(),
+            None => format!("{} · default", slot_current_opt(profile, slot)),
+        };
+        let tone = if pinned.is_some() {
+            Tone::Model
+        } else {
+            Tone::Muted
+        };
+        let slot_static: &'static str = match slot {
+            "haiku" => "haiku",
+            "sonnet" => "sonnet",
+            "opus" => "opus",
+            _ => "fable",
+        };
+        entry(
+            &mut rows,
+            &mut kinds,
+            label,
+            value,
+            tone,
+            SettingKind::Model(slot_static),
+        );
+    }
+
+    section(&mut rows, &mut kinds, "Agent");
+    let agent = launcher_last_tool(path, parsed, env);
+    let agent_pinned = profile.and_then(|p| p.default_tool.clone()).is_some();
+    entry(
+        &mut rows,
+        &mut kinds,
+        "coding agent",
+        agent,
+        if agent_pinned {
+            Tone::Normal
+        } else {
+            Tone::Muted
+        },
+        SettingKind::Agent,
+    );
+
+    section(&mut rows, &mut kinds, "General");
+    entry(
+        &mut rows,
+        &mut kinds,
+        "auto-update",
+        if cfg.auto_update() {
+            "enabled".into()
+        } else {
+            "disabled".into()
+        },
+        if cfg.auto_update() {
+            Tone::Good
+        } else {
+            Tone::Muted
+        },
+        SettingKind::AutoUpdate,
+    );
+    entry(
+        &mut rows,
+        &mut kinds,
+        "update channel",
+        cfg.channel().into(),
+        Tone::Normal,
+        SettingKind::Channel,
+    );
+
+    (SettingsState::new("Config", header, rows), kinds)
+}
+
+#[cfg_attr(not(feature = "native"), allow(dead_code))]
+fn nonempty_slot(value: &Option<String>) -> Option<String> {
+    value
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+/// Effective slot value for display when nothing is pinned.
+#[cfg_attr(not(feature = "native"), allow(dead_code))]
+fn slot_current_opt(profile: Option<&Profile>, slot: &str) -> String {
+    slot_current(profile.unwrap_or(&Profile::default()), slot).to_string()
+}
+
+/// Settings loop: render → edit/reset → re-render with fresh values.
+#[cfg(feature = "native")]
+fn config_settings_loop(
+    parsed: &ParsedArgs,
+    env: &BTreeMap<String, String>,
+    path: &PathBuf,
+) -> Result<i32, String> {
+    let mut cache = CreditsCache::fresh();
+    loop {
+        let (state, kinds) = config_settings_frame(parsed, env, path, true, &mut cache);
+        let Some(outcome) = tui_settings_select(state)? else {
+            return Ok(0);
+        };
+        let result = match outcome {
+            crate::tui::SettingsOutcome::Edit(idx) => kinds
+                .get(idx)
+                .copied()
+                .flatten()
+                .map(|kind| config_edit_row(parsed, env, path, kind)),
+            crate::tui::SettingsOutcome::Reset(idx) => kinds
+                .get(idx)
+                .copied()
+                .flatten()
+                .map(|kind| config_reset_row(path, kind)),
+            crate::tui::SettingsOutcome::Close | crate::tui::SettingsOutcome::Stay => None,
+        };
+        if let Some(Err(err)) = result {
+            eprintln!("{}", term::err(&err));
+        }
+    }
+}
+
+#[cfg_attr(not(feature = "native"), allow(dead_code))]
+fn config_edit_row(
+    parsed: &ParsedArgs,
+    env: &BTreeMap<String, String>,
+    path: &PathBuf,
+    kind: SettingKind,
+) -> Result<i32, String> {
+    match kind {
+        SettingKind::Account => config_account_actions(parsed, env),
+        SettingKind::ApiKey => {
+            let mut next = parsed.clone();
+            next.command = "keys".into();
+            next.passthrough = vec!["use".into()];
+            run_keys(&next, env)
+        }
+        SettingKind::Model(slot) => {
+            let existing = load_config_if_present(path);
+            let profile = existing
+                .as_ref()
+                .and_then(|c| c.profiles.get(&c.active_profile));
+            let key = resolve_api_key(&parsed.flags, env, profile);
+            let base = resolve_base_url(&parsed.flags, profile);
+            let models = fetch_models(&base, key.as_deref())?;
+            let current = profile.map(|p| slot_current(p, slot).to_string());
+            let id = pick_model(&models, current.as_deref(), slot_title(slot))?;
+            save_model_slot(existing, path, slot, &id)
+        }
+        SettingKind::Agent => {
+            let last = launcher_last_tool(path, parsed, env);
+            let labels: Vec<String> = LAUNCH_AGENTS
+                .iter()
+                .map(|(id, label)| format!("{id}  —  {label}"))
+                .collect();
+            let current = LAUNCH_AGENTS
+                .iter()
+                .position(|(id, _)| *id == last.as_str());
+            let idx = term::pick("Coding agent", &labels, current)?;
+            let (tool, label) = LAUNCH_AGENTS[idx];
+            let mut cfg = load_config_if_present(path).unwrap_or_default();
+            if let Some(p) = cfg.profiles.get_mut(&cfg.active_profile) {
+                p.default_tool = Some(tool.into());
+            }
+            write_config(&cfg, path)?;
+            println!(
+                "{}  coding agent  {}",
+                term::ok("Saved"),
+                term::paint(term::tool_color(tool), label)
+            );
+            Ok(0)
+        }
+        SettingKind::AutoUpdate => {
+            let mut cfg = load_config_if_present(path).unwrap_or_default();
+            cfg.auto_update = Some(!cfg.auto_update());
+            write_config(&cfg, path)?;
+            println!(
+                "{}  auto-update {}",
+                term::ok("Saved"),
+                if cfg.auto_update() {
+                    "enabled"
+                } else {
+                    "disabled"
+                }
+            );
+            Ok(0)
+        }
+        SettingKind::Channel => {
+            let choices = ["stable", "beta"];
+            let current = choices.iter().position(|c| *c == cfg_channel(path));
+            let idx = term::pick(
+                "Update channel",
+                &choices.iter().map(|c| c.to_string()).collect::<Vec<_>>(),
+                current,
+            )?;
+            let mut cfg = load_config_if_present(path).unwrap_or_default();
+            cfg.channel = Some(choices[idx].into());
+            write_config(&cfg, path)?;
+            println!("{}  channel  {}", term::ok("Saved"), choices[idx]);
+            Ok(0)
+        }
+    }
+}
+
+#[cfg_attr(not(feature = "native"), allow(dead_code))]
+fn cfg_channel(path: &std::path::Path) -> String {
+    load_config_if_present(path)
+        .map(|c| c.channel().to_string())
+        .unwrap_or_else(|| "stable".into())
+}
+
+#[cfg_attr(not(feature = "native"), allow(dead_code))]
+fn config_account_actions(
+    parsed: &ParsedArgs,
+    env: &BTreeMap<String, String>,
+) -> Result<i32, String> {
+    let actions = [
+        "Switch account",
+        "Add account",
+        "Re-authenticate (login)",
+        "Log out",
+    ];
+    let idx = term::pick(
+        "Account",
+        &actions.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+        Some(0),
+    )?;
+    match idx {
+        0 => {
+            let mut next = parsed.clone();
+            next.passthrough = Vec::new();
+            run_auth_switch(&next, env)
+        }
+        1 => {
+            let name = term::prompt("New account name (Enter for \"default\"): ")?;
+            let name = name.trim();
+            let name = if name.is_empty() { "default" } else { name };
+            if !valid_account_name(name) {
+                return Err(format!(
+                    "Invalid account name \"{name}\". Use letters, digits, \".\", \"_\", \"-\"."
+                ));
+            }
+            let mut flags = parsed.flags.clone();
+            flags.insert("profile".into(), FlagValue::Value(name.into()));
+            let next = ParsedArgs {
+                command: "login".into(),
+                flags,
+                passthrough: Vec::new(),
+            };
+            run_login(&next, env)
+        }
+        2 => run_login(parsed, env),
+        _ => run_logout(parsed, env),
+    }
+}
+
+/// `x` on a row: clear the override so the built-in default applies again.
+#[cfg_attr(not(feature = "native"), allow(dead_code))]
+fn config_reset_row(path: &std::path::Path, kind: SettingKind) -> Result<i32, String> {
+    let mut cfg = load_config_if_present(path).unwrap_or_default();
+    match kind {
+        SettingKind::AutoUpdate => {
+            if cfg.auto_update.is_none() {
+                println!("{}", term::dim("auto-update already at default (enabled)"));
+                return Ok(0);
+            }
+            cfg.auto_update = None;
+            write_config(&cfg, path)?;
+            println!(
+                "{}  auto-update reset to default (enabled)",
+                term::ok("Saved")
+            );
+            Ok(0)
+        }
+        SettingKind::Channel => {
+            if cfg.channel.is_none() {
+                println!("{}", term::dim("channel already at default (stable)"));
+                return Ok(0);
+            }
+            cfg.channel = None;
+            write_config(&cfg, path)?;
+            println!("{}  channel reset to default (stable)", term::ok("Saved"));
+            Ok(0)
+        }
+        SettingKind::Account | SettingKind::ApiKey => Ok(0),
+        SettingKind::Model(_) | SettingKind::Agent => {
+            let name = cfg.active_profile.clone();
+            let Some(p) = cfg.profiles.get_mut(&name) else {
+                return Err(no_key_error());
+            };
+            let (label, was_set) = match kind {
+                SettingKind::Model("haiku") => ("haiku", p.claude_haiku.take().is_some()),
+                SettingKind::Model("sonnet") => ("sonnet", p.claude_sonnet.take().is_some()),
+                SettingKind::Model("opus") => ("opus", p.claude_opus.take().is_some()),
+                SettingKind::Model("fable") => ("fable", p.claude_fable.take().is_some()),
+                SettingKind::Model(_) => ("default model", p.default_model.take().is_some()),
+                _ => ("coding agent", p.default_tool.take().is_some()),
+            };
+            if !was_set {
+                println!("{}", term::dim(&format!("{label} already at default")));
+                return Ok(0);
+            }
+            write_config(&cfg, path)?;
+            println!("{}  {} reset to default", term::ok("Saved"), label);
+            Ok(0)
+        }
+    }
+}
+
+/// Non-native builds (wasm demo) keep the flat action menu.
+#[cfg(not(feature = "native"))]
+fn config_menu_loop_legacy(
+    parsed: &ParsedArgs,
+    env: &BTreeMap<String, String>,
+    path: &PathBuf,
+) -> Result<i32, String> {
     let items = vec![
         "Switch key".into(),
         "Switch account".into(),
@@ -1014,13 +1484,8 @@ fn run_config_tui(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result
         "Log out".into(),
         "Done".into(),
     ];
-    if tui_wants_dump(parsed, env) {
-        let header = config_tui_header(&path);
-        print!("{}", tui_dump_menu("Config", header, items, env));
-        return Ok(0);
-    }
     loop {
-        let header = config_tui_header(&path);
+        let header = config_tui_header(path);
         let Some(idx) = tui_menu_select("Config", header, items.clone())? else {
             return Ok(0);
         };
@@ -1054,6 +1519,7 @@ fn run_config_tui(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result
     }
 }
 
+#[cfg(not(feature = "native"))]
 fn config_tui_header(path: &std::path::Path) -> Vec<String> {
     let cfg = load_config_if_present(path).unwrap_or_default();
     let profile = cfg.profiles.get(&cfg.active_profile);
@@ -1198,18 +1664,35 @@ fn run_launch(
         return Ok(0);
     }
     let resolved = ensure_tool_installed(tool_name, &command, parsed.flag_true("install"))?;
-    if let Some(mut cfg) = existing.clone() {
-        cfg.last_tool = Some(tool_name.to_string());
-        if aliases_changed {
-            if let Some(p) = cfg.profiles.get_mut(&cfg.active_profile) {
-                p.claude_haiku = profile.claude_haiku.clone();
-                p.claude_sonnet = profile.claude_sonnet.clone();
-                p.claude_opus = profile.claude_opus.clone();
-                p.claude_fable = profile.claude_fable.clone();
-            }
+    // Persist on top of the existing config when there is one; a fresh setup
+    // (no config yet) gets one so last_tool and the model are remembered.
+    let mut cfg = existing.clone().unwrap_or_else(|| crate::config::Config {
+        active_profile: DEFAULT_PROFILE.into(),
+        ..crate::config::Config::default()
+    });
+    // First launch on this machine: no stored profile yet — seed one from
+    // what this launch resolved so the key, base URL, and model stick.
+    cfg.profiles
+        .entry(cfg.active_profile.clone())
+        .or_insert_with(|| profile.clone());
+    cfg.last_tool = Some(tool_name.to_string());
+    if aliases_changed {
+        if let Some(p) = cfg.profiles.get_mut(&cfg.active_profile) {
+            p.claude_haiku = profile.claude_haiku.clone();
+            p.claude_sonnet = profile.claude_sonnet.clone();
+            p.claude_opus = profile.claude_opus.clone();
+            p.claude_fable = profile.claude_fable.clone();
         }
-        let _ = write_config(&cfg, &path);
     }
+    // Remember the model this launch used as the session default, so a bare
+    // `{bin} claude` next time starts with it.
+    if let Some(flag_model) = get_string_flag(&parsed.flags, "model") {
+        let id = display_model_id(&flag_model).to_string();
+        if let Some(p) = cfg.profiles.get_mut(&cfg.active_profile) {
+            p.default_model = Some(id);
+        }
+    }
+    let _ = write_config(&cfg, &path);
     let _updater = crate::upgrade::start_session_checker(env);
     Ok(spawn_child(&resolved, &args, &env_map))
 }
@@ -1661,7 +2144,11 @@ const LAUNCH_AGENTS: &[(&str, &str)] = &[
     ("pool", "Poolside"),
 ];
 
-fn launcher_last_tool(path: &PathBuf, parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> String {
+fn launcher_last_tool(
+    path: &PathBuf,
+    parsed: &ParsedArgs,
+    env: &BTreeMap<String, String>,
+) -> String {
     let cfg = load_config_if_present(path).unwrap_or_default();
     let profile = cfg.profiles.get(&cfg.active_profile);
     cfg.last_tool
@@ -1678,10 +2165,11 @@ fn launcher_signed_in(path: &PathBuf, parsed: &ParsedArgs, env: &BTreeMap<String
     stored_api_key(parsed, env, path).is_some()
 }
 
-/// Credits cache for the launcher loop: one fetch per TTL instead of one per
-/// frame render. `None` = never fetched / fetch failed (shown as unknown).
+/// Account-info cache for the launcher / settings loops: one fetch per TTL
+/// instead of one per frame render. `None` = never fetched / failed.
 struct CreditsCache {
     value: Option<Result<String, ()>>,
+    me: Option<Result<crate::http::MeInfo, ()>>,
     fetched_at: Option<std::time::Instant>,
 }
 
@@ -1691,30 +2179,59 @@ impl CreditsCache {
     fn fresh() -> Self {
         Self {
             value: None,
+            me: None,
             fetched_at: None,
         }
     }
 
-    /// Return the cached display string, refreshing when stale.
-    fn get(&mut self, base_url: &str, api_key: Option<&str>) -> String {
+    /// Refresh both credits and identity when stale.
+    fn refresh(&mut self, base_url: &str, api_key: Option<&str>) {
         let expired = self
             .fetched_at
             .map(|t| t.elapsed() > CREDITS_TTL)
             .unwrap_or(true);
-        if expired {
-            self.value = match api_key {
-                Some(key) => Some(
-                    fetch_credits(base_url, key)
+        if !expired {
+            return;
+        }
+        match api_key {
+            Some(key) => {
+                // /v1/me carries email + username + balance in one call; fall
+                // back to /v1/credits when it is unavailable (older gateway).
+                self.me = Some(crate::http::fetch_me(base_url, key).map_err(|_| ()));
+                let from_me = match &self.me {
+                    Some(Ok(me)) => me.balance.map(crate::http::format_usd),
+                    _ => None,
+                };
+                self.value = Some(match from_me {
+                    Some(s) => Ok(s),
+                    None => fetch_credits(base_url, key)
                         .map(|c| crate::http::format_usd(c["balance"].as_f64().unwrap_or(0.0)))
                         .map_err(|_| ()),
-                ),
-                None => Some(Err(())),
-            };
-            self.fetched_at = Some(std::time::Instant::now());
+                });
+            }
+            None => {
+                self.me = Some(Err(()));
+                self.value = Some(Err(()));
+            }
         }
+        self.fetched_at = Some(std::time::Instant::now());
+    }
+
+    /// Return the cached credits display string, refreshing when stale.
+    fn get(&mut self, base_url: &str, api_key: Option<&str>) -> String {
+        self.refresh(base_url, api_key);
         match &self.value {
             Some(Ok(s)) => s.clone(),
             _ => "(unknown)".into(),
+        }
+    }
+
+    /// Cached identity, refreshing when stale. `None` when unknown.
+    fn identity(&mut self, base_url: &str, api_key: Option<&str>) -> Option<crate::http::MeInfo> {
+        self.refresh(base_url, api_key);
+        match &self.me {
+            Some(Ok(me)) => Some(me.clone()),
+            _ => None,
         }
     }
 }
@@ -1737,7 +2254,7 @@ fn launcher_frame(
     } else {
         format!("credits  {}", credits.get(&base, key.as_deref()))
     };
-    let header = vec![
+    let account_line = if tui_wants_dump(parsed, env) || !term::is_interactive() {
         format!(
             "account  {}  {}",
             cfg.active_profile,
@@ -1746,7 +2263,26 @@ fn launcher_frame(
             } else {
                 "(not signed in)".into()
             }
-        ),
+        )
+    } else {
+        let identity = credits
+            .identity(&base, key.as_deref())
+            .map(|me| me.display_label());
+        match identity {
+            Some(label) => format!("account  {label}"),
+            None => format!(
+                "account  {}  {}",
+                cfg.active_profile,
+                if signed_in {
+                    mask_api_key(profile.and_then(|p| p.api_key.as_deref()))
+                } else {
+                    "(not signed in)".into()
+                }
+            ),
+        }
+    };
+    let header = vec![
+        account_line,
         format!(
             "model    {}",
             display_model_id(profile.map(|p| p.default_model()).unwrap_or("auto"))
@@ -1862,7 +2398,10 @@ fn launch_agent_picker(
     path: &PathBuf,
 ) -> Result<LauncherNext, String> {
     if !launcher_signed_in(path, parsed, env) {
-        eprintln!("{}", term::warn("Not signed in — login first, or pass --key."));
+        eprintln!(
+            "{}",
+            term::warn("Not signed in — login first, or pass --key.")
+        );
         if let Err(err) = run_login(parsed, env) {
             eprintln!("{}", term::err(&err));
             return Ok(LauncherNext::Continue);
@@ -1876,7 +2415,9 @@ fn launch_agent_picker(
         .iter()
         .map(|(id, label)| format!("{id}  —  {label}"))
         .collect();
-    let current = LAUNCH_AGENTS.iter().position(|(id, _)| *id == last.as_str());
+    let current = LAUNCH_AGENTS
+        .iter()
+        .position(|(id, _)| *id == last.as_str());
     let idx = match term::pick("Launch coding agent", &labels, current) {
         Ok(i) => i,
         Err(err) if err == "Cancelled." => return Ok(LauncherNext::Continue),

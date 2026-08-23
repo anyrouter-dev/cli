@@ -213,6 +213,61 @@ pub fn fetch_credits(base_url: &str, api_key: &str) -> Result<serde_json::Value,
     serde_json::from_str(&body).map_err(|e| format!("Invalid credits response: {e}"))
 }
 
+/// Identity from GET `/v1/me` (accepts `sk-ar-` inference keys).
+#[derive(Debug, Clone, Default)]
+pub struct MeInfo {
+    pub email: Option<String>,
+    pub name: Option<String>,
+    pub username: Option<String>,
+    pub balance: Option<f64>,
+}
+
+impl MeInfo {
+    /// `username · email` style label, falling back through name/email/username.
+    pub fn display_label(&self) -> String {
+        let handle = self
+            .username
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .or(self.name.as_deref().filter(|s| !s.is_empty()))
+            .or(self.email.as_deref().filter(|s| !s.is_empty()));
+        match (handle, self.email.as_deref()) {
+            (Some(h), Some(e)) if !e.eq_ignore_ascii_case(h) => format!("{h} · {e}"),
+            (Some(h), _) => h.to_string(),
+            (None, _) => "—".into(),
+        }
+    }
+}
+
+pub fn parse_me(body: &str) -> Result<MeInfo, String> {
+    let value: serde_json::Value =
+        serde_json::from_str(body).map_err(|e| format!("Invalid /me response: {e}"))?;
+    Ok(MeInfo {
+        email: value
+            .get("email")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        name: value
+            .get("name")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        username: value
+            .get("username")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        balance: value.get("balance").and_then(|v| v.as_f64()),
+    })
+}
+
+pub fn fetch_me(base_url: &str, api_key: &str) -> Result<MeInfo, String> {
+    let url = join_api(base_url, "/v1/me");
+    let (status, body) = http_get(&url, Some(api_key))?;
+    if !(200..300).contains(&status) {
+        return Err(format!("Could not fetch account info (HTTP {status})."));
+    }
+    parse_me(&body)
+}
+
 pub fn format_usd(n: f64) -> String {
     if !n.is_finite() {
         return "$?".into();
@@ -419,6 +474,31 @@ mod tests {
         assert_eq!(keys[0].name, "laptop");
         assert_eq!(keys[0].masked, "sk-ar-v1-abcd");
         assert!(keys[0].can_reveal);
+    }
+
+    #[test]
+    fn parse_me_reads_identity_and_balance() {
+        let me = parse_me(
+            r#"{"id":"user_1","email":"a@b.co","name":"duyet","image_url":"https://x/y.png","username":"duyet","balance":129.22}"#,
+        )
+        .unwrap();
+        assert_eq!(me.email.as_deref(), Some("a@b.co"));
+        assert_eq!(me.username.as_deref(), Some("duyet"));
+        assert_eq!(me.balance, Some(129.22));
+        assert_eq!(me.display_label(), "duyet · a@b.co");
+    }
+
+    #[test]
+    fn me_display_label_falls_back_gracefully() {
+        let mut me = MeInfo::default();
+        assert_eq!(me.display_label(), "—");
+        me.email = Some("solo@b.co".into());
+        assert_eq!(me.display_label(), "solo@b.co");
+        me.name = Some("Solo".into());
+        assert_eq!(me.display_label(), "Solo · solo@b.co");
+        // Email used as handle should not repeat.
+        me.username = Some("solo@b.co".into());
+        assert_eq!(me.display_label(), "solo@b.co");
     }
 
     #[test]

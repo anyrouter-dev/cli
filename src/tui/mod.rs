@@ -16,8 +16,14 @@ use std::collections::BTreeMap;
 use crate::parse::ParsedArgs;
 
 pub use keys::Action;
-pub use live::{dump_menu, dump_picker, is_interactive, run_menu_live, run_picker_live};
-pub use state::{drive_menu, drive_picker, MenuState, Outcome, PickerState};
+pub use live::{
+    dump_menu, dump_picker, dump_settings, is_interactive, run_menu_live, run_picker_live,
+    run_settings_live,
+};
+pub use state::{
+    drive_menu, drive_picker, MenuState, Outcome, PickerState, SettingRow, SettingsOutcome,
+    SettingsState, Tone,
+};
 
 pub fn wants_dump(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> bool {
     parsed.flag_true("dump-tui")
@@ -83,7 +89,12 @@ pub fn run_menu_select(
 }
 
 /// Dump one launcher frame (for `--dump-tui` / `ANYR_TUI_DUMP`).
-pub fn dump_menu_select(title: &str, header: Vec<String>, items: Vec<String>, cols: usize) -> String {
+pub fn dump_menu_select(
+    title: &str,
+    header: Vec<String>,
+    items: Vec<String>,
+    cols: usize,
+) -> String {
     dump_menu(&MenuState::new(title, header, items), cols)
 }
 

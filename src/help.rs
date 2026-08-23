@@ -198,7 +198,7 @@ pub fn command_help(command: &str) -> Option<String> {
         ),
         "menu" => fill(
             &bin,
-            "{bin} menu — open the centered TUI launcher (default on a TTY)\n\nUsage:\n  {bin}                 Same as `{bin} menu` on a TTY\n  {bin} menu [--dump-tui]\n\nA compact dialog: brand + status (account / model / agent / credits),\nthen actions — launch an agent, open Config, sign in, or quit.\n\nKeys: ↑↓ / j k move · ↵ select · q / esc quit\n\nConfig opens the existing settings flow (model, account, key, credits).\n`--dump-tui` / ANYR_TUI_DUMP=1 prints one plain frame (for tests and pipes).\n",
+            "{bin} menu — open the centered TUI launcher (default on a TTY)\n\nUsage:\n  {bin}                 Same as `{bin} menu` on a TTY\n  {bin} menu [--dump-tui]\n\nA compact dialog: brand + status (account / model / agent / credits),\nthen actions — launch an agent, open Config, sign in, or quit.\n\nKeys: ↑↓ / j k move · ↵ select · q / esc quit\n\nConfig opens the grouped settings screen (account, keys, model slots,\nagent, auto-update) with current values on every row.\n`--dump-tui` / ANYR_TUI_DUMP=1 prints one plain frame (for tests and pipes).\n",
         ),
         "prompt" => fill(
             &bin,
@@ -345,17 +345,20 @@ Options:
 ";
 
 const CONFIG: &str = "\
-Interactive config: pick key, account, model, and see credits.
+Interactive config: accounts, keys, models, agent, credits, updates.
 
 USAGE
-  {bin} config                 Open the TUI (TTY)
+  {bin} config                 Open the settings TUI (TTY)
   {bin} config get [--json]    Print current status
   {bin} config path            Print the config file path
   {bin} config use <account>   Switch the active account
 
-On a TTY, `{bin} config` opens a centered dialog until you pick Done: switch
-key, account, model (default / haiku / sonnet / opus / fable), view credits, sign
-in, or log out. Also reachable from the launcher via Config.
+On a TTY, `{bin} config` opens a grouped settings screen — Account, Model,
+Agent, General — each row showing its current value. ↑↓ / j k navigate,
+↵ edits the focused row (switch / add / re-auth / log out accounts, pick a
+key or model slot, choose the coding agent, toggle auto-update, switch
+channel), x resets a row to its default, q / esc closes.
+Also reachable from the launcher via Config.
 `--dump-tui` prints one plain frame and exits.
 ";
 
