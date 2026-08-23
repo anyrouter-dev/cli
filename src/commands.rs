@@ -34,15 +34,6 @@ fn tui_wants_dump(_parsed: &ParsedArgs, _env: &BTreeMap<String, String>) -> bool
     false
 }
 
-#[cfg(feature = "native")]
-fn tui_menu_select(
-    title: &str,
-    header: Vec<String>,
-    items: Vec<String>,
-) -> Result<Option<usize>, String> {
-    crate::tui::run_menu_select(title, header, items)
-}
-
 #[cfg(not(feature = "native"))]
 fn tui_menu_select(
     title: &str,
@@ -56,13 +47,70 @@ fn tui_menu_select(
 }
 
 #[cfg(feature = "native")]
-fn tui_dump_menu(
-    title: &str,
+fn tui_palette_select(
     header: Vec<String>,
-    items: Vec<String>,
+    entries: Vec<crate::tui::PaletteEntry>,
+) -> Result<Option<usize>, String> {
+    crate::tui::run_palette_select(header, entries)
+}
+
+/// No fullscreen TUI (non-native build): the palette degrades to the inline
+/// numbered-list picker — same entries, plain prompts.
+#[cfg(not(feature = "native"))]
+fn tui_palette_select(
+    _header: Vec<String>,
+    entries: Vec<crate::tui::PaletteEntry>,
+) -> Result<Option<usize>, String> {
+    let items: Vec<String> = entries
+        .iter()
+        .map(|e| {
+            if e.detail.is_empty() {
+                e.label.clone()
+            } else {
+                format!("{}  —  {}", e.label, e.detail)
+            }
+        })
+        .collect();
+    match term::pick("anyr", &items, Some(0)) {
+        Ok(i) => Ok(Some(i)),
+        Err(_) => Ok(None),
+    }
+}
+
+/// Fullscreen palette only when the terminal can take it; dumb TTYs and
+/// odd hosts get the inline list instead (Direction D fallback).
+#[cfg(feature = "native")]
+fn launcher_uses_palette() -> bool {
+    crate::tui::can_use_fullscreen()
+}
+
+#[cfg(not(feature = "native"))]
+fn launcher_uses_palette() -> bool {
+    false
+}
+
+#[cfg(feature = "native")]
+fn tui_dump_palette(
+    entries: Vec<crate::tui::PaletteEntry>,
+    header: Vec<String>,
     env: &BTreeMap<String, String>,
 ) -> String {
-    crate::tui::dump_menu_select(title, header, items, crate::tui::dump_cols(env))
+    crate::tui::dump_palette(
+        &crate::tui::PaletteState::new(header, entries),
+        crate::tui::dump_cols(env),
+    )
+}
+
+#[cfg(not(feature = "native"))]
+fn tui_dump_palette(
+    entries: Vec<crate::tui::PaletteEntry>,
+    _header: Vec<String>,
+    _env: &BTreeMap<String, String>,
+) -> String {
+    let mut lines = vec!["▲ anyr".to_string()];
+    lines.extend(entries.iter().map(|e| format!("  {}", e.label)));
+    lines.push(String::new());
+    lines.join("\n")
 }
 
 #[cfg(feature = "native")]
@@ -84,20 +132,6 @@ fn tui_settings_select(
 #[cfg(feature = "native")]
 fn tui_dump_settings(state: crate::tui::SettingsState, env: &BTreeMap<String, String>) -> String {
     crate::tui::dump_settings(&state, crate::tui::dump_cols(env))
-}
-
-#[cfg(not(feature = "native"))]
-fn tui_dump_menu(
-    title: &str,
-    header: Vec<String>,
-    items: Vec<String>,
-    _env: &BTreeMap<String, String>,
-) -> String {
-    let mut lines = vec![format!("▲ {title}")];
-    lines.extend(header);
-    lines.extend(items);
-    lines.push(String::new());
-    lines.join("\n")
 }
 
 const LAUNCH_FLAGS: &[&str] = &[
@@ -125,6 +159,7 @@ const LAUNCH_FLAGS: &[&str] = &[
     "paste",
     "hub",
     "install",
+    "yolo",
 ];
 
 /// Command availability for dispatch / help honesty.
@@ -1655,6 +1690,11 @@ fn run_launch(
     args.extend(effort_args_for(tool_name, effort.as_deref()));
     args.extend(provider_args_for(tool_name, &profile));
     args.extend(model_args_for(tool_name, &model, model_mode));
+    // --yolo is shorthand for Claude Code's full-permission flag; other tools
+    // don't have an equivalent, so it only maps there.
+    if tool_name == "claude" && parsed.flag_true("yolo") {
+        args.push("--dangerously-skip-permissions".into());
+    }
     args.extend(parsed.passthrough.clone());
     let command = get_string_flag(&parsed.flags, "command-path")
         .or_else(|| env_command_path(tool_name, env))
@@ -2098,31 +2138,135 @@ fn stored_api_key(
     resolve_api_key(&parsed.flags, env, profile)
 }
 
+/// Palette entries mirroring the launcher's action set: launch rows first
+/// (with the pinned model / agent list as detail), then configure rows.
+/// `signed_in` gates the launch group exactly like the old dialog did.
+fn launcher_palette(
+    path: &PathBuf,
+    parsed: &ParsedArgs,
+    env: &BTreeMap<String, String>,
+    credits: &mut CreditsCache,
+) -> (Vec<String>, Vec<crate::tui::PaletteEntry>) {
+    let cfg = load_config_if_present(path).unwrap_or_default();
+    let profile = cfg.profiles.get(&cfg.active_profile);
+    let signed_in = launcher_signed_in(path, parsed, env);
+    let last = launcher_last_tool(path, parsed, env);
+    let model_line = display_model_id(profile.map(|p| p.default_model()).unwrap_or("auto"));
+
+    // Status header — same lines as the dialog card, reused as palette header.
+    let base = resolve_base_url(&parsed.flags, profile);
+    let key = resolve_api_key(&parsed.flags, env, profile);
+    let credits_line = if tui_wants_dump(parsed, env) || !term::is_interactive() {
+        "credits  -".to_string()
+    } else {
+        format!("credits  {}", credits.get(&base, key.as_deref()))
+    };
+    let account_line = if tui_wants_dump(parsed, env) || !term::is_interactive() {
+        format!(
+            "account  {}  {}",
+            cfg.active_profile,
+            if signed_in {
+                mask_api_key(profile.and_then(|p| p.api_key.as_deref()))
+            } else {
+                "(not signed in)".into()
+            }
+        )
+    } else {
+        let identity = credits
+            .identity(&base, key.as_deref())
+            .map(|me| me.display_label());
+        match identity {
+            Some(label) => format!("account  {label}"),
+            None => format!(
+                "account  {}  {}",
+                cfg.active_profile,
+                if signed_in {
+                    mask_api_key(profile.and_then(|p| p.api_key.as_deref()))
+                } else {
+                    "(not signed in)".into()
+                }
+            ),
+        }
+    };
+    let header = vec![
+        account_line,
+        format!("model    {model_line}"),
+        format!("agent    {last}"),
+        credits_line,
+    ];
+
+    use crate::tui::PaletteEntry;
+    let mut entries = Vec::new();
+    if signed_in {
+        entries.push(PaletteEntry::new(last.clone(), model_line, "launch", format!("Launch {last}")));
+        for (id, label) in LAUNCH_AGENTS.iter().filter(|(id, _)| *id != last.as_str()) {
+            entries.push(PaletteEntry::new(*id, *label, "launch", format!("Launch {id}")));
+        }
+    } else {
+        entries.push(PaletteEntry::new("login", "sign in / add key", "account", "Login / sign in"));
+    }
+    entries.push(PaletteEntry::new("model…", "switch session default", "configure", "Switch model"));
+    entries.push(PaletteEntry::new("config…", "accounts · keys · agent", "configure", "Config"));
+    entries.push(PaletteEntry::new("quit", "esc works too", "", "Quit"));
+    (header, entries)
+}
+
 fn run_menu(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, String> {
     let path = config_path(parsed, env);
     let dumping = tui_wants_dump(parsed, env);
 
     if dumping {
-        let (header, items) = launcher_frame(&path, parsed, env, &mut CreditsCache::fresh());
-        print!("{}", tui_dump_menu("AnyRouter", header, items, env));
+        let (header, entries) =
+            launcher_palette(&path, parsed, env, &mut CreditsCache::fresh());
+        print!("{}", tui_dump_palette(entries, header, env));
         return Ok(0);
     }
 
     if !term::is_interactive() {
-        let (_, items) = launcher_frame(&path, parsed, env, &mut CreditsCache::fresh());
-        println!("{}", items.join("\n"));
+        let (_, entries) =
+            launcher_palette(&path, parsed, env, &mut CreditsCache::fresh());
+        println!(
+            "{}",
+            entries
+                .iter()
+                .map(|e| e.label.clone())
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
         return Ok(0);
     }
 
     // Loop until Quit or a coding-agent launch takes over the process.
+    // Fullscreen-capable terminals get the command palette; dumb TTYs get
+    // the same entries as an inline numbered prompt (Direction D fallback).
     let mut credits = CreditsCache::fresh();
+    let inline = !launcher_uses_palette();
     loop {
-        let (header, items) = launcher_frame(&path, parsed, env, &mut credits);
-        let Some(idx) = tui_menu_select("AnyRouter", header, items.clone())? else {
+        let (header, entries) = launcher_palette(&path, parsed, env, &mut credits);
+        let idx = if inline {
+            let labels: Vec<String> = entries
+                .iter()
+                .map(|e| {
+                    if e.detail.is_empty() {
+                        e.label.clone()
+                    } else {
+                        format!("{}  —  {}", e.label, e.detail)
+                    }
+                })
+                .collect();
+            match term::pick("anyr", &labels, Some(0)) {
+                Ok(i) => Some(i),
+                Err(err) if err == "Cancelled." => None,
+                Err(err) => return Err(err),
+            }
+        } else {
+            tui_palette_select(header, entries.clone())?
+        };
+        let Some(idx) = idx else {
             return Ok(0);
         };
-        let action = items.get(idx).map(String::as_str).unwrap_or("Quit");
-        match launcher_dispatch(action, parsed, env, &path)? {
+        let action = entries[idx].action.clone();
+        match launcher_dispatch(&action, parsed, env, &path)? {
             LauncherNext::Continue => {}
             LauncherNext::Exit(code) => return Ok(code),
         }
@@ -2234,75 +2378,6 @@ impl CreditsCache {
             _ => None,
         }
     }
-}
-
-fn launcher_frame(
-    path: &PathBuf,
-    parsed: &ParsedArgs,
-    env: &BTreeMap<String, String>,
-    credits: &mut CreditsCache,
-) -> (Vec<String>, Vec<String>) {
-    let cfg = load_config_if_present(path).unwrap_or_default();
-    let profile = cfg.profiles.get(&cfg.active_profile);
-    let signed_in = launcher_signed_in(path, parsed, env);
-    let last = launcher_last_tool(path, parsed, env);
-    let base = resolve_base_url(&parsed.flags, profile);
-    let key = resolve_api_key(&parsed.flags, env, profile);
-    let credits_line = if tui_wants_dump(parsed, env) || !term::is_interactive() {
-        // Dump mode and pipes must stay offline-deterministic.
-        "credits  -".to_string()
-    } else {
-        format!("credits  {}", credits.get(&base, key.as_deref()))
-    };
-    let account_line = if tui_wants_dump(parsed, env) || !term::is_interactive() {
-        format!(
-            "account  {}  {}",
-            cfg.active_profile,
-            if signed_in {
-                mask_api_key(profile.and_then(|p| p.api_key.as_deref()))
-            } else {
-                "(not signed in)".into()
-            }
-        )
-    } else {
-        let identity = credits
-            .identity(&base, key.as_deref())
-            .map(|me| me.display_label());
-        match identity {
-            Some(label) => format!("account  {label}"),
-            None => format!(
-                "account  {}  {}",
-                cfg.active_profile,
-                if signed_in {
-                    mask_api_key(profile.and_then(|p| p.api_key.as_deref()))
-                } else {
-                    "(not signed in)".into()
-                }
-            ),
-        }
-    };
-    let header = vec![
-        account_line,
-        format!(
-            "model    {}",
-            display_model_id(profile.map(|p| p.default_model()).unwrap_or("auto"))
-        ),
-        format!("agent    {last}"),
-        credits_line,
-    ];
-
-    // Compact dialog actions — model / account / key / credits live under Config.
-    let mut items = Vec::new();
-    if signed_in {
-        items.push(format!("Launch {last}"));
-        items.push("Launch coding agent…".into());
-        items.push("Config".into());
-    } else {
-        items.push("Login / sign in".into());
-        items.push("Config".into());
-    }
-    items.push("Quit".into());
-    (header, items)
 }
 
 fn launcher_dispatch(

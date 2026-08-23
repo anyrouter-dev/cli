@@ -12,10 +12,10 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
 use super::keys::{map_key, KeyCode, KeyEvent, Surface};
-use super::state::{MenuState, Outcome, PickerState, SettingsOutcome, SettingsState};
+use super::state::{MenuState, Outcome, PaletteState, PickerState, SettingsOutcome, SettingsState};
 use super::view::{
-    plain_menu_frame, plain_picker_frame, plain_settings_frame, render_menu, render_picker,
-    render_settings,
+    plain_menu_frame, plain_palette_frame, plain_picker_frame, plain_settings_frame, render_menu,
+    render_palette, render_picker, render_settings,
 };
 
 pub fn is_interactive() -> bool {
@@ -121,12 +121,62 @@ pub fn run_menu_live(mut state: MenuState) -> Result<Outcome, String> {
     }
 }
 
+/// Whether the fullscreen TUI can run here: raw mode must be enterable and
+/// the terminal must not be `dumb`. Palette falls back to inline prompts on
+/// false — same contract as the non-native readline pickers.
+pub fn can_use_fullscreen() -> bool {
+    use std::io::IsTerminal;
+    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+        return false;
+    }
+    let term = std::env::var("TERM").unwrap_or_default();
+    let dumb = matches!(
+        term.as_str(),
+        "" | "dumb" | "linux" | "vt100" | "vt102" | "vt220" | "ansi"
+    );
+    if dumb {
+        return false;
+    }
+    enable_raw_mode().is_ok()
+}
+
+pub fn run_palette_live(mut state: PaletteState) -> Result<Outcome, String> {
+    let mut live = LiveTerminal::start()?;
+    loop {
+        live.terminal
+            .draw(|f| render_palette(f, &state))
+            .map_err(|e| e.to_string())?;
+        if !event::poll(Duration::from_millis(200)).map_err(|e| e.to_string())? {
+            continue;
+        }
+        match event::read().map_err(|e| e.to_string())? {
+            Event::Resize(_, _) => {
+                state.apply(super::keys::Action::Resize);
+            }
+            Event::Key(ev) => {
+                let Some(key) = translate_key(ev) else {
+                    continue;
+                };
+                let outcome = state.apply(map_key(Surface::Palette, key));
+                if outcome != Outcome::Continue {
+                    return Ok(outcome);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 pub fn dump_picker(state: &PickerState, cols: usize) -> String {
     plain_picker_frame(state, cols)
 }
 
 pub fn dump_menu(state: &MenuState, cols: usize) -> String {
     plain_menu_frame(state, cols)
+}
+
+pub fn dump_palette(state: &PaletteState, cols: usize) -> String {
+    plain_palette_frame(state, cols)
 }
 
 pub fn run_settings_live(mut state: SettingsState) -> Result<SettingsOutcome, String> {

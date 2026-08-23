@@ -5,6 +5,7 @@ pub enum Surface {
     Launcher,
     Picker,
     Settings,
+    Palette,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,6 +60,9 @@ pub fn map_key(surface: Surface, key: KeyEvent) -> Action {
             (Surface::Launcher, 'q' | 'x' | 'Q' | 'X') => Action::Quit,
             (Surface::Settings, 'q') => Action::Quit,
             (Surface::Settings, 'x' | 'X') => Action::Unset,
+            // The palette is type-first: every printable char — including
+            // q / j / k — goes into the query.
+            (Surface::Palette, _) => Action::Char(c),
             (Surface::Launcher | Surface::Settings, 'j') => Action::Down,
             (Surface::Launcher | Surface::Settings, 'k') => Action::Up,
             (_, c) => Action::Char(c),
@@ -71,6 +75,7 @@ pub fn hint_line(surface: Surface) -> &'static str {
         Surface::Launcher => "↑↓/jk move  ↵ select  q/esc quit",
         Surface::Settings => "↑↓/jk move  ↵ edit  x reset  q/esc close",
         Surface::Picker => "type to search  ↑↓ move  ↵ select  esc cancel",
+        Surface::Palette => "type to filter  ↑↓ move  ↵ run  esc quit",
     }
 }
 
@@ -112,6 +117,18 @@ mod tests {
             },
         );
         assert_eq!(a, Action::Quit);
+    }
+
+    #[test]
+    fn palette_q_types_into_query_not_quit() {
+        let a = map_key(
+            Surface::Palette,
+            KeyEvent {
+                code: KeyCode::Char('q'),
+                ctrl: false,
+            },
+        );
+        assert_eq!(a, Action::Char('q'));
     }
 
     #[test]

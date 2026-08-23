@@ -17,12 +17,12 @@ use crate::parse::ParsedArgs;
 
 pub use keys::Action;
 pub use live::{
-    dump_menu, dump_picker, dump_settings, is_interactive, run_menu_live, run_picker_live,
-    run_settings_live,
+    can_use_fullscreen, dump_menu, dump_palette, dump_picker, dump_settings, is_interactive,
+    run_menu_live, run_palette_live, run_picker_live, run_settings_live,
 };
 pub use state::{
-    drive_menu, drive_picker, MenuState, Outcome, PickerState, SettingRow, SettingsOutcome,
-    SettingsState, Tone,
+    drive_menu, drive_palette, drive_picker, MenuState, Outcome, PaletteEntry, PaletteState,
+    PickerState, SettingRow, SettingsOutcome, SettingsState, Tone,
 };
 
 pub fn wants_dump(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> bool {
@@ -96,6 +96,24 @@ pub fn dump_menu_select(
     cols: usize,
 ) -> String {
     dump_menu(&MenuState::new(title, header, items), cols)
+}
+
+/// Interactive command palette. Returns the selected entry index, or `None` on quit.
+pub fn run_palette_select(
+    header: Vec<String>,
+    entries: Vec<state::PaletteEntry>,
+) -> Result<Option<usize>, String> {
+    if entries.is_empty() {
+        return Ok(None);
+    }
+    let state = PaletteState::new(header, entries);
+    if !is_interactive() {
+        return Ok(None);
+    }
+    match run_palette_live(state)? {
+        Outcome::Selected(i) => Ok(Some(i)),
+        Outcome::Quit | Outcome::Cancelled | Outcome::Continue => Ok(None),
+    }
 }
 
 pub fn dump_pick(title: &str, items: &[String], current: Option<usize>, cols: usize) -> String {

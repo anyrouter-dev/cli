@@ -24,7 +24,7 @@ pub fn brand() -> Style {
 
 pub fn accent() -> Style {
     Style::default()
-        .fg(rgb(187, 154, 247))
+        .fg(rgb(230, 160, 60))
         .add_modifier(Modifier::BOLD)
 }
 
@@ -49,7 +49,7 @@ pub fn white() -> Style {
 pub fn selected() -> Style {
     Style::default()
         .fg(rgb(225, 225, 225))
-        .bg(rgb(54, 54, 54))
+        .bg(rgb(46, 46, 51))
         .add_modifier(Modifier::BOLD)
 }
 

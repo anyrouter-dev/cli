@@ -20,6 +20,7 @@ Options:
   --opus <id>           Claude /model opus
   --fable <id>          Claude /model fable (also the auto-fallback target)
   --effort <level>      Reasoning effort: minimal | low | medium | high | xhigh | max
+  --yolo                Claude only: launch with --dangerously-skip-permissions
   --hub <slug>          Load a hub: sync ~/.anyrouter/hubs + claude --plugin-dir
   --profile <name>      Use a named profile
   --command-path <path> Explicit path to the agent executable
@@ -198,7 +199,7 @@ pub fn command_help(command: &str) -> Option<String> {
         ),
         "menu" => fill(
             &bin,
-            "{bin} menu — open the centered TUI launcher (default on a TTY)\n\nUsage:\n  {bin}                 Same as `{bin} menu` on a TTY\n  {bin} menu [--dump-tui]\n\nA compact dialog: brand + status (account / model / agent / credits),\nthen actions — launch an agent, open Config, sign in, or quit.\n\nKeys: ↑↓ / j k move · ↵ select · q / esc quit\n\nConfig opens the grouped settings screen (account, keys, model slots,\nagent, auto-update) with current values on every row.\n`--dump-tui` / ANYR_TUI_DUMP=1 prints one plain frame (for tests and pipes).\n",
+            "{bin} menu — open the command-palette launcher (default on a TTY)\n\nUsage:\n  {bin}                 Same as `{bin} menu` on a TTY\n  {bin} menu [--dump-tui]\n\nOne input, fuzzy everything: type to filter — \"cla\", \"codex\",\n\"model\" — with account / model / agent / credits status up top and\nright-aligned detail per row. On terminals that can't run the\nfullscreen TUI (dumb TERM, restricted hosts) the same entries fall\nback to an inline numbered prompt.\n\nKeys: type to filter · ↑↓ move · ↵ run · esc quit\n\nConfig opens the grouped settings screen (account, keys, model slots,\nagent, auto-update) with current values on every row.\n`--dump-tui` / ANYR_TUI_DUMP=1 prints one plain frame (for tests and pipes).\n",
         ),
         "prompt" => fill(
             &bin,

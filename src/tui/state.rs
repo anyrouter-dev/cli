@@ -296,6 +296,141 @@ pub fn drive_picker(state: &mut PickerState, actions: &[Action]) -> Outcome {
     Outcome::Continue
 }
 
+/// One command-palette row: what it runs plus the metadata shown on the right.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaletteEntry {
+    /// Row title, e.g. "claude" or "model…".
+    pub label: String,
+    /// Right-side detail, e.g. the pinned model id or "config".
+    pub detail: String,
+    /// Group header shown above runs of same-group rows ("launch", "configure").
+    pub group: String,
+    /// The launcher action string handed back to `launcher_dispatch`.
+    pub action: String,
+}
+
+impl PaletteEntry {
+    pub fn new(
+        label: impl Into<String>,
+        detail: impl Into<String>,
+        group: impl Into<String>,
+        action: impl Into<String>,
+    ) -> Self {
+        Self {
+            label: label.into(),
+            detail: detail.into(),
+            group: group.into(),
+            action: action.into(),
+        }
+    }
+}
+
+/// Command palette state: one input, fuzzy filter over every entry,
+/// groups rendered only where they change. Same Outcome contract as Menu.
+#[derive(Debug, Clone)]
+pub struct PaletteState {
+    pub header: Vec<String>,
+    pub entries: Vec<PaletteEntry>,
+    pub query: String,
+    /// Index into the filtered list.
+    pub cursor: usize,
+}
+
+impl PaletteState {
+    pub fn new(header: Vec<String>, entries: Vec<PaletteEntry>) -> Self {
+        Self {
+            header,
+            entries,
+            query: String::new(),
+            cursor: 0,
+        }
+    }
+
+    pub fn surface(&self) -> Surface {
+        Surface::Palette
+    }
+
+    /// Fuzzy-ranked matches against label + detail; order is stable when the
+    /// query is empty so "launch" actions stay on top.
+    pub fn filtered(&self) -> Vec<usize> {
+        if self.query.trim().is_empty() {
+            return (0..self.entries.len()).collect();
+        }
+        let haystacks: Vec<String> = self
+            .entries
+            .iter()
+            .map(|e| format!("{} {}", e.label, e.detail))
+            .collect();
+        rank_ids(&self.query, &haystacks)
+            .into_iter()
+            .filter_map(|hay| haystacks.iter().position(|h| *h == hay))
+            .collect()
+    }
+
+    pub fn apply(&mut self, action: Action) -> Outcome {
+        match action {
+            Action::Quit => Outcome::Quit,
+            Action::Esc => Outcome::Quit,
+            Action::Resize => Outcome::Continue,
+            Action::Enter => {
+                let filtered = self.filtered();
+                if filtered.is_empty() {
+                    return Outcome::Continue;
+                }
+                let idx = self.cursor.min(filtered.len() - 1);
+                Outcome::Selected(filtered[idx])
+            }
+            Action::Up => {
+                let n = self.filtered().len();
+                if n > 0 {
+                    self.cursor = if self.cursor == 0 {
+                        n - 1
+                    } else {
+                        self.cursor - 1
+                    };
+                }
+                Outcome::Continue
+            }
+            Action::Down => {
+                let n = self.filtered().len();
+                if n > 0 {
+                    self.cursor = (self.cursor + 1) % n;
+                }
+                Outcome::Continue
+            }
+            Action::Backspace => {
+                self.query.pop();
+                self.cursor = 0;
+                Outcome::Continue
+            }
+            Action::Char(c) => {
+                if c.is_control() {
+                    return Outcome::Continue;
+                }
+                self.query.push(c);
+                self.cursor = 0;
+                Outcome::Continue
+            }
+            Action::Unset => Outcome::Continue,
+        }
+    }
+
+    pub fn hint(&self) -> &'static str {
+        hint_line(Surface::Palette)
+    }
+}
+
+/// Drive palette state with a scripted key sequence (unit / e2e, no TTY).
+pub fn drive_palette(state: &mut PaletteState, actions: &[Action]) -> Outcome {
+    for action in actions {
+        let out = state.apply(*action);
+        if out != Outcome::Continue {
+            return out;
+        }
+    }
+    Outcome::Continue
+}
+
 pub fn drive_menu(state: &mut MenuState, actions: &[Action]) -> Outcome {
     for action in actions {
         let out = state.apply(*action);
@@ -417,5 +552,82 @@ mod tests {
         assert_eq!(s.apply(Action::Quit), SettingsOutcome::Close);
         // Typing does nothing on a settings screen.
         assert_eq!(s.apply(Action::Char('a')), SettingsOutcome::Stay);
+    }
+
+    fn sample_palette() -> PaletteState {
+        PaletteState::new(
+            vec!["account  duyet".into()],
+            vec![
+                PaletteEntry::new("claude", "stealth/ox-alpha", "launch", "Launch claude"),
+                PaletteEntry::new("codex", "gpt-5.5", "launch", "Launch codex"),
+                PaletteEntry::new("model…", "switch sonnet alias", "configure", "Switch model"),
+                PaletteEntry::new("quit", "", "configure", "Quit"),
+            ],
+        )
+    }
+
+    #[test]
+    fn palette_empty_query_keeps_entry_order() {
+        let s = sample_palette();
+        let filtered = s.filtered();
+        // Launch actions stay on top when the user hasn't typed anything.
+        assert_eq!(filtered, vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn palette_typing_ranks_and_enter_returns_action_index() {
+        let mut s = sample_palette();
+        for c in "cod".chars() {
+            s.apply(Action::Char(c));
+        }
+        assert_eq!(s.filtered(), vec![1]);
+        assert_eq!(s.apply(Action::Enter), Outcome::Selected(1));
+    }
+
+    #[test]
+    fn palette_query_matches_detail_column_too() {
+        let mut s = sample_palette();
+        for c in "sonnet".chars() {
+            s.apply(Action::Char(c));
+        }
+        // "sonnet" appears only in model…'s detail line — still findable.
+        assert_eq!(s.filtered(), vec![2]);
+    }
+
+    #[test]
+    fn palette_q_is_a_search_char_esc_quits() {
+        let mut s = sample_palette();
+        s.apply(Action::Char('q'));
+        assert_eq!(s.query, "q");
+        // Matches both "claude" (subsequence) and the literal quit row.
+        assert!(!s.filtered().is_empty());
+        assert_eq!(s.apply(Action::Esc), Outcome::Quit);
+    }
+
+    #[test]
+    fn palette_backspace_shrinks_query_and_resets_cursor() {
+        let mut s = sample_palette();
+        for c in "cod".chars() {
+            s.apply(Action::Char(c));
+        }
+        assert_eq!(s.filtered(), vec![1]);
+        s.apply(Action::Backspace);
+        assert_eq!(s.query, "co");
+        assert_eq!(s.cursor, 0);
+    }
+
+    #[test]
+    fn drive_palette_script_types_and_runs() {
+        let mut s = sample_palette();
+        let out = drive_palette(
+            &mut s,
+            &[
+                Action::Char('c'),
+                Action::Char('o'),
+                Action::Char('d'),
+                Action::Enter,
+            ],
+        );
+        assert_eq!(out, Outcome::Selected(1));
     }
 }

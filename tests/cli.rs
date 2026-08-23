@@ -498,6 +498,66 @@ fn claude_dry_run_haiku_flag_beats_pinned_model() {
 }
 
 #[test]
+fn claude_yolo_flag_expands_to_dangerously_skip_permissions() {
+    let key = "sk-ar-v1-testkey";
+    let (code, stdout, stderr) = {
+        let out = anyr()
+            .args([
+                "claude",
+                "--dry-run",
+                "--yes",
+                "--key",
+                key,
+                "--yolo",
+            ])
+            .env("ANYROUTER_HOME", temp_home())
+            .env_remove("ANYROUTER_API_KEY")
+            .output()
+            .expect("dry-run");
+        (
+            out.status.code().unwrap_or(1),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+    assert_eq!(code, 0, "stderr={stderr}");
+    assert!(
+        stdout.contains("\"--dangerously-skip-permissions\""),
+        "--yolo should expand to --dangerously-skip-permissions in args:\n{stdout}"
+    );
+}
+
+#[test]
+fn codex_yolo_flag_is_accepted_but_not_forwarded() {
+    let key = "sk-ar-v1-testkey";
+    let (code, stdout, stderr) = {
+        let out = anyr()
+            .args([
+                "codex",
+                "--dry-run",
+                "--yes",
+                "--key",
+                key,
+                "--yolo",
+            ])
+            .env("ANYROUTER_HOME", temp_home())
+            .env_remove("ANYROUTER_API_KEY")
+            .output()
+            .expect("dry-run");
+        (
+            out.status.code().unwrap_or(1),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+    assert_eq!(code, 0, "stderr={stderr}");
+    assert!(
+        !stdout.contains("--dangerously-skip-permissions"),
+        "codex has no equivalent flag; --yolo should be a no-op:\n{stdout}"
+    );
+}
+
+#[test]
 fn claude_dry_run_fable_flag_beats_pinned_model() {
     let key = "sk-ar-v1-testkey";
     let (code, stdout, stderr) = {
@@ -1117,10 +1177,14 @@ profiles:
         !stdout.contains('\u{1b}'),
         "dump must be ANSI-free: {stdout}"
     );
-    assert!(stdout.contains("▲ AnyRouter"), "{stdout}");
-    assert!(stdout.contains("Launch"), "{stdout}");
-    assert!(stdout.contains("Config"), "{stdout}");
-    assert!(stdout.contains("Quit"), "{stdout}");
+    // Palette frame: input line, grouped launch rows, configure rows.
+    assert!(stdout.contains("▲ anyr"), "{stdout}");
+    assert!(stdout.contains("LAUNCH"), "{stdout}");
+    assert!(stdout.contains("claude"), "{stdout}");
+    assert!(stdout.contains("CONFIGURE"), "{stdout}");
+    assert!(stdout.contains("config…"), "{stdout}");
+    assert!(stdout.contains("quit"), "{stdout}");
+    assert!(stdout.contains('❯'), "palette must show the input line: {stdout}");
     assert!(
         stdout.contains('╭') && stdout.contains('╯'),
         "dump should look like a dialog card: {stdout}"

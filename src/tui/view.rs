@@ -10,7 +10,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
 
-use super::state::{MenuState, PickerState, SettingRow, SettingsState, Tone};
+use super::state::{MenuState, PaletteEntry, PaletteState, PickerState, SettingRow, SettingsState, Tone};
 use super::theme;
 
 /// Preferred dialog width; shrinks on narrow terminals.
@@ -150,6 +150,127 @@ fn dialog_height(state: &MenuState) -> u16 {
     let status = state.header.len().max(1) as u16;
     let items = state.items.len().max(1) as u16;
     2 + status + 1 + items + 1
+}
+
+/// Palette preferred width — detail columns need a little more room.
+const PALETTE_PREF_WIDTH: u16 = 60;
+
+/// Command palette: floating input on top, fuzzy results below, groups
+/// rendered only where they change. Same centered-card language as the menu.
+pub fn render_palette(frame: &mut Frame, state: &PaletteState) {
+    let area = frame.area();
+    frame.render_widget(
+        Block::default().style(Style::default().bg(theme::backdrop_rgb()).fg(Color::Reset)),
+        area,
+    );
+
+    let filtered = state.filtered();
+    let visible = filtered.len().min(12);
+    // Group headers share the result area, so the dialog must grow by the
+    // number of distinct groups among the visible rows.
+    let groups = palette_groups(state, &filtered, visible);
+    // borders(2) + input(1) + rule(1) + rows + group headers + hint(1)
+    let height = 2 + 1 + 1 + visible.max(1) as u16 + groups as u16 + 1;
+    let dialog = centered_dialog(area, height, PALETTE_PREF_WIDTH);
+    frame.render_widget(Clear, dialog);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(theme::brand())
+        .title(Span::styled(" ▲ anyr ", theme::brand()))
+        .style(Style::default().bg(theme::surface_rgb()));
+    let inner = block.inner(dialog);
+    frame.render_widget(block, dialog);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),               // input line
+            Constraint::Length(1),               // rule
+            Constraint::Min(visible.max(1) as u16), // results
+            Constraint::Length(1),               // hint
+        ])
+        .split(inner);
+
+    let input = Paragraph::new(Line::from(vec![
+        Span::styled("❯ ", theme::accent()),
+        Span::styled(state.query.clone(), theme::white()),
+        Span::styled("█", theme::accent()),
+    ]));
+    frame.render_widget(input, chunks[0]);
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            "─".repeat(chunks[1].width as usize),
+            theme::muted(),
+        )),
+        chunks[1],
+    );
+
+    if filtered.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled("no matches", theme::muted())),
+            chunks[2],
+        );
+    } else {
+        let rows = palette_rows(state, &filtered, visible, chunks[2].width as usize);
+        frame.render_widget(Paragraph::new(rows), chunks[2]);
+    }
+
+    let footer = Paragraph::new(Span::styled(state.hint(), theme::muted()));
+    frame.render_widget(footer, chunks[3]);
+}
+
+/// Number of distinct groups among the first `visible` filtered entries —
+/// each renders one header line inside the result area.
+fn palette_groups(state: &PaletteState, filtered: &[usize], visible: usize) -> usize {
+    let mut groups: Vec<&str> = Vec::new();
+    for &entry_i in filtered.iter().take(visible) {
+        let g = state.entries[entry_i].group.as_str();
+        if !groups.contains(&g) {
+            groups.push(g);
+        }
+    }
+    groups.len()
+}
+
+/// Build the result lines, inserting a group header whenever it changes and
+/// right-aligning each row's detail column.
+fn palette_rows(
+    state: &PaletteState,
+    filtered: &[usize],
+    visible: usize,
+    inner_w: usize,
+) -> Vec<Line<'static>> {
+    let cursor_row = state.cursor.min(visible.saturating_sub(1));
+    let mut rows: Vec<Line> = Vec::new();
+    let mut last_group: Option<&str> = None;
+    for (row_i, &entry_i) in filtered.iter().take(visible).enumerate() {
+        let entry: &PaletteEntry = &state.entries[entry_i];
+        if last_group != Some(entry.group.as_str()) {
+            rows.push(Line::from(Span::styled(
+                format!("  {}", entry.group.to_ascii_uppercase()),
+                theme::muted(),
+            )));
+            last_group = Some(&entry.group);
+        }
+        let selected = row_i == cursor_row;
+        let marker_style = if selected { theme::accent() } else { theme::muted() };
+        let label = entry.label.clone();
+        // Right-align the detail: pad between label and detail like the
+        // settings screen pads its value column.
+        let used = 2 + label.chars().count() + entry.detail.chars().count();
+        let gap = inner_w.saturating_sub(used).max(1);
+        let marker: String = if selected { "❯ ".into() } else { "  ".into() };
+        rows.push(Line::from(vec![
+            Span::styled(marker, marker_style),
+            Span::styled(
+                format!("{label}{}", " ".repeat(gap)),
+                if selected { theme::selected() } else { theme::white() },
+            ),
+            Span::styled(entry.detail.clone(), theme::muted()),
+        ]));
+    }
+    rows
 }
 
 /// Settings screen: same centered-dialog shape, grouped rows with
@@ -414,6 +535,73 @@ pub fn plain_picker_frame(state: &PickerState, cols: usize) -> String {
 
 pub fn plain_menu_frame(state: &MenuState, cols: usize) -> String {
     let mut lines = plain_menu_lines(state, cols);
+    lines.push(String::new());
+    lines.join("\n")
+}
+
+/// ANSI-free palette frame for `--dump-tui` and unit tests.
+pub fn plain_palette_lines(state: &PaletteState, cols: usize) -> Vec<String> {
+    let term_w = cols.max(DIALOG_MIN_WIDTH as usize);
+    let inner = (PALETTE_PREF_WIDTH as usize)
+        .min(term_w.saturating_sub(2))
+        .max(DIALOG_MIN_WIDTH as usize)
+        .min(term_w);
+    let pad = term_w.saturating_sub(inner) / 2;
+    let pad_s = " ".repeat(pad);
+    let content_w = inner.saturating_sub(2);
+
+    let mut lines = Vec::new();
+    let title_raw = " ▲ anyr ".to_string();
+    let dash_n = content_w.saturating_sub(title_raw.chars().count());
+    lines.push(format!("{pad_s}╭{title_raw}{}╮", "─".repeat(dash_n)));
+
+    // Input line with a block cursor.
+    lines.push(format!(
+        "{pad_s}│{}│",
+        pad_content(&format!("❯ {}█", state.query), content_w)
+    ));
+    lines.push(format!("{pad_s}├{}┤", "─".repeat(content_w)));
+
+    let filtered = state.filtered();
+    if filtered.is_empty() {
+        lines.push(format!("{pad_s}│{}│", pad_content("no matches", content_w)));
+    } else {
+        let visible = filtered.len().min(12);
+        let cursor_row = state.cursor.min(visible.saturating_sub(1));
+        let mut last_group: Option<&str> = None;
+        for (row_i, &entry_i) in filtered.iter().take(visible).enumerate() {
+            let entry = &state.entries[entry_i];
+            if last_group != Some(entry.group.as_str()) {
+                lines.push(format!(
+                    "{pad_s}│{}│",
+                    pad_content(&format!("  {}", entry.group.to_ascii_uppercase()), content_w)
+                ));
+                last_group = Some(&entry.group);
+            }
+            let selected = row_i == cursor_row;
+            let marker = if selected { "◆" } else { " " };
+            let used = 3 + entry.label.chars().count() + entry.detail.chars().count();
+            let gap = content_w
+                .saturating_sub(used)
+                .max(1);
+            let row = format!(
+                "{marker} {label}{}{detail}",
+                " ".repeat(gap),
+                label = entry.label,
+                detail = entry.detail
+            );
+            lines.push(format!("{pad_s}│{}│", pad_content(&row, content_w)));
+        }
+    }
+
+    lines.push(format!("{pad_s}├{}┤", "─".repeat(content_w)));
+    lines.push(format!("{pad_s}│{}│", pad_content(state.hint(), content_w)));
+    lines.push(format!("{pad_s}╰{}╯", "─".repeat(content_w)));
+    lines
+}
+
+pub fn plain_palette_frame(state: &PaletteState, cols: usize) -> String {
+    let mut lines = plain_palette_lines(state, cols);
     lines.push(String::new());
     lines.join("\n")
 }
