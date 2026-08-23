@@ -46,6 +46,35 @@ fn tui_menu_select(
     }
 }
 
+/// One launcher row as the inline fallback sees it. Native builds carry a
+/// real `tui::PaletteEntry`; wasm / no-native builds use this plain twin so
+/// the palette builder stays shared.
+#[cfg(not(feature = "native"))]
+#[derive(Clone)]
+pub struct InlineEntry {
+    pub label: String,
+    pub detail: String,
+    pub group: String,
+    pub action: String,
+}
+
+#[cfg(not(feature = "native"))]
+impl InlineEntry {
+    fn new(
+        label: impl Into<String>,
+        detail: impl Into<String>,
+        _group: impl Into<String>,
+        action: impl Into<String>,
+    ) -> Self {
+        Self {
+            label: label.into(),
+            detail: detail.into(),
+            group: String::new(),
+            action: action.into(),
+        }
+    }
+}
+
 #[cfg(feature = "native")]
 fn tui_palette_select(
     header: Vec<String>,
@@ -59,7 +88,7 @@ fn tui_palette_select(
 #[cfg(not(feature = "native"))]
 fn tui_palette_select(
     _header: Vec<String>,
-    entries: Vec<crate::tui::PaletteEntry>,
+    entries: Vec<InlineEntry>,
 ) -> Result<Option<usize>, String> {
     let items: Vec<String> = entries
         .iter()
@@ -103,7 +132,7 @@ fn tui_dump_palette(
 
 #[cfg(not(feature = "native"))]
 fn tui_dump_palette(
-    entries: Vec<crate::tui::PaletteEntry>,
+    entries: Vec<InlineEntry>,
     _header: Vec<String>,
     _env: &BTreeMap<String, String>,
 ) -> String {
@@ -2141,6 +2170,7 @@ fn stored_api_key(
 /// Palette entries mirroring the launcher's action set: launch rows first
 /// (with the pinned model / agent list as detail), then configure rows.
 /// `signed_in` gates the launch group exactly like the old dialog did.
+#[cfg(feature = "native")]
 fn launcher_palette(
     path: &PathBuf,
     parsed: &ParsedArgs,
@@ -2195,6 +2225,7 @@ fn launcher_palette(
         credits_line,
     ];
 
+    #[cfg(feature = "native")]
     use crate::tui::PaletteEntry;
     let mut entries = Vec::new();
     if signed_in {
@@ -2208,6 +2239,48 @@ fn launcher_palette(
     entries.push(PaletteEntry::new("model…", "switch session default", "configure", "Switch model"));
     entries.push(PaletteEntry::new("config…", "accounts · keys · agent", "configure", "Config"));
     entries.push(PaletteEntry::new("quit", "esc works too", "", "Quit"));
+    (header, entries)
+}
+
+/// Non-native twin of `launcher_palette` — same rows, plain inline entries.
+#[cfg(not(feature = "native"))]
+fn launcher_palette(
+    path: &PathBuf,
+    parsed: &ParsedArgs,
+    env: &BTreeMap<String, String>,
+    _credits: &mut CreditsCache,
+) -> (Vec<String>, Vec<InlineEntry>) {
+    let cfg = load_config_if_present(path).unwrap_or_default();
+    let profile = cfg.profiles.get(&cfg.active_profile);
+    let signed_in = launcher_signed_in(path, parsed, env);
+    let last = launcher_last_tool(path, parsed, env);
+    let model_line = display_model_id(profile.map(|p| p.default_model()).unwrap_or("auto"));
+    let header = vec![
+        format!(
+            "account  {}  {}",
+            cfg.active_profile,
+            if signed_in {
+                mask_api_key(profile.and_then(|p| p.api_key.as_deref()))
+            } else {
+                "(not signed in)".into()
+            }
+        ),
+        format!("model    {model_line}"),
+        format!("agent    {last}"),
+        "credits  -".to_string(),
+    ];
+    let mut entries = Vec::new();
+    if signed_in {
+        entries.push(InlineEntry::new(last.clone(), model_line, "launch", format!("Launch {last}")));
+        for (id, label) in LAUNCH_AGENTS.iter().filter(|(id, _)| *id != last.as_str()) {
+            entries.push(InlineEntry::new(*id, *label, "launch", format!("Launch {id}")));
+        }
+    } else {
+        entries.push(InlineEntry::new("login", "sign in / add key", "account", "Login / sign in"));
+    }
+    entries.push(InlineEntry::new("model…", "switch session default", "configure", "Switch model"));
+    entries.push(InlineEntry::new("config…", "accounts · keys · agent", "configure", "Config"));
+    entries.push(InlineEntry::new("quit", "esc works too", "", "Quit"));
     (header, entries)
 }
 
