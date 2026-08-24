@@ -18,7 +18,7 @@ use crate::parse::ParsedArgs;
 pub use keys::Action;
 pub use live::{
     can_use_fullscreen, dump_menu, dump_palette, dump_picker, dump_settings, is_interactive,
-    run_menu_live, run_palette_live, run_picker_live, run_settings_live,
+    run_menu_live, run_palette_live, run_palette_live_with, run_picker_live, run_settings_live,
 };
 pub use state::{
     drive_menu, drive_palette, drive_picker, MenuState, Outcome, PaletteEntry, PaletteState,
@@ -103,6 +103,15 @@ pub fn run_palette_select(
     header: Vec<String>,
     entries: Vec<state::PaletteEntry>,
 ) -> Result<Option<usize>, String> {
+    run_palette_select_idle(header, entries, |_| {})
+}
+
+/// Palette with an idle tick so the header can fill in after a background fetch.
+pub fn run_palette_select_idle(
+    header: Vec<String>,
+    entries: Vec<state::PaletteEntry>,
+    on_idle: impl FnMut(&mut PaletteState),
+) -> Result<Option<usize>, String> {
     if entries.is_empty() {
         return Ok(None);
     }
@@ -110,7 +119,7 @@ pub fn run_palette_select(
     if !is_interactive() {
         return Ok(None);
     }
-    match run_palette_live(state)? {
+    match run_palette_live_with(state, on_idle)? {
         Outcome::Selected(i) => Ok(Some(i)),
         Outcome::Quit | Outcome::Cancelled | Outcome::Continue => Ok(None),
     }

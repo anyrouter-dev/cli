@@ -3,10 +3,16 @@ use crate::VERSION;
 
 #[cfg(feature = "native")]
 fn agent() -> ureq::Agent {
-    ureq::AgentBuilder::new()
-        .timeout(std::time::Duration::from_secs(30))
-        .user_agent(&format!("anyr-cli/{VERSION}"))
-        .build()
+    use std::sync::OnceLock;
+    static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
+    AGENT
+        .get_or_init(|| {
+            ureq::AgentBuilder::new()
+                .timeout(std::time::Duration::from_secs(30))
+                .user_agent(&format!("anyr-cli/{VERSION}"))
+                .build()
+        })
+        .clone()
 }
 
 /// Join a CLI profile `base_url` (`https://anyrouter.dev/api`, no `/v1`) with
