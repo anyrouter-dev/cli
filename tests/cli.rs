@@ -1183,6 +1183,9 @@ profiles:
     assert!(stdout.contains("claude"), "{stdout}");
     assert!(stdout.contains("CONFIGURE"), "{stdout}");
     assert!(stdout.contains("config…"), "{stdout}");
+    assert!(stdout.contains("account…"), "{stdout}");
+    assert!(stdout.contains("key…"), "{stdout}");
+    assert!(stdout.contains("model…"), "{stdout}");
     assert!(stdout.contains("quit"), "{stdout}");
     assert!(stdout.contains('❯'), "palette must show the input line: {stdout}");
     assert!(
@@ -1231,6 +1234,19 @@ profiles:
     for section in ["ACCOUNT", "MODEL", "AGENT", "GENERAL"] {
         assert!(stdout.contains(section), "missing {section} in:\n{stdout}");
     }
+    let dumped: Vec<&str> = stdout.lines().collect();
+    let acct = dumped
+        .iter()
+        .position(|l| l.contains("ACCOUNT"))
+        .expect("ACCOUNT");
+    let model = dumped
+        .iter()
+        .position(|l| l.contains("MODEL"))
+        .expect("MODEL");
+    assert!(
+        model > acct + 1,
+        "expected padding between ACCOUNT and MODEL:\n{stdout}"
+    );
     for row in [
         "account",
         "api key",

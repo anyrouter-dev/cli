@@ -443,6 +443,16 @@ pub fn is_active_key_row(masked: &str, api_key: Option<&str>) -> bool {
     !key.is_empty() && prefix.len() >= 12 && key.starts_with(prefix)
 }
 
+/// Newest `created_at` first. Missing timestamps sort last.
+pub fn keys_newest_first(mut keys: Vec<RemoteKey>) -> Vec<RemoteKey> {
+    keys.sort_by(|a, b| {
+        b.created_at
+            .cmp(&a.created_at)
+            .then_with(|| b.hash.cmp(&a.hash))
+    });
+    keys
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -486,6 +496,47 @@ mod tests {
         assert_eq!(me.username.as_deref(), Some("duyet"));
         assert_eq!(me.balance, Some(129.22));
         assert_eq!(me.display_label(), "duyet · a@b.co");
+    }
+
+    #[test]
+    fn keys_newest_first_orders_by_created_at() {
+        let keys = vec![
+            RemoteKey {
+                name: "old".into(),
+                hash: "h1".into(),
+                masked: "sk-ar-v1-aaaa".into(),
+                created_at: Some("2026-01-01T00:00:00Z".into()),
+                last_used_at: None,
+                active: true,
+                can_reveal: true,
+            },
+            RemoteKey {
+                name: "new".into(),
+                hash: "h2".into(),
+                masked: "sk-ar-v1-bbbb".into(),
+                created_at: Some("2026-08-24T12:00:00Z".into()),
+                last_used_at: None,
+                active: true,
+                can_reveal: true,
+            },
+            RemoteKey {
+                name: "undated".into(),
+                hash: "h0".into(),
+                masked: "sk-ar-v1-cccc".into(),
+                created_at: None,
+                last_used_at: None,
+                active: true,
+                can_reveal: true,
+            },
+        ];
+        let sorted = keys_newest_first(keys);
+        assert_eq!(
+            sorted
+                .iter()
+                .map(|k| k.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["new", "old", "undated"]
+        );
     }
 
     #[test]

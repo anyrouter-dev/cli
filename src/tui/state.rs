@@ -194,10 +194,12 @@ pub enum Tone {
     Muted,
 }
 
-/// One row of the settings screen: a section header or an editable entry.
+/// One row of the settings screen: a section header, spacer, or editable entry.
 #[derive(Debug, Clone)]
 pub enum SettingRow {
     Section(String),
+    /// Blank line between sections — not selectable.
+    Gap,
     Entry {
         label: String,
         value: String,
@@ -517,6 +519,7 @@ mod tests {
                     value: "sk-ar-v1-ab…wxyz".into(),
                     tone: Tone::Muted,
                 },
+                SettingRow::Gap,
                 SettingRow::Section("Model".into()),
                 SettingRow::Entry {
                     label: "default".into(),
@@ -535,11 +538,11 @@ mod tests {
         s.apply(Action::Down);
         assert_eq!(s.cursor, 2);
         s.apply(Action::Down);
-        assert_eq!(s.cursor, 4);
+        assert_eq!(s.cursor, 5); // skips Gap + Section
         s.apply(Action::Down); // wraps back to first entry
         assert_eq!(s.cursor, 1);
         s.apply(Action::Up); // wraps up to last entry
-        assert_eq!(s.cursor, 4);
+        assert_eq!(s.cursor, 5);
     }
 
     #[test]
