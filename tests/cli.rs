@@ -3,6 +3,8 @@ use std::process::Command;
 fn anyr() -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_anyr"));
     cmd.env("ANYR_NO_UPDATE", "1");
+    // Skip live catalog lookup so auto stays anyrouter/auto in tests.
+    cmd.env("ANYR_NO_CATALOG", "1");
     cmd
 }
 
@@ -449,16 +451,16 @@ fn claude_dry_run_pinned_model_collapses_aliases() {
     };
     assert_eq!(code, 0, "stderr={stderr}");
     assert!(
-        stdout.contains("ANTHROPIC_MODEL=stealth/ox-alpha"),
+        stdout.contains("ANTHROPIC_MODEL=stealth/ox-alpha[1m]"),
         "{stdout}"
     );
     // Unset alias slots follow the pinned model so nothing falls back to
     // haiku/sonnet/opus behind the user's back.
     for key_line in [
-        "ANTHROPIC_DEFAULT_HAIKU_MODEL=stealth/ox-alpha",
-        "ANTHROPIC_DEFAULT_SONNET_MODEL=stealth/ox-alpha",
-        "ANTHROPIC_DEFAULT_OPUS_MODEL=stealth/ox-alpha",
-        "CLAUDE_CODE_SUBAGENT_MODEL=stealth/ox-alpha",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL=stealth/ox-alpha[1m]",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL=stealth/ox-alpha[1m]",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL=stealth/ox-alpha[1m]",
+        "CLAUDE_CODE_SUBAGENT_MODEL=stealth/ox-alpha[1m]",
     ] {
         assert!(stdout.contains(key_line), "missing {key_line}:\n{stdout}");
     }
@@ -492,11 +494,11 @@ fn claude_dry_run_haiku_flag_beats_pinned_model() {
     };
     assert_eq!(code, 0, "stderr={stderr}");
     assert!(
-        stdout.contains("ANTHROPIC_DEFAULT_HAIKU_MODEL=z-ai/glm-4.7-flash"),
+        stdout.contains("ANTHROPIC_DEFAULT_HAIKU_MODEL=z-ai/glm-4.7-flash[1m]"),
         "{stdout}"
     );
     assert!(
-        stdout.contains("ANTHROPIC_DEFAULT_SONNET_MODEL=stealth/ox-alpha"),
+        stdout.contains("ANTHROPIC_DEFAULT_SONNET_MODEL=stealth/ox-alpha[1m]"),
         "{stdout}"
     );
 }
@@ -506,14 +508,7 @@ fn claude_yolo_flag_expands_to_dangerously_skip_permissions() {
     let key = "sk-ar-v1-testkey";
     let (code, stdout, stderr) = {
         let out = anyr()
-            .args([
-                "claude",
-                "--dry-run",
-                "--yes",
-                "--key",
-                key,
-                "--yolo",
-            ])
+            .args(["claude", "--dry-run", "--yes", "--key", key, "--yolo"])
             .env("ANYROUTER_HOME", temp_home())
             .env_remove("ANYROUTER_API_KEY")
             .output()
@@ -536,14 +531,7 @@ fn codex_yolo_flag_is_accepted_but_not_forwarded() {
     let key = "sk-ar-v1-testkey";
     let (code, stdout, stderr) = {
         let out = anyr()
-            .args([
-                "codex",
-                "--dry-run",
-                "--yes",
-                "--key",
-                key,
-                "--yolo",
-            ])
+            .args(["codex", "--dry-run", "--yes", "--key", key, "--yolo"])
             .env("ANYROUTER_HOME", temp_home())
             .env_remove("ANYROUTER_API_KEY")
             .output()
@@ -590,13 +578,13 @@ fn claude_dry_run_fable_flag_beats_pinned_model() {
     assert_eq!(code, 0, "stderr={stderr}");
     // Explicit --fable wins over the pinned session model...
     assert!(
-        stdout.contains("ANTHROPIC_DEFAULT_FABLE_MODEL=anthropic/claude-fable-5"),
+        stdout.contains("ANTHROPIC_DEFAULT_FABLE_MODEL=anthropic/claude-fable-5[1m]"),
         "{stdout}"
     );
     // ...while every other unset slot still follows the pin.
     for key_line in [
-        "ANTHROPIC_DEFAULT_SONNET_MODEL=stealth/ox-alpha",
-        "ANTHROPIC_DEFAULT_OPUS_MODEL=stealth/ox-alpha",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL=stealth/ox-alpha[1m]",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL=stealth/ox-alpha[1m]",
     ] {
         assert!(stdout.contains(key_line), "missing {key_line}:\n{stdout}");
     }
@@ -632,7 +620,7 @@ fn claude_dry_run_haiku_flag_overrides_alias() {
     };
     assert_eq!(code, 0, "stderr={stderr}");
     assert!(
-        stdout.contains("ANTHROPIC_DEFAULT_HAIKU_MODEL=z-ai/glm-4.7-flash"),
+        stdout.contains("ANTHROPIC_DEFAULT_HAIKU_MODEL=z-ai/glm-4.7-flash[1m]"),
         "{stdout}"
     );
     assert!(
@@ -671,6 +659,35 @@ fn launch_remembers_explicit_model_as_session_default() {
         .expect("launch");
     assert_eq!(out.status.code().unwrap_or(1), 0);
 
+    // A Claude `[1m]` suffix must not be written into config (Pi/Codex 404 on it).
+    let home_suffix = temp_home();
+    let out = anyr()
+        .args([
+            "claude",
+            "--yes",
+            "--key",
+            "sk-ar-v1-testkey",
+            "--model",
+            "stealth/ox-alpha[1m]",
+        ])
+        .env("ANYROUTER_HOME", &home_suffix)
+        .env("ANYROUTER_CLAUDE_PATH", stub)
+        .env_remove("ANYROUTER_API_KEY")
+        .output()
+        .expect("launch suffix");
+    assert_eq!(out.status.code().unwrap_or(1), 0);
+    let cfg_suffix =
+        std::fs::read_to_string(home_suffix.join("config.yaml")).expect("config written");
+    assert!(
+        cfg_suffix.contains("default_model: stealth/ox-alpha"),
+        "{cfg_suffix}"
+    );
+    assert!(
+        !cfg_suffix.contains("stealth/ox-alpha[1m]"),
+        "catalog id only:\n{cfg_suffix}"
+    );
+    let _ = std::fs::remove_dir_all(&home_suffix);
+
     // Second launch with no --model: dry-run reveals which model was picked.
     let out = anyr()
         .args(["claude", "--yes", "--dry-run", "--key", "sk-ar-v1-testkey"])
@@ -680,7 +697,7 @@ fn launch_remembers_explicit_model_as_session_default() {
         .expect("relaunch");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains("ANTHROPIC_MODEL=z-ai/glm-4.7-flash"),
+        stdout.contains("ANTHROPIC_MODEL=z-ai/glm-4.7-flash[1m]"),
         "session default not remembered:\n{stdout}"
     );
 
@@ -1193,7 +1210,10 @@ profiles:
     assert!(stdout.contains("model…"), "{stdout}");
     assert!(stdout.contains("install…"), "{stdout}");
     assert!(stdout.contains("quit"), "{stdout}");
-    assert!(stdout.contains('❯'), "palette must show the input line: {stdout}");
+    assert!(
+        stdout.contains('❯'),
+        "palette must show the input line: {stdout}"
+    );
     assert!(
         stdout.contains('╭') && stdout.contains('╯'),
         "dump should look like a dialog card: {stdout}"

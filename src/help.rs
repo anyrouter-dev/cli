@@ -14,7 +14,7 @@ Add --ok to skip the launcher and start with current settings.
 Options:
   --ok, --yes           Skip the launcher and start with current settings
   --no-check            Skip the pre-launch reachability probe
-  --model auto|<id>     Session model. \"auto\" is anyrouter/auto (smart pick)
+  --model auto|<id>     Session model. \"auto\" picks the most-used catalog model
   --haiku <id>          Claude /model haiku and subagents
   --sonnet <id>         Claude /model sonnet
   --opus <id>           Claude /model opus
