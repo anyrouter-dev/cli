@@ -14,20 +14,27 @@ use super::state::{MenuState, PaletteEntry, PaletteState, PickerState, SettingRo
 use super::theme;
 
 /// Preferred dialog width; shrinks on narrow terminals.
-const DIALOG_PREF_WIDTH: u16 = 52;
+const DIALOG_PREF_WIDTH: u16 = 56;
 /// Minimum usable dialog width before we fill almost the whole terminal.
 const DIALOG_MIN_WIDTH: u16 = 28;
 /// Settings screen is wider — model ids need room next to their labels.
-const SETTINGS_PREF_WIDTH: u16 = 64;
+const SETTINGS_PREF_WIDTH: u16 = 68;
+/// Inner inset (cols / rows) so content isn't flush against the border.
+const INSET_X: u16 = 1;
+const INSET_Y: u16 = 1;
 
 pub fn render_picker(frame: &mut Frame, state: &PickerState) {
     let area = frame.area();
+    let area = inset(area, 1, 0);
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1 + state.header.len() as u16),
+            Constraint::Length(1),
             Constraint::Length(3),
+            Constraint::Length(1),
             Constraint::Min(3),
+            Constraint::Length(1),
             Constraint::Length(1),
         ])
         .split(area);
@@ -45,7 +52,7 @@ pub fn render_picker(frame: &mut Frame, state: &PickerState) {
             .border_style(theme::muted())
             .title(Span::styled(" search ", theme::muted())),
     );
-    frame.render_widget(search, chunks[1]);
+    frame.render_widget(search, chunks[2]);
 
     let filtered = state.filtered();
     let items: Vec<ListItem> = filtered
@@ -73,10 +80,10 @@ pub fn render_picker(frame: &mut Frame, state: &PickerState) {
     );
     let mut list_state = ListState::default()
         .with_selected(Some(state.cursor.min(filtered.len().saturating_sub(1))));
-    frame.render_stateful_widget(list, chunks[2], &mut list_state);
+    frame.render_stateful_widget(list, chunks[4], &mut list_state);
 
     let footer = Paragraph::new(Span::styled(state.hint(), theme::muted()));
-    frame.render_widget(footer, chunks[3]);
+    frame.render_widget(footer, chunks[6]);
 }
 
 pub fn render_menu(frame: &mut Frame, state: &MenuState) {
@@ -96,17 +103,20 @@ pub fn render_menu(frame: &mut Frame, state: &MenuState) {
         .border_style(theme::brand())
         .title(Span::styled(format!(" ▲ {} ", state.title), theme::brand()))
         .style(Style::default().bg(theme::surface_rgb()));
-    let inner = block.inner(dialog);
+    let inner = inset(block.inner(dialog), INSET_X, INSET_Y);
     frame.render_widget(block, dialog);
 
-    // status | actions | hint
+    // status | pad | rule | pad | actions | pad | hint
     let status_h = state.header.len().max(1) as u16;
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(status_h),
             Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
             Constraint::Min(state.items.len().max(1) as u16),
+            Constraint::Length(1),
             Constraint::Length(1),
         ])
         .split(inner);
@@ -114,10 +124,10 @@ pub fn render_menu(frame: &mut Frame, state: &MenuState) {
     render_status_lines(frame, chunks[0], &state.header);
 
     let rule = Paragraph::new(Span::styled(
-        "─".repeat(chunks[1].width as usize),
+        "─".repeat(chunks[2].width as usize),
         theme::muted(),
     ));
-    frame.render_widget(rule, chunks[1]);
+    frame.render_widget(rule, chunks[2]);
 
     let items: Vec<ListItem> = state
         .items
@@ -139,21 +149,21 @@ pub fn render_menu(frame: &mut Frame, state: &MenuState) {
 
     let list = List::new(items);
     let mut list_state = ListState::default().with_selected(Some(state.cursor));
-    frame.render_stateful_widget(list, chunks[2], &mut list_state);
+    frame.render_stateful_widget(list, chunks[4], &mut list_state);
 
     let footer = Paragraph::new(Span::styled(state.hint(), theme::muted()));
-    frame.render_widget(footer, chunks[3]);
+    frame.render_widget(footer, chunks[6]);
 }
 
 fn dialog_height(state: &MenuState) -> u16 {
-    // borders(2) + status + rule(1) + items + hint(1)
+    // borders(2) + inset(2) + status + pads(3) + rule(1) + items + hint(1)
     let status = state.header.len().max(1) as u16;
     let items = state.items.len().max(1) as u16;
-    2 + status + 1 + items + 1
+    2 + 2 + status + 3 + 1 + items + 1
 }
 
 /// Palette preferred width — detail columns need a little more room.
-const PALETTE_PREF_WIDTH: u16 = 60;
+const PALETTE_PREF_WIDTH: u16 = 64;
 
 /// Command palette: floating input on top, fuzzy results below, groups
 /// rendered only where they change. Same centered-card language as the menu.
@@ -169,8 +179,10 @@ pub fn render_palette(frame: &mut Frame, state: &PaletteState) {
     // Group headers share the result area, so the dialog must grow by the
     // number of distinct groups among the visible rows.
     let groups = palette_groups(state, &filtered, visible);
-    // borders(2) + input(1) + rule(1) + rows + group headers + hint(1)
-    let height = 2 + 1 + 1 + visible.max(1) as u16 + groups as u16 + 1;
+    // borders(2) + inset(2) + input + pads + rule + rows + group headers
+    // + blank between groups + hint
+    let between = groups.saturating_sub(1);
+    let height = 2 + 2 + 1 + 3 + 1 + visible.max(1) as u16 + groups as u16 + between as u16 + 1;
     let dialog = centered_dialog(area, height, PALETTE_PREF_WIDTH);
     frame.render_widget(Clear, dialog);
 
@@ -179,15 +191,18 @@ pub fn render_palette(frame: &mut Frame, state: &PaletteState) {
         .border_style(theme::brand())
         .title(Span::styled(" ▲ anyr ", theme::brand()))
         .style(Style::default().bg(theme::surface_rgb()));
-    let inner = block.inner(dialog);
+    let inner = inset(block.inner(dialog), INSET_X, INSET_Y);
     frame.render_widget(block, dialog);
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),               // input line
+            Constraint::Length(1),               // pad
             Constraint::Length(1),               // rule
+            Constraint::Length(1),               // pad
             Constraint::Min(visible.max(1) as u16), // results
+            Constraint::Length(1),               // pad
             Constraint::Length(1),               // hint
         ])
         .split(inner);
@@ -200,24 +215,24 @@ pub fn render_palette(frame: &mut Frame, state: &PaletteState) {
     frame.render_widget(input, chunks[0]);
     frame.render_widget(
         Paragraph::new(Span::styled(
-            "─".repeat(chunks[1].width as usize),
+            "─".repeat(chunks[2].width as usize),
             theme::muted(),
         )),
-        chunks[1],
+        chunks[2],
     );
 
     if filtered.is_empty() {
         frame.render_widget(
             Paragraph::new(Span::styled("no matches", theme::muted())),
-            chunks[2],
+            chunks[4],
         );
     } else {
-        let rows = palette_rows(state, &filtered, visible, chunks[2].width as usize);
-        frame.render_widget(Paragraph::new(rows), chunks[2]);
+        let rows = palette_rows(state, &filtered, visible, chunks[4].width as usize);
+        frame.render_widget(Paragraph::new(rows), chunks[4]);
     }
 
     let footer = Paragraph::new(Span::styled(state.hint(), theme::muted()));
-    frame.render_widget(footer, chunks[3]);
+    frame.render_widget(footer, chunks[6]);
 }
 
 /// Number of distinct groups among the first `visible` filtered entries —
@@ -226,6 +241,9 @@ fn palette_groups(state: &PaletteState, filtered: &[usize], visible: usize) -> u
     let mut groups: Vec<&str> = Vec::new();
     for &entry_i in filtered.iter().take(visible) {
         let g = state.entries[entry_i].group.as_str();
+        if g.is_empty() {
+            continue;
+        }
         if !groups.contains(&g) {
             groups.push(g);
         }
@@ -247,10 +265,15 @@ fn palette_rows(
     for (row_i, &entry_i) in filtered.iter().take(visible).enumerate() {
         let entry: &PaletteEntry = &state.entries[entry_i];
         if last_group != Some(entry.group.as_str()) {
-            rows.push(Line::from(Span::styled(
-                format!("  {}", entry.group.to_ascii_uppercase()),
-                theme::muted(),
-            )));
+            if last_group.is_some() {
+                rows.push(Line::from(""));
+            }
+            if !entry.group.is_empty() {
+                rows.push(Line::from(Span::styled(
+                    format!("  {}", entry.group.to_ascii_uppercase()),
+                    theme::muted(),
+                )));
+            }
             last_group = Some(&entry.group);
         }
         let selected = row_i == cursor_row;
@@ -290,7 +313,7 @@ pub fn render_settings(frame: &mut Frame, state: &SettingsState) {
         .border_style(theme::brand())
         .title(Span::styled(format!(" ▲ {} ", state.title), theme::brand()))
         .style(Style::default().bg(theme::surface_rgb()));
-    let inner = block.inner(dialog);
+    let inner = inset(block.inner(dialog), INSET_X, INSET_Y);
     frame.render_widget(block, dialog);
 
     let status_h = state.header.len().max(1) as u16;
@@ -299,7 +322,10 @@ pub fn render_settings(frame: &mut Frame, state: &SettingsState) {
         .constraints([
             Constraint::Length(status_h),
             Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
             Constraint::Min(state.rows.len().max(1) as u16),
+            Constraint::Length(1),
             Constraint::Length(1),
         ])
         .split(inner);
@@ -307,29 +333,29 @@ pub fn render_settings(frame: &mut Frame, state: &SettingsState) {
     render_status_lines(frame, chunks[0], &state.header);
 
     let rule = Paragraph::new(Span::styled(
-        "─".repeat(chunks[1].width as usize),
+        "─".repeat(chunks[2].width as usize),
         theme::muted(),
     ));
-    frame.render_widget(rule, chunks[1]);
+    frame.render_widget(rule, chunks[2]);
 
-    let inner_w = chunks[2].width as usize;
+    let inner_w = chunks[4].width as usize;
     let lines: Vec<Line> = state
         .rows
         .iter()
         .enumerate()
         .map(|(i, row)| settings_row_line(row, i == state.cursor, inner_w))
         .collect();
-    frame.render_widget(Paragraph::new(lines), chunks[2]);
+    frame.render_widget(Paragraph::new(lines), chunks[4]);
 
     let footer = Paragraph::new(Span::styled(state.hint(), theme::muted()));
-    frame.render_widget(footer, chunks[3]);
+    frame.render_widget(footer, chunks[6]);
 }
 
 fn settings_dialog_height(state: &SettingsState) -> u16 {
-    // borders(2) + status + rule(1) + rows + hint(1)
+    // borders(2) + inset(2) + status + pads(3) + rule(1) + rows + hint(1)
     let status = state.header.len().max(1) as u16;
     let rows = state.rows.len().max(1) as u16;
-    2 + status + 1 + rows + 1
+    2 + 2 + status + 3 + 1 + rows + 1
 }
 
 fn tone_style(tone: Tone) -> Style {
@@ -349,6 +375,7 @@ fn settings_row_line(row: &SettingRow, selected: bool, inner_w: usize) -> Line<'
             format!("  {}", name.to_ascii_uppercase()),
             theme::muted(),
         )),
+        SettingRow::Gap => Line::from(""),
         SettingRow::Entry { label, value, tone } => {
             let marker = if selected { "❯ " } else { "  " };
             let marker_style = if selected {
@@ -372,6 +399,21 @@ fn settings_row_line(row: &SettingRow, selected: bool, inner_w: usize) -> Line<'
             ])
         }
     }
+}
+
+/// Shrink a rect by `x` columns and `y` rows on each side.
+fn inset(area: Rect, x: u16, y: u16) -> Rect {
+    if area.width == 0 || area.height == 0 {
+        return area;
+    }
+    let x = x.min(area.width.saturating_sub(1) / 2);
+    let y = y.min(area.height.saturating_sub(1) / 2);
+    Rect::new(
+        area.x + x,
+        area.y + y,
+        area.width.saturating_sub(x.saturating_mul(2)).max(1),
+        area.height.saturating_sub(y.saturating_mul(2)).max(1),
+    )
 }
 
 /// Center a fixed-size dialog; clamp to terminal so narrow TTYs never clip badly.
@@ -504,7 +546,9 @@ pub fn plain_menu_lines(state: &MenuState, cols: usize) -> Vec<String> {
             lines.push(format!("{pad_s}│{}│", pad_content(h, content_w)));
         }
     }
+    lines.push(format!("{pad_s}│{}│", pad_content("", content_w)));
     lines.push(format!("{pad_s}├{}┤", "─".repeat(content_w)));
+    lines.push(format!("{pad_s}│{}│", pad_content("", content_w)));
 
     for (i, label) in state.items.iter().enumerate() {
         let marker = if i == state.cursor { "◆" } else { " " };
@@ -512,6 +556,7 @@ pub fn plain_menu_lines(state: &MenuState, cols: usize) -> Vec<String> {
         lines.push(format!("{pad_s}│{}│", pad_content(&row, content_w)));
     }
 
+    lines.push(format!("{pad_s}│{}│", pad_content("", content_w)));
     lines.push(format!("{pad_s}├{}┤", "─".repeat(content_w)));
     lines.push(format!("{pad_s}│{}│", pad_content(state.hint(), content_w)));
     lines.push(format!("{pad_s}╰{}╯", "─".repeat(content_w)));
@@ -572,10 +617,18 @@ pub fn plain_palette_lines(state: &PaletteState, cols: usize) -> Vec<String> {
         for (row_i, &entry_i) in filtered.iter().take(visible).enumerate() {
             let entry = &state.entries[entry_i];
             if last_group != Some(entry.group.as_str()) {
-                lines.push(format!(
-                    "{pad_s}│{}│",
-                    pad_content(&format!("  {}", entry.group.to_ascii_uppercase()), content_w)
-                ));
+                if last_group.is_some() {
+                    lines.push(format!("{pad_s}│{}│", pad_content("", content_w)));
+                }
+                if !entry.group.is_empty() {
+                    lines.push(format!(
+                        "{pad_s}│{}│",
+                        pad_content(
+                            &format!("  {}", entry.group.to_ascii_uppercase()),
+                            content_w
+                        )
+                    ));
+                }
                 last_group = Some(&entry.group);
             }
             let selected = row_i == cursor_row;
@@ -630,11 +683,14 @@ pub fn plain_settings_lines(state: &SettingsState, cols: usize) -> Vec<String> {
             lines.push(format!("{pad_s}│{}│", pad_content(h, content_w)));
         }
     }
+    lines.push(format!("{pad_s}│{}│", pad_content("", content_w)));
     lines.push(format!("{pad_s}├{}┤", "─".repeat(content_w)));
+    lines.push(format!("{pad_s}│{}│", pad_content("", content_w)));
 
     for (i, row) in state.rows.iter().enumerate() {
         let line = match row {
             SettingRow::Section(name) => format!("  {}", name.to_ascii_uppercase()),
+            SettingRow::Gap => String::new(),
             SettingRow::Entry { label, value, .. } => {
                 let marker = if i == state.cursor { "◆" } else { " " };
                 let used = 4 + label.chars().count() + value.chars().count();
@@ -733,6 +789,16 @@ mod tests {
     }
 
     #[test]
+    fn inset_shrinks_and_clamps() {
+        let r = Rect::new(0, 0, 20, 10);
+        let i = inset(r, 1, 1);
+        assert_eq!(i, Rect::new(1, 1, 18, 8));
+        let tiny = Rect::new(0, 0, 2, 2);
+        let i = inset(tiny, 4, 4);
+        assert!(i.width >= 1 && i.height >= 1);
+    }
+
+    #[test]
     fn centered_dialog_clamps_to_area() {
         let tiny = Rect::new(0, 0, 20, 8);
         let d = centered_dialog(tiny, 20, 52);
@@ -754,6 +820,7 @@ mod tests {
                     value: "duyet".into(),
                     tone: Tone::Normal,
                 },
+                SettingRow::Gap,
                 SettingRow::Section("Model".into()),
                 SettingRow::Entry {
                     label: "default".into(),
@@ -769,6 +836,11 @@ mod tests {
         assert!(frame.contains("MODEL"), "{frame}");
         assert!(frame.contains("◆ account"), "{frame}");
         assert!(frame.contains('╭') && frame.contains('╯'), "{frame}");
+        // Blank line between ACCOUNT and MODEL sections.
+        let dumped: Vec<&str> = frame.lines().collect();
+        let acct = dumped.iter().position(|l| l.contains("ACCOUNT")).expect("ACCOUNT");
+        let model = dumped.iter().position(|l| l.contains("MODEL")).expect("MODEL");
+        assert!(model > acct + 1, "expected padding between sections:\n{frame}");
         // Values right-aligned inside the card (before the right border).
         let row_line = frame
             .lines()

@@ -48,11 +48,22 @@ struct LiveTerminal {
     terminal: Terminal<CrosstermBackend<io::Stdout>>,
 }
 
+/// Drop any key still in the queue (the Enter that closed the previous
+/// screen, key-repeat, Release). Without this, the next picker can
+/// immediately confirm the current row — looks like switch did nothing.
+fn drain_pending_events() {
+    while event::poll(Duration::from_millis(0)).unwrap_or(false) {
+        let _ = event::read();
+    }
+}
+
 impl LiveTerminal {
     fn start() -> Result<Self, String> {
         enable_raw_mode().map_err(|e| e.to_string())?;
+        drain_pending_events();
         let mut out = stdout();
         execute!(out, EnterAlternateScreen).map_err(|e| e.to_string())?;
+        drain_pending_events();
         let backend = CrosstermBackend::new(stdout());
         let terminal = Terminal::new(backend).map_err(|e| e.to_string())?;
         Ok(Self { terminal })

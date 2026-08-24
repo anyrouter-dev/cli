@@ -614,6 +614,7 @@ fn persist_login(
         .and_then(|c| c.profiles.get(&c.active_profile));
     let base = resolve_base_url(&parsed.flags, stored);
     validate_key(&base, key)?;
+    let key = resolve_latest_key(&base, key);
     let name = get_string_flag(&parsed.flags, "profile").unwrap_or_else(|| {
         existing
             .as_ref()
@@ -622,7 +623,7 @@ fn persist_login(
     });
     let timeout = get_string_flag(&parsed.flags, "timeout").and_then(|s| s.parse().ok());
     let mut profile = create_default_profile(DefaultProfileInput {
-        api_key: Some(key.to_string()),
+        api_key: Some(key.clone()),
         base_url: Some(base.clone()),
         preset: get_string_flag(&parsed.flags, "preset"),
         timeout_ms: timeout,
@@ -642,7 +643,7 @@ fn persist_login(
     let mut cfg = upsert_profile(existing.unwrap_or_default(), &name, profile);
     cfg.active_profile = name.clone();
     if !parsed.flag_true("yes") && term::is_interactive() {
-        if let Ok(models) = fetch_models(&base, Some(key)) {
+        if let Ok(models) = fetch_models(&base, Some(&key)) {
             if let Ok(id) = pick_model(&models, None, "Default model") {
                 if let Some(p) = cfg.profiles.get_mut(&name) {
                     p.default_model = Some(id);
@@ -674,7 +675,7 @@ fn persist_login(
         "{}  {}  {}",
         term::ok("Signed in."),
         term::dim(&format!("via {source}")),
-        term::dim(&format!("key {}", mask_api_key(Some(key))))
+        term::dim(&format!("key {}", mask_api_key(Some(&key))))
     );
     println!("{}  {}", term::dim("Saved"), path.display());
     Ok(0)
@@ -711,6 +712,23 @@ fn pick_ids(models: &[crate::http::CatalogModel]) -> Vec<String> {
     ids
 }
 
+fn pick_list(
+    title: &str,
+    header: &[String],
+    items: &[String],
+    current: Option<usize>,
+) -> Result<usize, String> {
+    #[cfg(feature = "native")]
+    {
+        crate::tui::pick_with_header(title, header, items, current)
+    }
+    #[cfg(not(feature = "native"))]
+    {
+        let _ = header;
+        term::pick(title, items, current)
+    }
+}
+
 fn pick_model(
     models: &[crate::http::CatalogModel],
     current: Option<&str>,
@@ -721,16 +739,15 @@ fn pick_model(
         return Err("No models in catalog.".into());
     }
     let current_id = current.map(display_model_id);
-    let query = term::prompt("Filter models (Enter lists top 30): ")?;
-    let ranked = term::rank_ids(&query, &ids);
-    let shown: Vec<String> = ranked.into_iter().take(30).collect();
-    if shown.is_empty() {
-        return Err("No models matched.".into());
-    }
-    let labels: Vec<String> = shown.iter().map(|id| model_pick_label(id)).collect();
-    let shown_idx = current_id.and_then(|id| shown.iter().position(|s| s == id));
-    let idx = term::pick(title, &labels, shown_idx)?;
-    Ok(shown[idx].clone())
+    let labels: Vec<String> = ids.iter().map(|id| model_pick_label(id)).collect();
+    let shown_idx = current_id.and_then(|id| ids.iter().position(|s| s == id));
+    let idx = pick_list(
+        title,
+        &["type to search, enter to pin".into()],
+        &labels,
+        shown_idx,
+    )?;
+    Ok(ids[idx].clone())
 }
 
 fn set_model_slot(profile: &mut Profile, slot: &str, id: String) {
@@ -1165,6 +1182,10 @@ fn config_settings_frame(
     let mut rows: Vec<SettingRow> = Vec::new();
     let mut kinds: Vec<Option<SettingKind>> = Vec::new();
     fn section(rows: &mut Vec<SettingRow>, kinds: &mut Vec<Option<SettingKind>>, name: &str) {
+        if !rows.is_empty() {
+            rows.push(SettingRow::Gap);
+            kinds.push(None);
+        }
         rows.push(SettingRow::Section(name.into()));
         kinds.push(None);
     }
@@ -1340,7 +1361,9 @@ fn config_settings_loop(
             crate::tui::SettingsOutcome::Close | crate::tui::SettingsOutcome::Stay => None,
         };
         if let Some(Err(err)) = result {
-            eprintln!("{}", term::err(&err));
+            if err != "Cancelled." {
+                eprintln!("{}", term::err(&err));
+            }
         }
     }
 }
@@ -1358,7 +1381,10 @@ fn config_edit_row(
             let mut next = parsed.clone();
             next.command = "keys".into();
             next.passthrough = vec!["use".into()];
-            run_keys(&next, env)
+            match run_keys(&next, env) {
+                Err(err) if err == "Cancelled." => Ok(0),
+                other => other,
+            }
         }
         SettingKind::Model(slot) => {
             let existing = load_config_if_present(path);
@@ -1439,44 +1465,55 @@ fn config_account_actions(
     parsed: &ParsedArgs,
     env: &BTreeMap<String, String>,
 ) -> Result<i32, String> {
-    let actions = [
-        "Switch account",
-        "Add account",
-        "Re-authenticate (login)",
-        "Log out",
-    ];
-    let idx = term::pick(
+    let path = config_path(parsed, env);
+    let cfg = load_config_if_present(&path).unwrap_or_default();
+    let mut names: Vec<String> = cfg.profiles.keys().cloned().collect();
+    names.sort();
+    let mut labels: Vec<String> = names
+        .iter()
+        .map(|n| {
+            let p = cfg.profiles.get(n);
+            let key = mask_api_key(p.and_then(|p| p.api_key.as_deref()));
+            let mark = if n == &cfg.active_profile { "  ●" } else { "" };
+            format!("{n}  ·  {key}{mark}")
+        })
+        .collect();
+    let add_idx = labels.len();
+    labels.push("＋  Add account".into());
+    labels.push("Re-authenticate (login)".into());
+    labels.push("Log out".into());
+    let current = names.iter().position(|n| n == &cfg.active_profile);
+    let idx = pick_list(
         "Account",
-        &actions.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
-        Some(0),
+        &["enter to switch    newest profiles are listed too".into()],
+        &labels,
+        current,
     )?;
-    match idx {
-        0 => {
-            let mut next = parsed.clone();
-            next.passthrough = Vec::new();
-            run_auth_switch(&next, env)
-        }
-        1 => {
-            let name = term::prompt("New account name (Enter for \"default\"): ")?;
-            let name = name.trim();
-            let name = if name.is_empty() { "default" } else { name };
-            if !valid_account_name(name) {
-                return Err(format!(
-                    "Invalid account name \"{name}\". Use letters, digits, \".\", \"_\", \"-\"."
-                ));
-            }
-            let mut flags = parsed.flags.clone();
-            flags.insert("profile".into(), FlagValue::Value(name.into()));
-            let next = ParsedArgs {
-                command: "login".into(),
-                flags,
-                passthrough: Vec::new(),
-            };
-            run_login(&next, env)
-        }
-        2 => run_login(parsed, env),
-        _ => run_logout(parsed, env),
+    if idx < names.len() {
+        return run_account_use(parsed, env, &names[idx]);
     }
+    if idx == add_idx {
+        let name = term::prompt("New account name (Enter for \"default\"): ")?;
+        let name = name.trim();
+        let name = if name.is_empty() { "default" } else { name };
+        if !valid_account_name(name) {
+            return Err(format!(
+                "Invalid account name \"{name}\". Use letters, digits, \".\", \"_\", \"-\"."
+            ));
+        }
+        let mut flags = parsed.flags.clone();
+        flags.insert("profile".into(), FlagValue::Value(name.into()));
+        let next = ParsedArgs {
+            command: "login".into(),
+            flags,
+            passthrough: Vec::new(),
+        };
+        return run_login(&next, env);
+    }
+    if idx == add_idx + 1 {
+        return run_login(parsed, env);
+    }
+    run_logout(parsed, env)
 }
 
 /// `x` on a row: clear the override so the built-in default applies again.
@@ -1973,7 +2010,7 @@ fn run_keys(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, 
     match sub {
         "list" => {
             let (_path, _cfg, base, api_key) = keys_credential(parsed, env)?;
-            let rows = fetch_keys(&base, &api_key)?;
+            let rows = crate::http::keys_newest_first(fetch_keys(&base, &api_key)?);
             if parsed.flag_true("json") {
                 let payload: Vec<_> = rows
                     .iter()
@@ -2049,10 +2086,12 @@ fn run_keys(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, 
         }
         "use" => {
             let (path, mut cfg, base, api_key) = keys_credential(parsed, env)?;
-            let rows: Vec<_> = fetch_keys(&base, &api_key)?
-                .into_iter()
-                .filter(|r| r.active)
-                .collect();
+            let rows = crate::http::keys_newest_first(
+                fetch_keys(&base, &api_key)?
+                    .into_iter()
+                    .filter(|r| r.active)
+                    .collect(),
+            );
             if rows.is_empty() {
                 return Err(hint("No active keys. Create one: {bin} keys create"));
             }
@@ -2077,14 +2116,24 @@ fn run_keys(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, 
                     }
                 }
             } else if term::is_interactive() {
-                let labels: Vec<String> = rows
-                    .iter()
-                    .map(|r| format!("{} · {}", r.name, r.masked))
-                    .collect();
                 let current = rows
                     .iter()
-                    .position(|r| is_active_key_row(&r.masked, Some(&api_key)));
-                let idx = term::pick("Which key should this profile use?", &labels, current)?;
+                    .position(|r| is_active_key_row(&r.masked, Some(&api_key)))
+                    .or(Some(0));
+                let labels: Vec<String> = rows
+                    .iter()
+                    .enumerate()
+                    .map(|(i, r)| key_pick_label(r, current == Some(i)))
+                    .collect();
+                let idx = pick_list(
+                    "API key",
+                    &[
+                        "newest first · type to search".into(),
+                        format!("current  {}", mask_api_key(Some(&api_key))),
+                    ],
+                    &labels,
+                    current,
+                )?;
                 rows[idx].clone()
             } else {
                 return Err(hint(
@@ -2153,6 +2202,31 @@ fn run_keys(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, 
             "Unknown keys subcommand \"{other}\". Try: list | create | use | revoke"
         )),
     }
+}
+
+fn resolve_latest_key(base: &str, current: &str) -> String {
+    let Ok(rows) = fetch_keys(base, current) else {
+        return current.to_string();
+    };
+    let rows = crate::http::keys_newest_first(rows.into_iter().filter(|r| r.active).collect());
+    let Some(latest) = rows.first() else {
+        return current.to_string();
+    };
+    if is_active_key_row(&latest.masked, Some(current)) {
+        return current.to_string();
+    }
+    reveal_key(base, current, &latest.hash).unwrap_or_else(|_| current.to_string())
+}
+
+fn key_pick_label(row: &crate::http::RemoteKey, current: bool) -> String {
+    let mut parts = vec![row.name.clone(), row.masked.clone()];
+    if let Some(created) = row.created_at.as_deref() {
+        parts.push(created.get(..10).unwrap_or(created).to_string());
+    }
+    if current {
+        parts.push("●".into());
+    }
+    parts.join("  ·  ")
 }
 
 fn stored_api_key(
@@ -2237,8 +2311,10 @@ fn launcher_palette(
         entries.push(PaletteEntry::new("login", "sign in / add key", "account", "Login / sign in"));
     }
     entries.push(PaletteEntry::new("model…", "switch session default", "configure", "Switch model"));
+    entries.push(PaletteEntry::new("account…", "switch profile", "configure", "Switch account"));
+    entries.push(PaletteEntry::new("key…", "switch API key", "configure", "Switch key"));
     entries.push(PaletteEntry::new("config…", "accounts · keys · agent", "configure", "Config"));
-    entries.push(PaletteEntry::new("quit", "esc works too", "", "Quit"));
+    entries.push(PaletteEntry::new("quit", "esc works too", "configure", "Quit"));
     (header, entries)
 }
 
@@ -2279,8 +2355,10 @@ fn launcher_palette(
         entries.push(InlineEntry::new("login", "sign in / add key", "account", "Login / sign in"));
     }
     entries.push(InlineEntry::new("model…", "switch session default", "configure", "Switch model"));
+    entries.push(InlineEntry::new("account…", "switch profile", "configure", "Switch account"));
+    entries.push(InlineEntry::new("key…", "switch API key", "configure", "Switch key"));
     entries.push(InlineEntry::new("config…", "accounts · keys · agent", "configure", "Config"));
-    entries.push(InlineEntry::new("quit", "esc works too", "", "Quit"));
+    entries.push(InlineEntry::new("quit", "esc works too", "configure", "Quit"));
     (header, entries)
 }
 
@@ -2493,29 +2571,26 @@ fn launcher_dispatch(
         }
         return Ok(LauncherNext::Continue);
     }
-    if action == "Switch account / key" {
-        let cfg = load_config_if_present(path).unwrap_or_default();
-        let names: Vec<String> = cfg.profiles.keys().cloned().collect();
-        if names.len() > 1 {
-            let current = names.iter().position(|n| n == &cfg.active_profile);
-            match term::pick("Account", &names, current) {
-                Ok(pick) => {
-                    if let Err(err) = run_account_use(parsed, env, &names[pick]) {
-                        eprintln!("{}", term::err(&err));
-                    }
-                }
-                Err(err) => {
-                    if err != "Cancelled." {
-                        eprintln!("{}", term::err(&err));
-                    }
-                }
-            }
+    if action == "Switch account" || action == "Switch account / key" {
+        match config_account_actions(parsed, env) {
+            Ok(_) => {}
+            Err(err) if err == "Cancelled." => {}
+            Err(err) => eprintln!("{}", term::err(&err)),
+        }
+        return Ok(LauncherNext::Continue);
+    }
+    if action == "Switch key" {
+        if !launcher_signed_in(path, parsed, env) {
+            eprintln!("{}", term::err("Sign in first (Login / sign in)."));
+            return Ok(LauncherNext::Continue);
         }
         let mut next = parsed.clone();
         next.command = "keys".into();
         next.passthrough = vec!["use".into()];
-        if let Err(err) = run_keys(&next, env) {
-            eprintln!("{}", term::err(&err));
+        match run_keys(&next, env) {
+            Ok(_) => {}
+            Err(err) if err == "Cancelled." => {}
+            Err(err) => eprintln!("{}", term::err(&err)),
         }
         return Ok(LauncherNext::Continue);
     }
