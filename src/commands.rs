@@ -9,7 +9,8 @@ use crate::config::{
 use crate::help::{command_help, resolve_bin, root_help, set_invoked_bin};
 use crate::http::{
     create_key, delete_key, fetch_credits, fetch_keys, fetch_models, format_models_list,
-    format_usage_report, is_active_key_row, reveal_key, validate_key,
+    format_usage_report, is_active_key_row, most_used_model_id, reveal_key, validate_key,
+    CatalogModel,
 };
 use crate::install::{
     agent_available, available_agents, ensure_tool_installed, missing_agents, KNOWN_AGENTS,
@@ -19,9 +20,10 @@ use crate::key::{
 };
 use crate::parse::{get_string_flag, parse_cli_args, FlagValue, ParsedArgs};
 use crate::spawn::{
-    build_tool_env, canonical_tool, default_profile_for_env, display_model_id, effort_args_for,
-    env_command_path, is_auto_model, model_args_for, normalize_effort, prepare_pi_wrapper,
-    provider_args_for, render_dry_run, resolve_tool, spawn_child, BuildToolEnvInput,
+    build_tool_env, canonical_tool, catalog_model_id, default_profile_for_env, display_model_id,
+    effort_args_for, env_command_path, is_auto_model, model_args_for, normalize_effort,
+    prepare_pi_wrapper, provider_args_for, render_dry_run, resolve_tool, session_model_label,
+    spawn_child, BuildToolEnvInput,
 };
 use crate::term;
 use crate::VERSION;
@@ -691,20 +693,30 @@ fn run_login(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32,
     persist_login(parsed, env, &acquired.api_key, &acquired.source)
 }
 
-fn model_pick_label(id: &str) -> String {
+fn model_pick_label(id: &str, models: &[CatalogModel]) -> String {
     if is_auto_model(id) {
-        "anyrouter/auto  ·  smart pick".into()
+        match most_used_model_id(models) {
+            Some(top) => format!("auto  ·  most used  ·  {top}"),
+            None => "auto  ·  most used".into(),
+        }
+    } else if models
+        .iter()
+        .find(|m| catalog_model_id(&m.id) == id)
+        .and_then(|m| m.context_length)
+        .is_some_and(|n| n >= 1_000_000)
+    {
+        format!("{id}  ·  1M")
     } else {
         id.to_string()
     }
 }
 
-fn pick_ids(models: &[crate::http::CatalogModel]) -> Vec<String> {
+fn pick_ids(models: &[CatalogModel]) -> Vec<String> {
     let mut ids = Vec::new();
-    ids.push("anyrouter/auto".into());
+    ids.push("auto".into());
     for model in models {
-        let id = display_model_id(&model.id).to_string();
-        if !ids.iter().any(|existing| existing == &id) {
+        let id = catalog_model_id(&model.id);
+        if !id.is_empty() && !is_auto_model(&id) && !ids.iter().any(|existing| existing == &id) {
             ids.push(id);
         }
     }
@@ -729,7 +741,7 @@ fn pick_list(
 }
 
 fn pick_model(
-    models: &[crate::http::CatalogModel],
+    models: &[CatalogModel],
     current: Option<&str>,
     title: &str,
 ) -> Result<String, String> {
@@ -737,12 +749,15 @@ fn pick_model(
     if ids.is_empty() {
         return Err("No models in catalog.".into());
     }
-    let current_id = current.map(display_model_id);
-    let labels: Vec<String> = ids.iter().map(|id| model_pick_label(id)).collect();
-    let shown_idx = current_id.and_then(|id| ids.iter().position(|s| s == id));
+    let current_id = current.map(catalog_model_id);
+    let labels: Vec<String> = ids.iter().map(|id| model_pick_label(id, models)).collect();
+    let shown_idx = current_id.and_then(|id| {
+        ids.iter()
+            .position(|s| s == &id || (is_auto_model(&id) && is_auto_model(s)))
+    });
     let idx = pick_list(
         title,
-        &["type to search, enter to pin".into()],
+        &["type to search, enter to pin · x in config clears to auto".into()],
         &labels,
         shown_idx,
     )?;
@@ -750,19 +765,24 @@ fn pick_model(
 }
 
 fn set_model_slot(profile: &mut Profile, slot: &str, id: String) {
-    let id = display_model_id(&id).to_string();
+    let id = catalog_model_id(&id);
     match slot {
         "haiku" => profile.claude_haiku = Some(id),
         "sonnet" => profile.claude_sonnet = Some(id),
         "opus" => profile.claude_opus = Some(id),
         "fable" => profile.claude_fable = Some(id),
-        _ => profile.default_model = Some(id),
+        _ => {
+            profile.default_model = if is_auto_model(&id) { None } else { Some(id) };
+        }
     }
 }
 
 fn pick_claude_slot(profile: &Profile) -> Result<&'static str, String> {
     let items = vec![
-        format!("Default  ·  {}", display_model_id(profile.default_model())),
+        format!(
+            "Default  ·  {}",
+            session_model_label(profile.default_model())
+        ),
         format!("Haiku    ·  {}", profile.claude_haiku()),
         format!("Sonnet   ·  {}", profile.claude_sonnet()),
         format!("Opus     ·  {}", profile.claude_opus()),
@@ -818,8 +838,9 @@ fn apply_claude_alias_flags(profile: &mut Profile, parsed: &ParsedArgs) -> bool 
     changed
 }
 
-fn known_model_id(models: &[crate::http::CatalogModel], id: &str) -> bool {
-    is_auto_model(id) || models.iter().any(|m| m.id == id)
+fn known_model_id(models: &[CatalogModel], id: &str) -> bool {
+    let id = catalog_model_id(id);
+    is_auto_model(&id) || models.iter().any(|m| catalog_model_id(&m.id) == id)
 }
 
 fn save_model_slot(
@@ -842,7 +863,12 @@ fn save_model_slot(
         "fable" => "fable",
         _ => "default model",
     };
-    println!("{}  {}  {}", term::ok("Saved"), label, term::model_id(id));
+    println!(
+        "{}  {}  {}",
+        term::ok("Saved"),
+        label,
+        term::model_id(&session_model_label(id))
+    );
     Ok(0)
 }
 
@@ -874,7 +900,7 @@ fn run_models(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32
                     "Unknown model \"{id}\". Run: {{bin}} models"
                 )));
             }
-            save_model_slot(existing.clone(), &path, slot, &display_model_id(&id))?;
+            save_model_slot(existing.clone(), &path, slot, &catalog_model_id(&id))?;
             assigned = true;
         }
         let positional = parsed.passthrough.get(1).cloned().filter(|s| !s.is_empty());
@@ -888,7 +914,7 @@ fn run_models(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32
                 load_config_if_present(&path),
                 &path,
                 "default",
-                display_model_id(&id),
+                &catalog_model_id(&id),
             )?;
             assigned = true;
         }
@@ -917,7 +943,7 @@ fn run_models(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32
             load_config_if_present(&path),
             &path,
             id.0,
-            display_model_id(&id.1),
+            &catalog_model_id(&id.1),
         );
     }
     if parsed.flag_true("pick") && term::is_interactive() {
@@ -927,10 +953,10 @@ fn run_models(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32
             .unwrap_or("default");
         let current = profile.map(|p| slot_current(p, slot).to_string());
         let id = pick_model(&models, current.as_deref(), slot_title(slot))?;
-        return save_model_slot(existing, &path, slot, display_model_id(&id));
+        return save_model_slot(existing, &path, slot, &catalog_model_id(&id));
     }
     let pinned = profile
-        .map(|p| display_model_id(p.default_model()).to_string())
+        .map(|p| display_model_id(p.default_model()))
         .into_iter()
         .collect::<Vec<_>>();
     let preset = profile.map(|p| p.pinned_preset().to_string());
@@ -1002,7 +1028,7 @@ fn run_whoami(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32
     println!(
         "{}  {}",
         term::dim("default_model  "),
-        term::model_id(display_model_id(profile.default_model()))
+        term::model_id(&session_model_label(profile.default_model()))
     );
     println!(
         "{}  {}",
@@ -1054,7 +1080,7 @@ fn print_config_status(
     println!(
         "{}  {}",
         term::dim("model   "),
-        term::model_id(display_model_id(
+        term::model_id(&session_model_label(
             profile.map(|p| p.default_model()).unwrap_or("auto"),
         ))
     );
@@ -1127,14 +1153,8 @@ fn run_config_tui(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result
     #[cfg(feature = "native")]
     {
         if tui_wants_dump(parsed, env) {
-            let (state, _) = config_settings_frame(
-                parsed,
-                env,
-                &path,
-                false,
-                &mut CreditsCache::fresh(),
-                0,
-            );
+            let (state, _) =
+                config_settings_frame(parsed, env, &path, false, &mut CreditsCache::fresh(), 0);
             print!("{}", tui_dump_settings(state, env));
             return Ok(0);
         }
@@ -1301,7 +1321,7 @@ fn fill_general_settings(
         rows,
         kinds,
         "default",
-        display_model_id(profile.map(|p| p.default_model()).unwrap_or("auto")).into(),
+        session_model_label(profile.map(|p| p.default_model()).unwrap_or("auto")),
         Tone::Model,
         SettingKind::Model("default"),
     );
@@ -1329,7 +1349,11 @@ fn fill_general_settings(
         if present.is_empty() {
             "none detected".into()
         } else {
-            present.iter().map(|(id, _)| *id).collect::<Vec<_>>().join(", ")
+            present
+                .iter()
+                .map(|(id, _)| *id)
+                .collect::<Vec<_>>()
+                .join(", ")
         },
         if present.is_empty() {
             Tone::Warn
@@ -1402,9 +1426,8 @@ fn fill_agent_settings(
     }
 
     let cfg = load_config_if_present(path);
-    let tool = resolve_tool(cfg.as_ref(), id).unwrap_or_else(|_| {
-        crate::spawn::resolve_tool(None, id).expect("known agent")
-    });
+    let tool = resolve_tool(cfg.as_ref(), id)
+        .unwrap_or_else(|_| crate::spawn::resolve_tool(None, id).expect("known agent"));
     let present = agent_available(id, &tool.command, env);
 
     section(rows, kinds, label);
@@ -1496,7 +1519,7 @@ fn fill_agent_settings(
                 _ => nonempty_slot(&profile.and_then(|p| p.claude_fable.clone())),
             };
             let value = match &pinned {
-                Some(mid) => display_model_id(mid).to_string(),
+                Some(mid) => catalog_model_id(mid),
                 None => format!("{} · default", slot_current_opt(profile, slot)),
             };
             let tone = if pinned.is_some() {
@@ -1633,9 +1656,7 @@ fn config_edit_row(
                 .iter()
                 .map(|(id, label)| format!("{id}  —  {label}"))
                 .collect();
-            let current = KNOWN_AGENTS
-                .iter()
-                .position(|(id, _)| *id == last.as_str());
+            let current = KNOWN_AGENTS.iter().position(|(id, _)| *id == last.as_str());
             let idx = term::pick("Coding agent", &labels, current)?;
             let (tool, label) = KNOWN_AGENTS[idx];
             let mut cfg = load_config_if_present(path).unwrap_or_default();
@@ -1749,7 +1770,11 @@ fn config_account_actions(
         .map(|n| {
             let p = cfg.profiles.get(n);
             let key = mask_api_key(p.and_then(|p| p.api_key.as_deref()));
-            let mark = if n == &cfg.active_profile { "  ●" } else { "" };
+            let mark = if n == &cfg.active_profile {
+                "  ●"
+            } else {
+                ""
+            };
             format!("{n}  ·  {key}{mark}")
         })
         .collect();
@@ -1851,7 +1876,14 @@ fn config_reset_row(path: &std::path::Path, kind: SettingKind) -> Result<i32, St
                 return Ok(0);
             }
             write_config(&cfg, path)?;
-            println!("{}  {} reset to default", term::ok("Saved"), label);
+            if label == "default model" {
+                println!(
+                    "{}  default model reset to auto (most used)",
+                    term::ok("Saved")
+                );
+            } else {
+                println!("{}  {} reset to default", term::ok("Saved"), label);
+            }
             Ok(0)
         }
     }
@@ -1920,7 +1952,7 @@ fn config_tui_header(path: &std::path::Path) -> Vec<String> {
         ),
         format!(
             "model    {}",
-            display_model_id(profile.map(|p| p.default_model()).unwrap_or("auto"))
+            session_model_label(profile.map(|p| p.default_model()).unwrap_or("auto"))
         ),
         format!("file     {}", path.display()),
     ]
@@ -1990,6 +2022,51 @@ fn run_config(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32
     }
 }
 
+fn catalog_lookup_enabled(env: &BTreeMap<String, String>) -> bool {
+    match env.get("ANYR_NO_CATALOG").map(|s| s.as_str()) {
+        Some("1" | "true" | "TRUE" | "yes") => false,
+        _ => true,
+    }
+}
+
+struct ResolvedModel {
+    id: String,
+    context_window: Option<i64>,
+}
+
+/// Auto (unset / `auto` / `anyrouter/auto`) resolves to the catalog's most-used
+/// model this week. A user-pinned id is kept. Failures keep the requested id.
+fn resolve_session_model(
+    requested: &str,
+    base: &str,
+    key: Option<&str>,
+    env: &BTreeMap<String, String>,
+) -> ResolvedModel {
+    let requested = catalog_model_id(requested);
+    if !catalog_lookup_enabled(env) {
+        return ResolvedModel {
+            id: requested,
+            context_window: None,
+        };
+    }
+    let Ok(models) = fetch_models(base, key) else {
+        return ResolvedModel {
+            id: requested,
+            context_window: None,
+        };
+    };
+    let id = if is_auto_model(&requested) {
+        most_used_model_id(&models).unwrap_or(requested)
+    } else {
+        requested
+    };
+    let context_window = models
+        .iter()
+        .find(|m| catalog_model_id(&m.id) == id)
+        .and_then(|m| m.context_length);
+    ResolvedModel { id, context_window }
+}
+
 fn run_launch(
     tool_name: &str,
     parsed: &ParsedArgs,
@@ -2016,13 +2093,15 @@ fn run_launch(
     let mut profile = stored
         .cloned()
         .unwrap_or_else(|| default_profile_for_env(Some(&base), Some(&key)));
-    profile.base_url = Some(base);
+    profile.base_url = Some(base.clone());
     let aliases_changed = apply_claude_alias_flags(&mut profile, parsed);
     let tool = resolve_tool(existing.as_ref(), tool_name)?;
-    let model = crate::spawn::sanitize_model_id(
+    let requested = catalog_model_id(
         &get_string_flag(&parsed.flags, "model")
             .unwrap_or_else(|| profile.default_model().to_string()),
     );
+    let resolved = resolve_session_model(&requested, &base, Some(&key), env);
+    let model = resolved.id;
     let effort = normalize_effort(get_string_flag(&parsed.flags, "effort").as_deref())?;
     let model_mode = if is_auto_model(&model) {
         "auto"
@@ -2036,7 +2115,7 @@ fn run_launch(
         api_key: &key,
         model: &model,
         effort: effort.as_deref(),
-        context_window: None,
+        context_window: resolved.context_window,
         model_map: None,
     });
     if tool_name == "pi" {
@@ -2083,9 +2162,10 @@ fn run_launch(
     // Remember the model this launch used as the session default, so a bare
     // `{bin} claude` next time starts with it.
     if let Some(flag_model) = get_string_flag(&parsed.flags, "model") {
-        let id = display_model_id(&crate::spawn::sanitize_model_id(&flag_model)).to_string();
+        let id = catalog_model_id(&flag_model);
         if let Some(p) = cfg.profiles.get_mut(&cfg.active_profile) {
-            p.default_model = Some(id);
+            // Auto stays unset so the next launch re-picks the most-used model.
+            p.default_model = if is_auto_model(&id) { None } else { Some(id) };
         }
     }
     let _ = write_config(&cfg, &path);
@@ -2171,7 +2251,7 @@ fn run_account(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i3
                 println!(
                     "{marker} {}  {}  {}",
                     term::accent(name),
-                    term::model_id(display_model_id(profile.default_model())),
+                    term::model_id(&session_model_label(profile.default_model())),
                     mask_api_key(profile.api_key.as_deref())
                 );
             }
@@ -2545,7 +2625,7 @@ fn launcher_palette(
     let profile = cfg.profiles.get(&cfg.active_profile);
     let signed_in = launcher_signed_in(path, parsed, env);
     let last = launcher_last_tool(path, parsed, env);
-    let model_line = display_model_id(profile.map(|p| p.default_model()).unwrap_or("auto"));
+    let model_line = session_model_label(profile.map(|p| p.default_model()).unwrap_or("auto"));
 
     // Status header — same lines as the dialog card, reused as palette header.
     let base = resolve_base_url(&parsed.flags, profile);
@@ -2593,16 +2673,51 @@ fn launcher_palette(
     use crate::tui::PaletteEntry;
     let mut entries = Vec::new();
     if signed_in {
-        push_launch_entries(&mut entries, path, env, &last, model_line);
+        push_launch_entries(&mut entries, path, env, &last, &model_line);
     } else {
-        entries.push(PaletteEntry::new("login", "sign in / add key", "account", "Login / sign in"));
+        entries.push(PaletteEntry::new(
+            "login",
+            "sign in / add key",
+            "account",
+            "Login / sign in",
+        ));
     }
-    entries.push(PaletteEntry::new("model…", "switch session default", "configure", "Switch model"));
-    entries.push(PaletteEntry::new("account…", "switch profile", "configure", "Switch account"));
-    entries.push(PaletteEntry::new("key…", "switch API key", "configure", "Switch key"));
-    entries.push(PaletteEntry::new("install…", "install a coding agent", "configure", "Install agent"));
-    entries.push(PaletteEntry::new("config…", "accounts · keys · agent", "configure", "Config"));
-    entries.push(PaletteEntry::new("quit", "esc works too", "configure", "Quit"));
+    entries.push(PaletteEntry::new(
+        "model…",
+        "switch session default",
+        "configure",
+        "Switch model",
+    ));
+    entries.push(PaletteEntry::new(
+        "account…",
+        "switch profile",
+        "configure",
+        "Switch account",
+    ));
+    entries.push(PaletteEntry::new(
+        "key…",
+        "switch API key",
+        "configure",
+        "Switch key",
+    ));
+    entries.push(PaletteEntry::new(
+        "install…",
+        "install a coding agent",
+        "configure",
+        "Install agent",
+    ));
+    entries.push(PaletteEntry::new(
+        "config…",
+        "accounts · keys · agent",
+        "configure",
+        "Config",
+    ));
+    entries.push(PaletteEntry::new(
+        "quit",
+        "esc works too",
+        "configure",
+        "Quit",
+    ));
     (header, entries)
 }
 
@@ -2618,7 +2733,7 @@ fn launcher_palette(
     let profile = cfg.profiles.get(&cfg.active_profile);
     let signed_in = launcher_signed_in(path, parsed, env);
     let last = launcher_last_tool(path, parsed, env);
-    let model_line = display_model_id(profile.map(|p| p.default_model()).unwrap_or("auto"));
+    let model_line = session_model_label(profile.map(|p| p.default_model()).unwrap_or("auto"));
     let header = vec![
         format!(
             "account  {}  {}",
@@ -2656,18 +2771,58 @@ fn launcher_palette(
                 format!("Launch {last}"),
             ));
             for (id, label) in present.into_iter().filter(|(id, _)| *id != last.as_str()) {
-                entries.push(InlineEntry::new(id, label, "launch", format!("Launch {id}")));
+                entries.push(InlineEntry::new(
+                    id,
+                    label,
+                    "launch",
+                    format!("Launch {id}"),
+                ));
             }
         }
     } else {
-        entries.push(InlineEntry::new("login", "sign in / add key", "account", "Login / sign in"));
+        entries.push(InlineEntry::new(
+            "login",
+            "sign in / add key",
+            "account",
+            "Login / sign in",
+        ));
     }
-    entries.push(InlineEntry::new("model…", "switch session default", "configure", "Switch model"));
-    entries.push(InlineEntry::new("account…", "switch profile", "configure", "Switch account"));
-    entries.push(InlineEntry::new("key…", "switch API key", "configure", "Switch key"));
-    entries.push(InlineEntry::new("install…", "install a coding agent", "configure", "Install agent"));
-    entries.push(InlineEntry::new("config…", "accounts · keys · agent", "configure", "Config"));
-    entries.push(InlineEntry::new("quit", "esc works too", "configure", "Quit"));
+    entries.push(InlineEntry::new(
+        "model…",
+        "switch session default",
+        "configure",
+        "Switch model",
+    ));
+    entries.push(InlineEntry::new(
+        "account…",
+        "switch profile",
+        "configure",
+        "Switch account",
+    ));
+    entries.push(InlineEntry::new(
+        "key…",
+        "switch API key",
+        "configure",
+        "Switch key",
+    ));
+    entries.push(InlineEntry::new(
+        "install…",
+        "install a coding agent",
+        "configure",
+        "Install agent",
+    ));
+    entries.push(InlineEntry::new(
+        "config…",
+        "accounts · keys · agent",
+        "configure",
+        "Config",
+    ));
+    entries.push(InlineEntry::new(
+        "quit",
+        "esc works too",
+        "configure",
+        "Quit",
+    ));
     (header, entries)
 }
 
@@ -2676,15 +2831,13 @@ fn run_menu(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, 
     let dumping = tui_wants_dump(parsed, env);
 
     if dumping {
-        let (header, entries) =
-            launcher_palette(&path, parsed, env, &mut CreditsCache::fresh());
+        let (header, entries) = launcher_palette(&path, parsed, env, &mut CreditsCache::fresh());
         print!("{}", tui_dump_palette(entries, header, env));
         return Ok(0);
     }
 
     if !term::is_interactive() {
-        let (_, entries) =
-            launcher_palette(&path, parsed, env, &mut CreditsCache::fresh());
+        let (_, entries) = launcher_palette(&path, parsed, env, &mut CreditsCache::fresh());
         println!(
             "{}",
             entries
@@ -2770,14 +2923,22 @@ fn push_launch_entries(
         format!("Launch {last}"),
     ));
     for (id, label) in present.into_iter().filter(|(id, _)| *id != last.as_str()) {
-        entries.push(PaletteEntry::new(id, label, "launch", format!("Launch {id}")));
+        entries.push(PaletteEntry::new(
+            id,
+            label,
+            "launch",
+            format!("Launch {id}"),
+        ));
     }
 }
 
 fn install_agent_dialog(path: &PathBuf, env: &BTreeMap<String, String>) -> Result<i32, String> {
     let missing = missing_agents(env, |id| tool_command_for(path, id));
     if missing.is_empty() {
-        println!("{}", term::dim("Every known coding agent is already on PATH."));
+        println!(
+            "{}",
+            term::dim("Every known coding agent is already on PATH.")
+        );
         return Ok(0);
     }
     let labels: Vec<String> = missing

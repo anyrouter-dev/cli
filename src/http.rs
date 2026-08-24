@@ -121,12 +121,33 @@ pub struct CatalogModel {
 }
 
 pub fn fetch_models(base_url: &str, api_key: Option<&str>) -> Result<Vec<CatalogModel>, String> {
-    let url = join_api(base_url, "/v1/models?privacy=0");
+    fetch_models_sorted(base_url, api_key, "usage")
+}
+
+pub fn fetch_models_sorted(
+    base_url: &str,
+    api_key: Option<&str>,
+    sort: &str,
+) -> Result<Vec<CatalogModel>, String> {
+    let path = format!("/v1/models?privacy=0&sort={sort}");
+    let url = join_api(base_url, &path);
     let (status, body) = http_get(&url, api_key)?;
     if !(200..300).contains(&status) {
         return Err(format!("Could not fetch models (HTTP {status})."));
     }
     parse_models_body(&body)
+}
+
+/// First catalog id from a `sort=usage` list (7-day request volume).
+pub fn most_used_model_id(models: &[CatalogModel]) -> Option<String> {
+    models.iter().find_map(|m| {
+        let id = crate::spawn::catalog_model_id(&m.id);
+        if id.is_empty() || crate::spawn::is_auto_model(&id) {
+            None
+        } else {
+            Some(id)
+        }
+    })
 }
 
 fn parse_models_body(body: &str) -> Result<Vec<CatalogModel>, String> {
@@ -499,6 +520,23 @@ mod tests {
     }
 
     #[test]
+    fn parse_models_reads_context_and_most_used_is_first() {
+        let models = parse_models_body(
+            r#"{"data":[
+                {"id":"stealth/ox-alpha","context_length":1000000},
+                {"id":"openai/gpt-5.4-mini","context_length":128000}
+            ]}"#,
+        )
+        .unwrap();
+        assert_eq!(models[0].id, "stealth/ox-alpha");
+        assert_eq!(models[0].context_length, Some(1_000_000));
+        assert_eq!(
+            most_used_model_id(&models).as_deref(),
+            Some("stealth/ox-alpha")
+        );
+    }
+
+    #[test]
     fn keys_newest_first_orders_by_created_at() {
         let keys = vec![
             RemoteKey {
@@ -531,10 +569,7 @@ mod tests {
         ];
         let sorted = keys_newest_first(keys);
         assert_eq!(
-            sorted
-                .iter()
-                .map(|k| k.name.as_str())
-                .collect::<Vec<_>>(),
+            sorted.iter().map(|k| k.name.as_str()).collect::<Vec<_>>(),
             vec!["new", "old", "undated"]
         );
     }

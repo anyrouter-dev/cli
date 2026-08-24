@@ -6,6 +6,10 @@ use std::process::{Command, Stdio};
 use crate::config::{Profile, YamlValue, DEFAULT_BASE_URL, DEFAULT_PRESET, DEFAULT_TIMEOUT_MS};
 
 pub const PI_DEFAULT_MODEL: &str = "anthropic/claude-sonnet-4.6";
+/// Claude Code 1M-context suffix. Claude strips it before the gateway; other
+/// agents must never send it (Pi/Codex 404 on `id[1m]`).
+pub const CLAUDE_1M_SUFFIX: &str = "[1m]";
+const MIN_1M_CONTEXT: i64 = 1_000_000;
 
 const REASONING_LEVELS: &[&str] = &["minimal", "low", "medium", "high", "xhigh", "max"];
 const CLAUDE_LEVELS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
@@ -325,7 +329,10 @@ pub fn build_tool_env(input: BuildToolEnvInput<'_>) -> BTreeMap<String, String> 
         input.profile.timeout_ms().to_string(),
     );
     if let Some(model_env) = &input.tool.model_env {
-        env.insert(model_env.clone(), input.model.to_string());
+        env.insert(
+            model_env.clone(),
+            model_id_for_tool(input.tool_name, input.model, input.context_window),
+        );
     }
     if let Some(effort) = input.effort {
         env.insert("ANYROUTER_EFFORT".into(), effort.to_string());
@@ -354,10 +361,11 @@ pub fn build_tool_env(input: BuildToolEnvInput<'_>) -> BTreeMap<String, String> 
             "$schema": "https://opencode.ai/config.json",
             "provider": { "anyrouter": provider.clone() }
         });
-        if !input.model.is_empty() && input.model != "auto" {
-            provider["models"][input.model] = serde_json::json!({ "name": input.model });
+        let catalog = catalog_model_id(input.model);
+        if !catalog.is_empty() && !is_auto_model(&catalog) {
+            provider["models"][&catalog] = serde_json::json!({ "name": catalog });
             config["provider"]["anyrouter"] = provider;
-            config["model"] = serde_json::json!(format!("anyrouter/{}", input.model));
+            config["model"] = serde_json::json!(format!("anyrouter/{catalog}"));
         }
         env.insert(
             "OPENCODE_CONFIG_CONTENT".into(),
@@ -367,7 +375,7 @@ pub fn build_tool_env(input: BuildToolEnvInput<'_>) -> BTreeMap<String, String> 
     if input.tool_name == "claude" {
         env.insert(
             "ANTHROPIC_MODEL".into(),
-            display_model_id(input.model).to_string(),
+            model_id_for_tool("claude", input.model, input.context_window),
         );
         env.insert(
             "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY".into(),
@@ -387,8 +395,10 @@ pub fn build_tool_env(input: BuildToolEnvInput<'_>) -> BTreeMap<String, String> 
         let alias = |slot: &Option<String>, default: &str| -> String {
             let explicit = slot.as_deref().map(str::trim).filter(|s| !s.is_empty());
             match (pinned, explicit) {
-                (Some(id), None) => id.to_string(),
-                _ => default.to_string(),
+                (Some(id), None) => model_id_for_tool("claude", id, input.context_window),
+                (None, Some(id)) => model_id_for_tool("claude", id, None),
+                (Some(_), Some(id)) => model_id_for_tool("claude", id, None),
+                (None, None) => default.to_string(),
             }
         };
         let haiku = alias(&input.profile.claude_haiku, input.profile.claude_haiku());
@@ -406,6 +416,9 @@ pub fn build_tool_env(input: BuildToolEnvInput<'_>) -> BTreeMap<String, String> 
             alias(&input.profile.claude_fable, input.profile.claude_fable()),
         );
         env.insert("CLAUDE_CODE_SUBAGENT_MODEL".into(), haiku);
+        if !is_auto_model(input.model) && claude_wants_1m(input.context_window) {
+            env.insert("CLAUDE_CODE_AUTO_COMPACT_WINDOW".into(), "1000000".into());
+        }
         // Label each picker entry with its role; otherwise four identical IDs
         // all render as "Custom <Alias> model".
         for (key, value) in [
@@ -428,7 +441,6 @@ pub fn build_tool_env(input: BuildToolEnvInput<'_>) -> BTreeMap<String, String> 
             }
         }
     }
-    let _ = input.context_window;
     let _ = input.model_map;
     env
 }
@@ -444,21 +456,63 @@ pub fn effort_args_for(tool_name: &str, effort: Option<&str>) -> Vec<String> {
 }
 
 pub fn is_auto_model(model: &str) -> bool {
-    let value = sanitize_model_id(model);
+    let value = catalog_model_id(model);
     value.is_empty() || value == "auto" || value == "anyrouter/auto"
 }
 
-pub fn display_model_id(model: &str) -> &str {
-    if is_auto_model(model) {
-        "anyrouter/auto"
+/// Catalog id for display and config. Auto is `anyrouter/auto`.
+pub fn display_model_id(model: &str) -> String {
+    let id = catalog_model_id(model);
+    if is_auto_model(&id) {
+        "anyrouter/auto".into()
     } else {
-        model
+        id
     }
 }
 
-/// Strip CSI color/bold sequences (and dangling `[1m` tails if ESC was already
-/// dropped). A TUI-copied id like `stealth/ox-alpha[1m` 404s at the gateway.
+/// Launcher / settings label: auto means "pick most used", not a stored id.
+pub fn session_model_label(model: &str) -> String {
+    if is_auto_model(model) {
+        "auto  ·  most used".into()
+    } else {
+        catalog_model_id(model)
+    }
+}
+
+pub fn claude_wants_1m(context_window: Option<i64>) -> bool {
+    match context_window {
+        Some(n) => n >= MIN_1M_CONTEXT,
+        // Unknown: Claude Code strips `[1m]` before the provider, so appending
+        // is safe for the gateway and unlocks 1M when the model supports it.
+        None => true,
+    }
+}
+
+/// Agent-specific model id. Claude Code gets `[1m]` (1M context). Pi/Codex/etc
+/// get the catalog id — the suffix 404s on the OpenAI-compatible API.
+pub fn model_id_for_tool(tool_name: &str, model: &str, context_window: Option<i64>) -> String {
+    let id = catalog_model_id(model);
+    if is_auto_model(&id) {
+        return display_model_id(&id);
+    }
+    if tool_name == "claude" && claude_wants_1m(context_window) {
+        if id.ends_with(CLAUDE_1M_SUFFIX) {
+            id
+        } else {
+            format!("{id}{CLAUDE_1M_SUFFIX}")
+        }
+    } else {
+        id
+    }
+}
+
+/// Strip CSI, Claude's `[1m]` 1M suffix, and dangling SGR tails (`[1m` without
+/// `]`). Config and non-Claude agents store/send the catalog id only.
 pub fn sanitize_model_id(model: &str) -> String {
+    catalog_model_id(model)
+}
+
+pub fn catalog_model_id(model: &str) -> String {
     let mut s = String::with_capacity(model.len());
     let mut chars = model.trim().chars().peekable();
     while let Some(c) = chars.next() {
@@ -475,6 +529,9 @@ pub fn sanitize_model_id(model: &str) -> String {
         }
         s.push(c);
     }
+    if let Some(stripped) = s.strip_suffix(CLAUDE_1M_SUFFIX) {
+        s = stripped.to_string();
+    }
     if let Some(i) = s.rfind('[') {
         let tail = &s[i + 1..];
         if tail.ends_with('m')
@@ -490,7 +547,7 @@ pub fn sanitize_model_id(model: &str) -> String {
 }
 
 pub fn pi_resolved_model(model: &str) -> String {
-    let s = sanitize_model_id(model);
+    let s = catalog_model_id(model);
     if is_auto_model(&s) {
         PI_DEFAULT_MODEL.to_string()
     } else {
@@ -592,13 +649,14 @@ pub fn model_args_for(tool_name: &str, model: &str, model_mode: &str) -> Vec<Str
         // (`anyrouter/stealth/ox-alpha` 404s — the catalog id is `stealth/ox-alpha`).
         return vec!["--model".into(), id];
     }
-    if model.is_empty() || model == "auto" || model_mode == "auto" {
+    let catalog = catalog_model_id(model);
+    if catalog.is_empty() || is_auto_model(&catalog) || model_mode == "auto" {
         return vec![];
     }
     if tool_name != "codex" {
         return vec![];
     }
-    vec!["-c".into(), format!("model=\"{model}\"")]
+    vec!["-c".into(), format!("model=\"{catalog}\"")]
 }
 
 pub fn provider_args_for(tool_name: &str, profile: &Profile) -> Vec<String> {
@@ -713,7 +771,7 @@ mod tests {
     }
 
     #[test]
-    fn sanitize_model_id_strips_ansi_and_dangling_sgr() {
+    fn sanitize_model_id_strips_ansi_and_claude_1m_suffix() {
         assert_eq!(sanitize_model_id("stealth/ox-alpha"), "stealth/ox-alpha");
         assert_eq!(
             sanitize_model_id("stealth/ox-alpha\u{1b}[1m"),
@@ -721,11 +779,48 @@ mod tests {
         );
         assert_eq!(sanitize_model_id("stealth/ox-alpha[1m"), "stealth/ox-alpha");
         assert_eq!(
+            sanitize_model_id("stealth/ox-alpha[1m]"),
+            "stealth/ox-alpha"
+        );
+        assert_eq!(
             sanitize_model_id("\u{1b}[1mstealth/ox-alpha\u{1b}[0m"),
             "stealth/ox-alpha"
         );
         assert_eq!(pi_resolved_model("anyrouter/auto"), PI_DEFAULT_MODEL);
         assert_eq!(pi_resolved_model("auto"), PI_DEFAULT_MODEL);
+        assert_eq!(
+            pi_resolved_model("stealth/ox-alpha[1m]"),
+            "stealth/ox-alpha"
+        );
+    }
+
+    #[test]
+    fn model_id_for_tool_appends_1m_only_for_claude() {
+        assert_eq!(
+            model_id_for_tool("claude", "stealth/ox-alpha", None),
+            "stealth/ox-alpha[1m]"
+        );
+        assert_eq!(
+            model_id_for_tool("claude", "stealth/ox-alpha[1m]", None),
+            "stealth/ox-alpha[1m]"
+        );
+        assert_eq!(
+            model_id_for_tool("claude", "stealth/ox-alpha", Some(200_000)),
+            "stealth/ox-alpha"
+        );
+        assert_eq!(
+            model_id_for_tool("claude", "stealth/ox-alpha", Some(1_000_000)),
+            "stealth/ox-alpha[1m]"
+        );
+        assert_eq!(
+            model_id_for_tool("pi", "stealth/ox-alpha[1m]", None),
+            "stealth/ox-alpha"
+        );
+        assert_eq!(
+            model_id_for_tool("codex", "stealth/ox-alpha[1m]", Some(1_000_000)),
+            "stealth/ox-alpha"
+        );
+        assert_eq!(model_id_for_tool("claude", "auto", None), "anyrouter/auto");
     }
 
     #[test]
@@ -792,7 +887,12 @@ mod tests {
         });
         assert_eq!(
             env.get("ANTHROPIC_MODEL").map(String::as_str),
-            Some("stealth/ox-alpha")
+            Some("stealth/ox-alpha[1m]")
+        );
+        assert_eq!(
+            env.get("CLAUDE_CODE_AUTO_COMPACT_WINDOW")
+                .map(String::as_str),
+            Some("1000000")
         );
         // Every unset alias slot follows the pinned model so nothing
         // (subagents, automatic fallback) silently falls back to another model.
@@ -805,7 +905,7 @@ mod tests {
         ] {
             assert_eq!(
                 env.get(key).map(String::as_str),
-                Some("stealth/ox-alpha"),
+                Some("stealth/ox-alpha[1m]"),
                 "{key} should follow the pinned model"
             );
         }
@@ -827,8 +927,9 @@ mod tests {
             model_map: None,
         });
         assert_eq!(
-            env.get("ANTHROPIC_DEFAULT_SONNET_MODEL").map(String::as_str),
-            Some("z-ai/glm-4.7-flash")
+            env.get("ANTHROPIC_DEFAULT_SONNET_MODEL")
+                .map(String::as_str),
+            Some("z-ai/glm-4.7-flash[1m]")
         );
         for key in [
             "ANTHROPIC_DEFAULT_HAIKU_MODEL",
@@ -838,7 +939,7 @@ mod tests {
         ] {
             assert_eq!(
                 env.get(key).map(String::as_str),
-                Some("stealth/ox-alpha"),
+                Some("stealth/ox-alpha[1m]"),
                 "{key} should follow the pinned model"
             );
         }
@@ -867,11 +968,11 @@ mod tests {
         );
         assert_eq!(
             env.get("ANTHROPIC_DEFAULT_HAIKU_MODEL").map(String::as_str),
-            Some("z-ai/glm-4.7-flash")
+            Some("z-ai/glm-4.7-flash[1m]")
         );
         assert_eq!(
             env.get("CLAUDE_CODE_SUBAGENT_MODEL").map(String::as_str),
-            Some("z-ai/glm-4.7-flash")
+            Some("z-ai/glm-4.7-flash[1m]")
         );
         assert_eq!(
             env.get("ANYROUTER_MODEL_MODE").map(String::as_str),
@@ -971,6 +1072,10 @@ mod tests {
         );
         assert_eq!(
             model_args_for("pi", "stealth/ox-alpha[1m", "concrete"),
+            vec!["--model".to_string(), "stealth/ox-alpha".to_string()]
+        );
+        assert_eq!(
+            model_args_for("pi", "stealth/ox-alpha[1m]", "concrete"),
             vec!["--model".to_string(), "stealth/ox-alpha".to_string()]
         );
         assert_eq!(
