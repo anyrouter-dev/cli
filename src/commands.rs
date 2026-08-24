@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 use crate::auth::acquire_api_key;
 use crate::config::{
@@ -83,12 +84,42 @@ impl InlineEntry {
 fn tui_palette_select(
     header: Vec<String>,
     entries: Vec<crate::tui::PaletteEntry>,
+    on_idle: impl FnMut(&mut crate::tui::PaletteState),
 ) -> Result<Option<usize>, String> {
-    crate::tui::run_palette_select(header, entries)
+    crate::tui::run_palette_select_idle(header, entries, on_idle)
 }
 
 /// No fullscreen TUI (non-native build): the palette degrades to the inline
 /// numbered-list picker — same entries, plain prompts.
+#[cfg(feature = "native")]
+fn pick_palette_action(
+    header: Vec<String>,
+    entries: Vec<crate::tui::PaletteEntry>,
+    cache: &Arc<Mutex<CreditsCache>>,
+) -> Result<Option<usize>, String> {
+    let tick_cache = cache.clone();
+    let mut seen = 0u64;
+    tui_palette_select(header, entries, move |state| {
+        let Ok(credits) = tick_cache.lock() else {
+            return;
+        };
+        if credits.gen <= seen {
+            return;
+        }
+        seen = credits.gen;
+        patch_palette_header(state, &credits);
+    })
+}
+
+#[cfg(not(feature = "native"))]
+fn pick_palette_action(
+    header: Vec<String>,
+    entries: Vec<InlineEntry>,
+    _cache: &Arc<Mutex<CreditsCache>>,
+) -> Result<Option<usize>, String> {
+    tui_palette_select(header, entries)
+}
+
 #[cfg(not(feature = "native"))]
 fn tui_palette_select(
     _header: Vec<String>,
@@ -2623,19 +2654,28 @@ fn launcher_palette(
 ) -> (Vec<String>, Vec<crate::tui::PaletteEntry>) {
     let cfg = load_config_if_present(path).unwrap_or_default();
     let profile = cfg.profiles.get(&cfg.active_profile);
-    let signed_in = launcher_signed_in(path, parsed, env);
-    let last = launcher_last_tool(path, parsed, env);
+    let signed_in = resolve_api_key(&parsed.flags, env, profile).is_some();
+    let command_for = |id: &str| {
+        crate::spawn::resolve_tool(Some(&cfg), id)
+            .map(|t| t.command)
+            .unwrap_or_else(|_| id.to_string())
+    };
+    let present = available_agents(env, command_for);
+    let last = cfg
+        .last_tool
+        .clone()
+        .or_else(|| profile.and_then(|p| p.default_tool.clone()))
+        .or_else(|| get_string_flag(&parsed.flags, "tool"))
+        .or_else(|| present.first().map(|(id, _)| (*id).to_string()))
+        .unwrap_or_else(|| "claude".into());
     let model_line = session_model_label(profile.map(|p| p.default_model()).unwrap_or("auto"));
 
-    // Status header — same lines as the dialog card, reused as palette header.
-    let base = resolve_base_url(&parsed.flags, profile);
+    // Status header — local data only. Credits/identity fill in from the
+    // background fetch via the palette idle tick (do not block first paint).
     let key = resolve_api_key(&parsed.flags, env, profile);
-    let credits_line = if tui_wants_dump(parsed, env) || !term::is_interactive() {
-        "credits  -".to_string()
-    } else {
-        format!("credits  {}", credits.get(&base, key.as_deref()))
-    };
-    let account_line = if tui_wants_dump(parsed, env) || !term::is_interactive() {
+    let dump_or_pipe = tui_wants_dump(parsed, env) || !term::is_interactive();
+    let credits_line = format!("credits  {}", credits.peek_credits());
+    let account_line = if dump_or_pipe {
         format!(
             "account  {}  {}",
             cfg.active_profile,
@@ -2645,22 +2685,18 @@ fn launcher_palette(
                 "(not signed in)".into()
             }
         )
+    } else if let Some(label) = credits.peek_identity().map(|me| me.display_label()) {
+        format!("account  {label}")
     } else {
-        let identity = credits
-            .identity(&base, key.as_deref())
-            .map(|me| me.display_label());
-        match identity {
-            Some(label) => format!("account  {label}"),
-            None => format!(
-                "account  {}  {}",
-                cfg.active_profile,
-                if signed_in {
-                    mask_api_key(profile.and_then(|p| p.api_key.as_deref()))
-                } else {
-                    "(not signed in)".into()
-                }
-            ),
-        }
+        format!(
+            "account  {}  {}",
+            cfg.active_profile,
+            if signed_in {
+                mask_api_key(key.as_deref())
+            } else {
+                "(not signed in)".into()
+            }
+        )
     };
     let header = vec![
         account_line,
@@ -2673,7 +2709,7 @@ fn launcher_palette(
     use crate::tui::PaletteEntry;
     let mut entries = Vec::new();
     if signed_in {
-        push_launch_entries(&mut entries, path, env, &last, &model_line);
+        push_launch_entries(&mut entries, &present, &last, &model_line);
     } else {
         entries.push(PaletteEntry::new(
             "login",
@@ -2852,10 +2888,21 @@ fn run_menu(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, 
     // Loop until Quit or a coding-agent launch takes over the process.
     // Fullscreen-capable terminals get the command palette; dumb TTYs get
     // the same entries as an inline numbered prompt (Direction D fallback).
-    let mut credits = CreditsCache::fresh();
+    let cache = Arc::new(Mutex::new(CreditsCache::fresh()));
+    #[cfg(feature = "native")]
+    if term::is_interactive() {
+        let cfg = load_config_if_present(&path).unwrap_or_default();
+        let profile = cfg.profiles.get(&cfg.active_profile);
+        let base = resolve_base_url(&parsed.flags, profile);
+        let key = resolve_api_key(&parsed.flags, env, profile);
+        kick_credits_refresh(&cache, base, key);
+    }
     let inline = !launcher_uses_palette();
     loop {
-        let (header, entries) = launcher_palette(&path, parsed, env, &mut credits);
+        let (header, entries) = {
+            let mut credits = cache.lock().unwrap_or_else(|p| p.into_inner());
+            launcher_palette(&path, parsed, env, &mut credits)
+        };
         let idx = if inline {
             let labels: Vec<String> = entries
                 .iter()
@@ -2873,7 +2920,7 @@ fn run_menu(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, 
                 Err(err) => return Err(err),
             }
         } else {
-            tui_palette_select(header, entries.clone())?
+            pick_palette_action(header, entries.clone(), &cache)?
         };
         let Some(idx) = idx else {
             return Ok(0);
@@ -2895,13 +2942,11 @@ enum LauncherNext {
 #[cfg(feature = "native")]
 fn push_launch_entries(
     entries: &mut Vec<crate::tui::PaletteEntry>,
-    path: &PathBuf,
-    env: &BTreeMap<String, String>,
+    present: &[(&'static str, &'static str)],
     last: &str,
     model_line: &str,
 ) {
     use crate::tui::PaletteEntry;
-    let present = available_agents(env, |id| tool_command_for(path, id));
     if present.is_empty() {
         entries.push(PaletteEntry::new(
             "install an agent…",
@@ -2922,7 +2967,11 @@ fn push_launch_entries(
         "launch",
         format!("Launch {last}"),
     ));
-    for (id, label) in present.into_iter().filter(|(id, _)| *id != last.as_str()) {
+    for (id, label) in present
+        .iter()
+        .copied()
+        .filter(|(id, _)| *id != last.as_str())
+    {
         entries.push(PaletteEntry::new(
             id,
             label,
@@ -3001,6 +3050,7 @@ struct CreditsCache {
     value: Option<Result<String, ()>>,
     me: Option<Result<crate::http::MeInfo, ()>>,
     fetched_at: Option<std::time::Instant>,
+    gen: u64,
 }
 
 const CREDITS_TTL: std::time::Duration = std::time::Duration::from_secs(300);
@@ -3011,6 +3061,22 @@ impl CreditsCache {
             value: None,
             me: None,
             fetched_at: None,
+            gen: 0,
+        }
+    }
+
+    fn peek_credits(&self) -> String {
+        match &self.value {
+            Some(Ok(s)) => s.clone(),
+            Some(Err(())) => "(unknown)".into(),
+            None => "-".into(),
+        }
+    }
+
+    fn peek_identity(&self) -> Option<crate::http::MeInfo> {
+        match &self.me {
+            Some(Ok(me)) => Some(me.clone()),
+            _ => None,
         }
     }
 
@@ -3045,24 +3111,49 @@ impl CreditsCache {
             }
         }
         self.fetched_at = Some(std::time::Instant::now());
+        self.gen = self.gen.saturating_add(1);
     }
 
     /// Return the cached credits display string, refreshing when stale.
     fn get(&mut self, base_url: &str, api_key: Option<&str>) -> String {
         self.refresh(base_url, api_key);
-        match &self.value {
-            Some(Ok(s)) => s.clone(),
-            _ => "(unknown)".into(),
-        }
+        self.peek_credits()
     }
 
     /// Cached identity, refreshing when stale. `None` when unknown.
     fn identity(&mut self, base_url: &str, api_key: Option<&str>) -> Option<crate::http::MeInfo> {
         self.refresh(base_url, api_key);
-        match &self.me {
-            Some(Ok(me)) => Some(me.clone()),
-            _ => None,
+        self.peek_identity()
+    }
+}
+
+#[cfg(feature = "native")]
+fn kick_credits_refresh(cache: &Arc<Mutex<CreditsCache>>, base: String, key: Option<String>) {
+    let Some(key) = key.filter(|s| !s.is_empty()) else {
+        return;
+    };
+    let cache = cache.clone();
+    let _ = std::thread::Builder::new()
+        .name("anyr-credits".into())
+        .spawn(move || {
+            let mut tmp = CreditsCache::fresh();
+            tmp.refresh(&base, Some(&key));
+            if let Ok(mut slot) = cache.lock() {
+                *slot = tmp;
+            }
+        });
+}
+
+#[cfg(feature = "native")]
+fn patch_palette_header(state: &mut crate::tui::PaletteState, credits: &CreditsCache) {
+    if let Some(me) = credits.peek_identity() {
+        if let Some(line) = state.header.first_mut() {
+            *line = format!("account  {}", me.display_label());
         }
+    }
+    let shown = credits.peek_credits();
+    if let Some(line) = state.header.iter_mut().find(|l| l.starts_with("credits")) {
+        *line = format!("credits  {shown}");
     }
 }
 

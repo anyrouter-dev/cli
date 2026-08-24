@@ -149,17 +149,78 @@ pub fn resolve_executable(command: &str) -> Option<String> {
     }
     #[cfg(feature = "native")]
     {
-        let finder = if cfg!(windows) { "where" } else { "which" };
-        let output = Command::new(finder).arg(command).output().ok()?;
-        if !output.status.success() {
-            return None;
+        thread_local! {
+            static HITS: std::cell::RefCell<std::collections::HashMap<String, Option<String>>> =
+                std::cell::RefCell::new(std::collections::HashMap::new());
         }
-        String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .next()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_string)
+        HITS.with(|hits| {
+            if let Some(cached) = hits.borrow().get(command) {
+                return cached.clone();
+            }
+            let found = find_on_path(command);
+            hits.borrow_mut().insert(command.to_string(), found.clone());
+            found
+        })
+    }
+}
+
+/// Walk `PATH` in-process. Spawning `which`/`where` six times delayed the launcher.
+#[cfg(feature = "native")]
+fn find_on_path(command: &str) -> Option<String> {
+    let path = std::env::var_os("PATH")?;
+    let exts: Vec<String> = if cfg!(windows) {
+        std::env::var_os("PATHEXT")
+            .map(|v| {
+                v.to_string_lossy()
+                    .split(';')
+                    .map(|s| s.to_string())
+                    .collect()
+            })
+            .unwrap_or_else(|| {
+                [".EXE", ".CMD", ".BAT", ".COM"]
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect()
+            })
+    } else {
+        Vec::new()
+    };
+    for dir in std::env::split_paths(&path) {
+        let direct = dir.join(command);
+        if is_runnable(&direct) {
+            return Some(direct.to_string_lossy().into_owned());
+        }
+        for ext in &exts {
+            if command.rsplit('.').next().is_some_and(|e| {
+                !e.is_empty() && e.eq_ignore_ascii_case(ext.trim_start_matches('.'))
+            }) {
+                continue;
+            }
+            let candidate = dir.join(format!("{command}{ext}"));
+            if is_runnable(&candidate) {
+                return Some(candidate.to_string_lossy().into_owned());
+            }
+        }
+    }
+    None
+}
+
+#[cfg(feature = "native")]
+fn is_runnable(path: &std::path::Path) -> bool {
+    let Ok(meta) = path.metadata() else {
+        return false;
+    };
+    if !meta.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        meta.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
     }
 }
 
@@ -246,6 +307,18 @@ mod tests {
             resolve_executable("./bin/claude").as_deref(),
             Some("./bin/claude")
         );
+    }
+
+    #[test]
+    fn resolve_executable_finds_a_real_binary() {
+        #[cfg(unix)]
+        {
+            let found = resolve_executable("true");
+            assert!(
+                found.as_deref().is_some_and(|p| p.ends_with("true")),
+                "expected true on PATH, got {found:?}"
+            );
+        }
     }
 
     #[test]

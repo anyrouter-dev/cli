@@ -133,32 +133,36 @@ pub fn run_menu_live(mut state: MenuState) -> Result<Outcome, String> {
     }
 }
 
-/// Whether the fullscreen TUI can run here: raw mode must be enterable and
-/// the terminal must not be `dumb`. Palette falls back to inline prompts on
-/// false — same contract as the non-native readline pickers.
+/// Whether the fullscreen TUI can run here. Do not enter raw mode as a probe —
+/// that freezes the terminal until the first draw if anything else blocks.
 pub fn can_use_fullscreen() -> bool {
     use std::io::IsTerminal;
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         return false;
     }
     let term = std::env::var("TERM").unwrap_or_default();
-    let dumb = matches!(
+    !matches!(
         term.as_str(),
         "" | "dumb" | "linux" | "vt100" | "vt102" | "vt220" | "ansi"
-    );
-    if dumb {
-        return false;
-    }
-    enable_raw_mode().is_ok()
+    )
 }
 
-pub fn run_palette_live(mut state: PaletteState) -> Result<Outcome, String> {
+pub fn run_palette_live(state: PaletteState) -> Result<Outcome, String> {
+    run_palette_live_with(state, |_| {})
+}
+
+/// Same as `run_palette_live`, plus an idle tick (credits header, etc.).
+pub fn run_palette_live_with(
+    mut state: PaletteState,
+    mut on_idle: impl FnMut(&mut PaletteState),
+) -> Result<Outcome, String> {
     let mut live = LiveTerminal::start()?;
     loop {
         live.terminal
             .draw(|f| render_palette(f, &state))
             .map_err(|e| e.to_string())?;
-        if !event::poll(Duration::from_millis(200)).map_err(|e| e.to_string())? {
+        if !event::poll(Duration::from_millis(50)).map_err(|e| e.to_string())? {
+            on_idle(&mut state);
             continue;
         }
         match event::read().map_err(|e| e.to_string())? {
