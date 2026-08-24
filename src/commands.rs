@@ -2019,8 +2019,10 @@ fn run_launch(
     profile.base_url = Some(base);
     let aliases_changed = apply_claude_alias_flags(&mut profile, parsed);
     let tool = resolve_tool(existing.as_ref(), tool_name)?;
-    let model = get_string_flag(&parsed.flags, "model")
-        .unwrap_or_else(|| profile.default_model().to_string());
+    let model = crate::spawn::sanitize_model_id(
+        &get_string_flag(&parsed.flags, "model")
+            .unwrap_or_else(|| profile.default_model().to_string()),
+    );
     let effort = normalize_effort(get_string_flag(&parsed.flags, "effort").as_deref())?;
     let model_mode = if is_auto_model(&model) {
         "auto"
@@ -2081,7 +2083,7 @@ fn run_launch(
     // Remember the model this launch used as the session default, so a bare
     // `{bin} claude` next time starts with it.
     if let Some(flag_model) = get_string_flag(&parsed.flags, "model") {
-        let id = display_model_id(&flag_model).to_string();
+        let id = display_model_id(&crate::spawn::sanitize_model_id(&flag_model)).to_string();
         if let Some(p) = cfg.profiles.get_mut(&cfg.active_profile) {
             p.default_model = Some(id);
         }

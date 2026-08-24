@@ -335,7 +335,7 @@ pub fn build_tool_env(input: BuildToolEnvInput<'_>) -> BTreeMap<String, String> 
         let model_id = pi_resolved_model(input.model);
         env.insert(
             "PI_MODELS_JSON".into(),
-            serde_json::to_string(&pi_models_config(&base, model_id))
+            serde_json::to_string(&pi_models_config(&base, &model_id))
                 .unwrap_or_else(|_| "{}".into()),
         );
     }
@@ -444,7 +444,7 @@ pub fn effort_args_for(tool_name: &str, effort: Option<&str>) -> Vec<String> {
 }
 
 pub fn is_auto_model(model: &str) -> bool {
-    let value = model.trim();
+    let value = sanitize_model_id(model);
     value.is_empty() || value == "auto" || value == "anyrouter/auto"
 }
 
@@ -456,11 +456,45 @@ pub fn display_model_id(model: &str) -> &str {
     }
 }
 
-pub fn pi_resolved_model(model: &str) -> &str {
-    if model.is_empty() || model == "auto" {
-        PI_DEFAULT_MODEL
+/// Strip CSI color/bold sequences (and dangling `[1m` tails if ESC was already
+/// dropped). A TUI-copied id like `stealth/ox-alpha[1m` 404s at the gateway.
+pub fn sanitize_model_id(model: &str) -> String {
+    let mut s = String::with_capacity(model.len());
+    let mut chars = model.trim().chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            if chars.peek() == Some(&'[') {
+                chars.next();
+                for n in chars.by_ref() {
+                    if n.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+        s.push(c);
+    }
+    if let Some(i) = s.rfind('[') {
+        let tail = &s[i + 1..];
+        if tail.ends_with('m')
+            && tail.len() > 1
+            && tail[..tail.len() - 1]
+                .bytes()
+                .all(|b| b.is_ascii_digit() || b == b';')
+        {
+            s.truncate(i);
+        }
+    }
+    s.trim().to_string()
+}
+
+pub fn pi_resolved_model(model: &str) -> String {
+    let s = sanitize_model_id(model);
+    if is_auto_model(&s) {
+        PI_DEFAULT_MODEL.to_string()
     } else {
-        model
+        s
     }
 }
 
@@ -498,8 +532,8 @@ pub fn prepare_pi_wrapper(
     let dir = pi_agent_dir(config_path);
     let model_id = pi_resolved_model(model);
     let base = tool_base_url(profile, tool);
-    let models = pi_models_config(&base, model_id);
-    write_pi_wrapper_files(&dir, &models, model_id)?;
+    let models = pi_models_config(&base, &model_id);
+    write_pi_wrapper_files(&dir, &models, &model_id)?;
     env.insert(
         "PI_CODING_AGENT_DIR".into(),
         dir.to_string_lossy().into_owned(),
@@ -553,9 +587,10 @@ fn write_pi_wrapper_files(
 pub fn model_args_for(tool_name: &str, model: &str, model_mode: &str) -> Vec<String> {
     if tool_name == "pi" {
         let id = pi_resolved_model(model);
-        // Pi strips a matching `--provider` prefix from `--model`. Prefix so
-        // ids like `anyrouter/free` survive as the AnyRouter model id.
-        return vec!["--model".into(), format!("anyrouter/{id}")];
+        // Official AnyRouter Pi guide: `pi --provider anyrouter --model "<catalog-id>"`.
+        // The provider is already `--provider anyrouter`; do not prefix it again
+        // (`anyrouter/stealth/ox-alpha` 404s — the catalog id is `stealth/ox-alpha`).
+        return vec!["--model".into(), id];
     }
     if model.is_empty() || model == "auto" || model_mode == "auto" {
         return vec![];
@@ -675,6 +710,22 @@ mod tests {
 
     fn profile() -> Profile {
         default_profile_for_env(None, Some("sk-ar-v1-secret"))
+    }
+
+    #[test]
+    fn sanitize_model_id_strips_ansi_and_dangling_sgr() {
+        assert_eq!(sanitize_model_id("stealth/ox-alpha"), "stealth/ox-alpha");
+        assert_eq!(
+            sanitize_model_id("stealth/ox-alpha\u{1b}[1m"),
+            "stealth/ox-alpha"
+        );
+        assert_eq!(sanitize_model_id("stealth/ox-alpha[1m"), "stealth/ox-alpha");
+        assert_eq!(
+            sanitize_model_id("\u{1b}[1mstealth/ox-alpha\u{1b}[0m"),
+            "stealth/ox-alpha"
+        );
+        assert_eq!(pi_resolved_model("anyrouter/auto"), PI_DEFAULT_MODEL);
+        assert_eq!(pi_resolved_model("auto"), PI_DEFAULT_MODEL);
     }
 
     #[test]
@@ -908,24 +959,27 @@ mod tests {
         );
         assert_eq!(
             model_args_for("pi", "z-ai/glm-4.7-flash", "concrete"),
-            vec![
-                "--model".to_string(),
-                "anyrouter/z-ai/glm-4.7-flash".to_string()
-            ]
+            vec!["--model".to_string(), "z-ai/glm-4.7-flash".to_string()]
         );
         assert_eq!(
             model_args_for("pi", "anyrouter/free", "concrete"),
-            vec![
-                "--model".to_string(),
-                "anyrouter/anyrouter/free".to_string()
-            ]
+            vec!["--model".to_string(), "anyrouter/free".to_string()]
+        );
+        assert_eq!(
+            model_args_for("pi", "stealth/ox-alpha", "concrete"),
+            vec!["--model".to_string(), "stealth/ox-alpha".to_string()]
+        );
+        assert_eq!(
+            model_args_for("pi", "stealth/ox-alpha[1m", "concrete"),
+            vec!["--model".to_string(), "stealth/ox-alpha".to_string()]
         );
         assert_eq!(
             model_args_for("pi", "auto", "auto"),
-            vec![
-                "--model".to_string(),
-                format!("anyrouter/{PI_DEFAULT_MODEL}")
-            ]
+            vec!["--model".to_string(), PI_DEFAULT_MODEL.to_string()]
+        );
+        assert_eq!(
+            model_args_for("pi", "anyrouter/auto", "auto"),
+            vec!["--model".to_string(), PI_DEFAULT_MODEL.to_string()]
         );
     }
 
