@@ -11,7 +11,9 @@ use crate::http::{
     create_key, delete_key, fetch_credits, fetch_keys, fetch_models, format_models_list,
     format_usage_report, is_active_key_row, reveal_key, validate_key,
 };
-use crate::install::ensure_tool_installed;
+use crate::install::{
+    agent_available, available_agents, ensure_tool_installed, missing_agents, KNOWN_AGENTS,
+};
 use crate::key::{
     load_config_if_present, mask_api_key, no_key_error, resolve_api_key, resolve_base_url,
 };
@@ -150,11 +152,8 @@ fn tui_settings_select(
         return Ok(None);
     }
     match crate::tui::run_settings_live(state)? {
-        outcome
-        @ (crate::tui::SettingsOutcome::Edit(_) | crate::tui::SettingsOutcome::Reset(_)) => {
-            Ok(Some(outcome))
-        }
         crate::tui::SettingsOutcome::Close | crate::tui::SettingsOutcome::Stay => Ok(None),
+        outcome => Ok(Some(outcome)),
     }
 }
 
@@ -1108,6 +1107,11 @@ enum SettingKind {
     Agent,
     AutoUpdate,
     Channel,
+    Install(&'static str),
+    ToolCommand(&'static str),
+    GatewayDiscovery,
+    /// Read-only mapping row.
+    Mapping,
 }
 
 fn run_config_tui(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, String> {
@@ -1123,8 +1127,14 @@ fn run_config_tui(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result
     #[cfg(feature = "native")]
     {
         if tui_wants_dump(parsed, env) {
-            let (state, _) =
-                config_settings_frame(parsed, env, &path, false, &mut CreditsCache::fresh());
+            let (state, _) = config_settings_frame(
+                parsed,
+                env,
+                &path,
+                false,
+                &mut CreditsCache::fresh(),
+                0,
+            );
             print!("{}", tui_dump_settings(state, env));
             return Ok(0);
         }
@@ -1138,12 +1148,27 @@ fn run_config_tui(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result
 /// list mapping row index → edit kind. `online` gates network (dump stays
 /// offline-deterministic).
 #[cfg(feature = "native")]
+fn settings_tab_names() -> Vec<String> {
+    let mut tabs = vec!["general".to_string()];
+    tabs.extend(KNOWN_AGENTS.iter().map(|(id, _)| (*id).to_string()));
+    tabs
+}
+
+fn tool_command_for(path: &PathBuf, id: &str) -> String {
+    let cfg = load_config_if_present(path);
+    resolve_tool(cfg.as_ref(), id)
+        .map(|t| t.command)
+        .unwrap_or_else(|_| id.to_string())
+}
+
+#[cfg(feature = "native")]
 fn config_settings_frame(
     parsed: &ParsedArgs,
     env: &BTreeMap<String, String>,
     path: &PathBuf,
     online: bool,
     cache: &mut CreditsCache,
+    tab: usize,
 ) -> (crate::tui::SettingsState, Vec<Option<SettingKind>>) {
     use crate::tui::{SettingRow, SettingsState, Tone};
 
@@ -1181,6 +1206,49 @@ fn config_settings_frame(
 
     let mut rows: Vec<SettingRow> = Vec::new();
     let mut kinds: Vec<Option<SettingKind>> = Vec::new();
+
+    let tabs = settings_tab_names();
+    let tab = tab.min(tabs.len().saturating_sub(1));
+    if tab == 0 {
+        fill_general_settings(
+            &mut rows,
+            &mut kinds,
+            path,
+            parsed,
+            env,
+            profile,
+            signed_in,
+            key.as_deref(),
+            account_value.clone(),
+            account_tone,
+            &cfg,
+        );
+    } else if let Some((id, label)) = KNOWN_AGENTS.get(tab - 1).copied() {
+        fill_agent_settings(&mut rows, &mut kinds, path, env, profile, id, label);
+    }
+
+    (
+        SettingsState::new("Config", header, rows).with_tabs(tabs, tab),
+        kinds,
+    )
+}
+
+#[cfg(feature = "native")]
+#[allow(clippy::too_many_arguments)]
+fn fill_general_settings(
+    rows: &mut Vec<crate::tui::SettingRow>,
+    kinds: &mut Vec<Option<SettingKind>>,
+    path: &PathBuf,
+    parsed: &ParsedArgs,
+    env: &BTreeMap<String, String>,
+    profile: Option<&Profile>,
+    signed_in: bool,
+    key: Option<&str>,
+    account_value: String,
+    account_tone: crate::tui::Tone,
+    cfg: &crate::config::Config,
+) {
+    use crate::tui::{SettingRow, Tone};
     fn section(rows: &mut Vec<SettingRow>, kinds: &mut Vec<Option<SettingKind>>, name: &str) {
         if !rows.is_empty() {
             rows.push(SettingRow::Gap);
@@ -1205,81 +1273,45 @@ fn config_settings_frame(
         kinds.push(Some(kind));
     }
 
-    section(&mut rows, &mut kinds, "Account");
+    section(rows, kinds, "Account");
     entry(
-        &mut rows,
-        &mut kinds,
+        rows,
+        kinds,
         "account",
-        account_value.clone(),
+        account_value,
         account_tone,
         SettingKind::Account,
     );
     let key_value = if signed_in {
-        mask_api_key(key.as_deref())
+        mask_api_key(key)
     } else {
         "(not set)".into()
     };
     entry(
-        &mut rows,
-        &mut kinds,
+        rows,
+        kinds,
         "api key",
         key_value,
         if signed_in { Tone::Normal } else { Tone::Muted },
         SettingKind::ApiKey,
     );
 
-    section(&mut rows, &mut kinds, "Model");
+    section(rows, kinds, "Model");
     entry(
-        &mut rows,
-        &mut kinds,
+        rows,
+        kinds,
         "default",
         display_model_id(profile.map(|p| p.default_model()).unwrap_or("auto")).into(),
         Tone::Model,
         SettingKind::Model("default"),
     );
-    for (label, slot) in [
-        ("haiku", "haiku"),
-        ("sonnet", "sonnet"),
-        ("opus", "opus"),
-        ("fable", "fable"),
-    ] {
-        let pinned = match slot {
-            "haiku" => nonempty_slot(&profile.and_then(|p| p.claude_haiku.clone())),
-            "sonnet" => nonempty_slot(&profile.and_then(|p| p.claude_sonnet.clone())),
-            "opus" => nonempty_slot(&profile.and_then(|p| p.claude_opus.clone())),
-            _ => nonempty_slot(&profile.and_then(|p| p.claude_fable.clone())),
-        };
-        let value = match &pinned {
-            Some(id) => display_model_id(id).to_string(),
-            None => format!("{} · default", slot_current_opt(profile, slot)),
-        };
-        let tone = if pinned.is_some() {
-            Tone::Model
-        } else {
-            Tone::Muted
-        };
-        let slot_static: &'static str = match slot {
-            "haiku" => "haiku",
-            "sonnet" => "sonnet",
-            "opus" => "opus",
-            _ => "fable",
-        };
-        entry(
-            &mut rows,
-            &mut kinds,
-            label,
-            value,
-            tone,
-            SettingKind::Model(slot_static),
-        );
-    }
 
-    section(&mut rows, &mut kinds, "Agent");
+    section(rows, kinds, "Agent");
     let agent = launcher_last_tool(path, parsed, env);
     let agent_pinned = profile.and_then(|p| p.default_tool.clone()).is_some();
     entry(
-        &mut rows,
-        &mut kinds,
+        rows,
+        kinds,
         "coding agent",
         agent,
         if agent_pinned {
@@ -1289,11 +1321,28 @@ fn config_settings_frame(
         },
         SettingKind::Agent,
     );
-
-    section(&mut rows, &mut kinds, "General");
+    let present = available_agents(env, |id| tool_command_for(path, id));
     entry(
-        &mut rows,
-        &mut kinds,
+        rows,
+        kinds,
+        "on PATH",
+        if present.is_empty() {
+            "none detected".into()
+        } else {
+            present.iter().map(|(id, _)| *id).collect::<Vec<_>>().join(", ")
+        },
+        if present.is_empty() {
+            Tone::Warn
+        } else {
+            Tone::Good
+        },
+        SettingKind::Mapping,
+    );
+
+    section(rows, kinds, "General");
+    entry(
+        rows,
+        kinds,
         "auto-update",
         if cfg.auto_update() {
             "enabled".into()
@@ -1308,15 +1357,185 @@ fn config_settings_frame(
         SettingKind::AutoUpdate,
     );
     entry(
-        &mut rows,
-        &mut kinds,
+        rows,
+        kinds,
         "update channel",
         cfg.channel().into(),
         Tone::Normal,
         SettingKind::Channel,
     );
+}
 
-    (SettingsState::new("Config", header, rows), kinds)
+#[cfg(feature = "native")]
+fn fill_agent_settings(
+    rows: &mut Vec<crate::tui::SettingRow>,
+    kinds: &mut Vec<Option<SettingKind>>,
+    path: &PathBuf,
+    env: &BTreeMap<String, String>,
+    profile: Option<&Profile>,
+    id: &'static str,
+    label: &str,
+) {
+    use crate::tui::{SettingRow, Tone};
+    fn section(rows: &mut Vec<SettingRow>, kinds: &mut Vec<Option<SettingKind>>, name: &str) {
+        if !rows.is_empty() {
+            rows.push(SettingRow::Gap);
+            kinds.push(None);
+        }
+        rows.push(SettingRow::Section(name.into()));
+        kinds.push(None);
+    }
+    fn entry(
+        rows: &mut Vec<SettingRow>,
+        kinds: &mut Vec<Option<SettingKind>>,
+        label: &str,
+        value: String,
+        tone: Tone,
+        kind: SettingKind,
+    ) {
+        rows.push(SettingRow::Entry {
+            label: label.into(),
+            value,
+            tone,
+        });
+        kinds.push(Some(kind));
+    }
+
+    let cfg = load_config_if_present(path);
+    let tool = resolve_tool(cfg.as_ref(), id).unwrap_or_else(|_| {
+        crate::spawn::resolve_tool(None, id).expect("known agent")
+    });
+    let present = agent_available(id, &tool.command, env);
+
+    section(rows, kinds, label);
+    entry(
+        rows,
+        kinds,
+        "status",
+        if present {
+            "on PATH".into()
+        } else {
+            "not installed".into()
+        },
+        if present { Tone::Good } else { Tone::Warn },
+        SettingKind::Install(id),
+    );
+    entry(
+        rows,
+        kinds,
+        "command",
+        tool.command.clone(),
+        Tone::Normal,
+        SettingKind::ToolCommand(id),
+    );
+    let hint = crate::install::tool_hint(id);
+    entry(
+        rows,
+        kinds,
+        "install",
+        if present {
+            "reinstall / update".into()
+        } else {
+            hint.map(|h| h.install.to_string())
+                .unwrap_or_else(|| "install".into())
+        },
+        if present { Tone::Muted } else { Tone::Warn },
+        SettingKind::Install(id),
+    );
+
+    section(rows, kinds, "Mapping");
+    entry(
+        rows,
+        kinds,
+        "base URL env",
+        tool.base_url_env.clone(),
+        Tone::Muted,
+        SettingKind::Mapping,
+    );
+    entry(
+        rows,
+        kinds,
+        "auth env",
+        tool.auth_env.clone(),
+        Tone::Muted,
+        SettingKind::Mapping,
+    );
+    entry(
+        rows,
+        kinds,
+        "model env",
+        tool.model_env.clone().unwrap_or_else(|| "(none)".into()),
+        Tone::Muted,
+        SettingKind::Mapping,
+    );
+    entry(
+        rows,
+        kinds,
+        "URL suffix",
+        if tool.base_suffix.is_empty() {
+            "(none)".into()
+        } else {
+            tool.base_suffix.clone()
+        },
+        Tone::Muted,
+        SettingKind::Mapping,
+    );
+
+    if id == "claude" {
+        section(rows, kinds, "Claude aliases");
+        for (slot_label, slot) in [
+            ("haiku", "haiku"),
+            ("sonnet", "sonnet"),
+            ("opus", "opus"),
+            ("fable", "fable"),
+        ] {
+            let pinned = match slot {
+                "haiku" => nonempty_slot(&profile.and_then(|p| p.claude_haiku.clone())),
+                "sonnet" => nonempty_slot(&profile.and_then(|p| p.claude_sonnet.clone())),
+                "opus" => nonempty_slot(&profile.and_then(|p| p.claude_opus.clone())),
+                _ => nonempty_slot(&profile.and_then(|p| p.claude_fable.clone())),
+            };
+            let value = match &pinned {
+                Some(mid) => display_model_id(mid).to_string(),
+                None => format!("{} · default", slot_current_opt(profile, slot)),
+            };
+            let tone = if pinned.is_some() {
+                Tone::Model
+            } else {
+                Tone::Muted
+            };
+            let slot_static: &'static str = match slot {
+                "haiku" => "haiku",
+                "sonnet" => "sonnet",
+                "opus" => "opus",
+                _ => "fable",
+            };
+            entry(
+                rows,
+                kinds,
+                slot_label,
+                value,
+                tone,
+                SettingKind::Model(slot_static),
+            );
+        }
+        entry(
+            rows,
+            kinds,
+            "gateway discovery",
+            if tool.enable_gateway_model_discovery {
+                "on".into()
+            } else {
+                "off".into()
+            },
+            if tool.enable_gateway_model_discovery {
+                Tone::Good
+            } else {
+                Tone::Muted
+            },
+            SettingKind::GatewayDiscovery,
+        );
+    }
 }
 
 #[cfg_attr(not(feature = "native"), allow(dead_code))]
@@ -1342,8 +1561,10 @@ fn config_settings_loop(
     path: &PathBuf,
 ) -> Result<i32, String> {
     let mut cache = CreditsCache::fresh();
+    let mut tab = 0usize;
+    let n_tabs = settings_tab_names().len().max(1);
     loop {
-        let (state, kinds) = config_settings_frame(parsed, env, path, true, &mut cache);
+        let (state, kinds) = config_settings_frame(parsed, env, path, true, &mut cache, tab);
         let Some(outcome) = tui_settings_select(state)? else {
             return Ok(0);
         };
@@ -1358,6 +1579,14 @@ fn config_settings_loop(
                 .copied()
                 .flatten()
                 .map(|kind| config_reset_row(path, kind)),
+            crate::tui::SettingsOutcome::NextTab => {
+                tab = (tab + 1) % n_tabs;
+                None
+            }
+            crate::tui::SettingsOutcome::PrevTab => {
+                tab = (tab + n_tabs - 1) % n_tabs;
+                None
+            }
             crate::tui::SettingsOutcome::Close | crate::tui::SettingsOutcome::Stay => None,
         };
         if let Some(Err(err)) = result {
@@ -1400,15 +1629,15 @@ fn config_edit_row(
         }
         SettingKind::Agent => {
             let last = launcher_last_tool(path, parsed, env);
-            let labels: Vec<String> = LAUNCH_AGENTS
+            let labels: Vec<String> = KNOWN_AGENTS
                 .iter()
                 .map(|(id, label)| format!("{id}  —  {label}"))
                 .collect();
-            let current = LAUNCH_AGENTS
+            let current = KNOWN_AGENTS
                 .iter()
                 .position(|(id, _)| *id == last.as_str());
             let idx = term::pick("Coding agent", &labels, current)?;
-            let (tool, label) = LAUNCH_AGENTS[idx];
+            let (tool, label) = KNOWN_AGENTS[idx];
             let mut cfg = load_config_if_present(path).unwrap_or_default();
             if let Some(p) = cfg.profiles.get_mut(&cfg.active_profile) {
                 p.default_tool = Some(tool.into());
@@ -1436,6 +1665,52 @@ fn config_edit_row(
             );
             Ok(0)
         }
+        SettingKind::Install(id) => {
+            let command = tool_command_for(path, id);
+            match ensure_tool_installed(id, &command, true) {
+                Ok(resolved) => {
+                    persist_tool_command(path, id, &resolved)?;
+                    println!(
+                        "{}  {}  {}",
+                        term::ok("Installed"),
+                        id,
+                        term::dim(&resolved)
+                    );
+                    Ok(0)
+                }
+                Err(err) => Err(err),
+            }
+        }
+        SettingKind::ToolCommand(id) => {
+            let current = tool_command_for(path, id);
+            let next = term::prompt(&format!("Command path for {id} (Enter keeps {current}): "))?;
+            let next = next.trim();
+            if next.is_empty() {
+                return Ok(0);
+            }
+            let mut cfg = load_config_if_present(path).unwrap_or_default();
+            let mut tool = resolve_tool(Some(&cfg), id)?;
+            tool.command = next.to_string();
+            cfg.tools.insert(id.to_string(), tool);
+            write_config(&cfg, path)?;
+            println!("{}  {id} command  {next}", term::ok("Saved"));
+            Ok(0)
+        }
+        SettingKind::GatewayDiscovery => {
+            let mut cfg = load_config_if_present(path).unwrap_or_default();
+            let mut tool = resolve_tool(Some(&cfg), "claude")?;
+            tool.enable_gateway_model_discovery = !tool.enable_gateway_model_discovery;
+            let on = tool.enable_gateway_model_discovery;
+            cfg.tools.insert("claude".into(), tool);
+            write_config(&cfg, path)?;
+            println!(
+                "{}  gateway discovery  {}",
+                term::ok("Saved"),
+                if on { "on" } else { "off" }
+            );
+            Ok(0)
+        }
+        SettingKind::Mapping => Ok(0),
         SettingKind::Channel => {
             let choices = ["stable", "beta"];
             let current = choices.iter().position(|c| *c == cfg_channel(path));
@@ -1544,7 +1819,20 @@ fn config_reset_row(path: &std::path::Path, kind: SettingKind) -> Result<i32, St
             println!("{}  channel reset to default (stable)", term::ok("Saved"));
             Ok(0)
         }
-        SettingKind::Account | SettingKind::ApiKey => Ok(0),
+        SettingKind::Account
+        | SettingKind::ApiKey
+        | SettingKind::Install(_)
+        | SettingKind::ToolCommand(_)
+        | SettingKind::Mapping => Ok(0),
+        SettingKind::GatewayDiscovery => {
+            let mut cfg = load_config_if_present(path).unwrap_or_default();
+            if let Some(t) = cfg.tools.get_mut("claude") {
+                t.enable_gateway_model_discovery = true;
+            }
+            write_config(&cfg, path)?;
+            println!("{}  gateway discovery reset to on", term::ok("Saved"));
+            Ok(0)
+        }
         SettingKind::Model(_) | SettingKind::Agent => {
             let name = cfg.active_profile.clone();
             let Some(p) = cfg.profiles.get_mut(&name) else {
@@ -2303,16 +2591,14 @@ fn launcher_palette(
     use crate::tui::PaletteEntry;
     let mut entries = Vec::new();
     if signed_in {
-        entries.push(PaletteEntry::new(last.clone(), model_line, "launch", format!("Launch {last}")));
-        for (id, label) in LAUNCH_AGENTS.iter().filter(|(id, _)| *id != last.as_str()) {
-            entries.push(PaletteEntry::new(*id, *label, "launch", format!("Launch {id}")));
-        }
+        push_launch_entries(&mut entries, path, env, &last, model_line);
     } else {
         entries.push(PaletteEntry::new("login", "sign in / add key", "account", "Login / sign in"));
     }
     entries.push(PaletteEntry::new("model…", "switch session default", "configure", "Switch model"));
     entries.push(PaletteEntry::new("account…", "switch profile", "configure", "Switch account"));
     entries.push(PaletteEntry::new("key…", "switch API key", "configure", "Switch key"));
+    entries.push(PaletteEntry::new("install…", "install a coding agent", "configure", "Install agent"));
     entries.push(PaletteEntry::new("config…", "accounts · keys · agent", "configure", "Config"));
     entries.push(PaletteEntry::new("quit", "esc works too", "configure", "Quit"));
     (header, entries)
@@ -2347,9 +2633,29 @@ fn launcher_palette(
     ];
     let mut entries = Vec::new();
     if signed_in {
-        entries.push(InlineEntry::new(last.clone(), model_line, "launch", format!("Launch {last}")));
-        for (id, label) in LAUNCH_AGENTS.iter().filter(|(id, _)| *id != last.as_str()) {
-            entries.push(InlineEntry::new(*id, *label, "launch", format!("Launch {id}")));
+        let present = available_agents(env, |id| tool_command_for(path, id));
+        if present.is_empty() {
+            entries.push(InlineEntry::new(
+                "install an agent…",
+                "none detected on PATH",
+                "launch",
+                "Install agent",
+            ));
+        } else {
+            let last = if present.iter().any(|(id, _)| *id == last) {
+                last.clone()
+            } else {
+                present[0].0.to_string()
+            };
+            entries.push(InlineEntry::new(
+                last.clone(),
+                model_line,
+                "launch",
+                format!("Launch {last}"),
+            ));
+            for (id, label) in present.into_iter().filter(|(id, _)| *id != last.as_str()) {
+                entries.push(InlineEntry::new(id, label, "launch", format!("Launch {id}")));
+            }
         }
     } else {
         entries.push(InlineEntry::new("login", "sign in / add key", "account", "Login / sign in"));
@@ -2357,6 +2663,7 @@ fn launcher_palette(
     entries.push(InlineEntry::new("model…", "switch session default", "configure", "Switch model"));
     entries.push(InlineEntry::new("account…", "switch profile", "configure", "Switch account"));
     entries.push(InlineEntry::new("key…", "switch API key", "configure", "Switch key"));
+    entries.push(InlineEntry::new("install…", "install a coding agent", "configure", "Install agent"));
     entries.push(InlineEntry::new("config…", "accounts · keys · agent", "configure", "Config"));
     entries.push(InlineEntry::new("quit", "esc works too", "configure", "Quit"));
     (header, entries)
@@ -2430,14 +2737,77 @@ enum LauncherNext {
     Exit(i32),
 }
 
-const LAUNCH_AGENTS: &[(&str, &str)] = &[
-    ("claude", "Claude Code"),
-    ("codex", "Codex"),
-    ("grok", "Grok Build"),
-    ("opencode", "OpenCode"),
-    ("pi", "Pi"),
-    ("pool", "Poolside"),
-];
+#[cfg(feature = "native")]
+fn push_launch_entries(
+    entries: &mut Vec<crate::tui::PaletteEntry>,
+    path: &PathBuf,
+    env: &BTreeMap<String, String>,
+    last: &str,
+    model_line: &str,
+) {
+    use crate::tui::PaletteEntry;
+    let present = available_agents(env, |id| tool_command_for(path, id));
+    if present.is_empty() {
+        entries.push(PaletteEntry::new(
+            "install an agent…",
+            "none detected on PATH",
+            "launch",
+            "Install agent",
+        ));
+        return;
+    }
+    let last = if present.iter().any(|(id, _)| *id == last) {
+        last.to_string()
+    } else {
+        present[0].0.to_string()
+    };
+    entries.push(PaletteEntry::new(
+        last.clone(),
+        model_line,
+        "launch",
+        format!("Launch {last}"),
+    ));
+    for (id, label) in present.into_iter().filter(|(id, _)| *id != last.as_str()) {
+        entries.push(PaletteEntry::new(id, label, "launch", format!("Launch {id}")));
+    }
+}
+
+fn install_agent_dialog(path: &PathBuf, env: &BTreeMap<String, String>) -> Result<i32, String> {
+    let missing = missing_agents(env, |id| tool_command_for(path, id));
+    if missing.is_empty() {
+        println!("{}", term::dim("Every known coding agent is already on PATH."));
+        return Ok(0);
+    }
+    let labels: Vec<String> = missing
+        .iter()
+        .map(|(id, label)| {
+            let cmd = crate::install::tool_hint(id)
+                .map(|h| h.install.to_string())
+                .unwrap_or_default();
+            format!("{id}  —  {label}    {cmd}")
+        })
+        .collect();
+    let idx = pick_list(
+        "Install coding agent",
+        &["none of these are on PATH · enter to install".into()],
+        &labels,
+        Some(0),
+    )?;
+    let (id, _) = missing[idx];
+    let command = tool_command_for(path, id);
+    let resolved = ensure_tool_installed(id, &command, true)?;
+    persist_tool_command(path, id, &resolved)?;
+    println!("{}  {id}  {}", term::ok("Installed"), term::dim(&resolved));
+    Ok(0)
+}
+
+fn persist_tool_command(path: &PathBuf, id: &str, command: &str) -> Result<(), String> {
+    let mut cfg = load_config_if_present(path).unwrap_or_default();
+    let mut tool = resolve_tool(Some(&cfg), id)?;
+    tool.command = command.to_string();
+    cfg.tools.insert(id.to_string(), tool);
+    write_config(&cfg, path)
+}
 
 fn launcher_last_tool(
     path: &PathBuf,
@@ -2451,8 +2821,10 @@ fn launcher_last_tool(
         .or_else(|| profile.and_then(|p| p.default_tool.clone()))
         .or_else(|| get_string_flag(&parsed.flags, "tool"))
         .unwrap_or_else(|| {
-            let _ = env;
-            "claude".into()
+            available_agents(env, |id| tool_command_for(path, id))
+                .first()
+                .map(|(id, _)| (*id).to_string())
+                .unwrap_or_else(|| "claude".into())
         })
 }
 
@@ -2558,6 +2930,14 @@ fn launcher_dispatch(
         }
         return Ok(LauncherNext::Continue);
     }
+    if action == "Install agent" {
+        match install_agent_dialog(path, env) {
+            Ok(_) => {}
+            Err(err) if err == "Cancelled." => {}
+            Err(err) => eprintln!("{}", term::err(&err)),
+        }
+        return Ok(LauncherNext::Continue);
+    }
     if action == "Switch model" {
         if !launcher_signed_in(path, parsed, env) {
             eprintln!("{}", term::err("Sign in first (Login / sign in)."));
@@ -2634,13 +3014,20 @@ fn launch_agent_picker(
         }
     }
     let last = launcher_last_tool(path, parsed, env);
-    let labels: Vec<String> = LAUNCH_AGENTS
+    let present = available_agents(env, |id| tool_command_for(path, id));
+    if present.is_empty() {
+        if let Err(err) = install_agent_dialog(path, env) {
+            if err != "Cancelled." {
+                eprintln!("{}", term::err(&err));
+            }
+        }
+        return Ok(LauncherNext::Continue);
+    }
+    let labels: Vec<String> = present
         .iter()
         .map(|(id, label)| format!("{id}  —  {label}"))
         .collect();
-    let current = LAUNCH_AGENTS
-        .iter()
-        .position(|(id, _)| *id == last.as_str());
+    let current = present.iter().position(|(id, _)| *id == last.as_str());
     let idx = match term::pick("Launch coding agent", &labels, current) {
         Ok(i) => i,
         Err(err) if err == "Cancelled." => return Ok(LauncherNext::Continue),
@@ -2649,7 +3036,7 @@ fn launch_agent_picker(
             return Ok(LauncherNext::Continue);
         }
     };
-    let tool = LAUNCH_AGENTS[idx].0;
+    let tool = present[idx].0;
     Ok(LauncherNext::Exit(run_launch(tool, parsed, env)?))
 }
 

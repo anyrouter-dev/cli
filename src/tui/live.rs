@@ -41,6 +41,7 @@ fn translate_key(ev: crossterm::event::KeyEvent) -> Option<KeyEvent> {
     Some(KeyEvent {
         code,
         ctrl: ev.modifiers.contains(KeyModifiers::CONTROL),
+        shift: ev.modifiers.contains(KeyModifiers::SHIFT),
     })
 }
 
