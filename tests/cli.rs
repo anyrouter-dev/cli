@@ -768,7 +768,14 @@ fn update_beta_persists_channel_and_selects_prerelease() {
     assert_eq!(code, 0, "stderr={stderr}");
     assert!(stdout.contains("channel set to beta"), "{stdout}");
     assert!(stdout.contains("channel: beta"), "{stdout}");
-    assert!(stdout.contains("latest: 0.2.0-beta.1"), "{stdout}");
+    assert!(
+        stdout.contains("latest:") && stdout.contains("0.2.0-beta.1"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("current:") && stdout.contains("status:"),
+        "{stdout}"
+    );
     let cfg = std::fs::read_to_string(home.join("config.yaml")).expect("config");
     assert!(cfg.contains("channel: beta"), "{cfg}");
 }
@@ -837,8 +844,15 @@ fn upgrade_check_newer_stable_would_upgrade() {
     };
     assert_eq!(code, 0, "stderr={stderr}");
     assert!(stdout.contains("channel: stable"), "{stdout}");
-    assert!(stdout.contains("latest: 0.1.99"), "{stdout}");
+    assert!(
+        stdout.contains("latest:") && stdout.contains("0.1.99"),
+        "{stdout}"
+    );
     assert!(stdout.contains("update available"), "{stdout}");
+    assert!(
+        stdout.contains("->") && stdout.contains("0.1.99"),
+        "check should show old -> new, got:\n{stdout}"
+    );
     assert!(
         stdout.contains("github.com/anyrouter-dev/cli/releases/download/"),
         "{stdout}"
@@ -862,7 +876,10 @@ fn upgrade_check_beta_selects_prerelease() {
     };
     assert_eq!(code, 0, "stderr={stderr}");
     assert!(stdout.contains("channel: beta"), "{stdout}");
-    assert!(stdout.contains("latest: 0.2.0-beta.1"), "{stdout}");
+    assert!(
+        stdout.contains("latest:") && stdout.contains("0.2.0-beta.1"),
+        "{stdout}"
+    );
     assert!(stdout.contains("update available"), "{stdout}");
 }
 
@@ -1113,7 +1130,10 @@ fn upgrade_check_reads_channel_from_config() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(out.status.code().unwrap_or(1), 0, "stderr={stderr}");
     assert!(stdout.contains("channel: beta"), "{stdout}");
-    assert!(stdout.contains("latest: 0.2.0-beta.1"), "{stdout}");
+    assert!(
+        stdout.contains("latest:") && stdout.contains("0.2.0-beta.1"),
+        "{stdout}"
+    );
 }
 
 #[test]

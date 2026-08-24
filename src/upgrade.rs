@@ -18,6 +18,7 @@ use crate::http::http_get;
 use crate::key::load_config_if_present;
 use crate::parse::{get_string_flag, ParsedArgs};
 use crate::spawn::redact_value;
+use crate::term;
 use crate::VERSION;
 
 /// How often the background checker hits GitHub Releases.
@@ -498,41 +499,72 @@ pub fn run(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, S
     let check = wants_check(parsed);
     let dry = parsed.flag_true("dry-run") || fixture.is_some();
 
-    println!("anyr {VERSION} (built {})", crate::buildinfo::display_time());
-    println!("channel: {}", channel.as_str());
-    println!("latest: {latest_ver}");
-    println!("asset: {url}");
+    print_version_report(channel, latest_ver);
 
     if parsed.flag_true("dry-run") {
         print_redacted_env(env);
     }
 
     if check {
+        println!("{}", field("asset", url));
         if update {
-            println!("update available");
-            println!("run: anyr upgrade");
+            println!(
+                "{}",
+                status_change(term::warn("update available"), VERSION, latest_ver)
+            );
+            println!(
+                "{}",
+                field("run", format!("{} update", crate::help::invoked_bin()))
+            );
         } else {
-            println!("up to date");
+            println!("{}", field("status", term::ok("up to date")));
         }
         return Ok(0);
     }
 
     if !update {
-        println!("Already up to date ({VERSION}).");
+        println!("{}", field("status", term::ok("up to date")));
         return Ok(0);
     }
 
     if dry {
-        println!("Would upgrade {VERSION} -> {latest_ver}");
-        println!("Would download {url}");
+        println!("{}", field("asset", &url));
+        println!(
+            "{}",
+            status_change(term::warn("would update"), VERSION, latest_ver)
+        );
         return Ok(0);
     }
 
-    println!("Upgrading {VERSION} -> {latest_ver}");
     println!("Downloading {url}");
     let dest = replace_current_binary(&url)?;
-    println!("Installed {latest_ver} -> {}", dest.display());
+    println!(
+        "{}",
+        status_change(term::ok("updated"), VERSION, latest_ver)
+    );
+    println!("{}", field("path", dest.display()));
     Ok(0)
+}
+
+fn field(key: &str, value: impl std::fmt::Display) -> String {
+    format!("{:<8} {value}", format!("{key}:"))
+}
+
+fn print_version_report(channel: Channel, latest_ver: &str) {
+    println!(
+        "{}",
+        field(
+            "current",
+            format!("{VERSION} (built {})", crate::buildinfo::display_time())
+        )
+    );
+    println!("{}", field("latest", latest_ver));
+    println!("{}", field("channel", channel.as_str()));
+}
+
+/// `status:  updated  0.1.0 -> 0.1.1` — `->` is only ever old version to new.
+fn status_change(status: impl std::fmt::Display, from: &str, to: &str) -> String {
+    field("status", format!("{status}  {from} -> {to}"))
 }
 
 #[cfg(test)]
@@ -731,5 +763,27 @@ mod tests {
     fn version_eq_ignores_v_prefix() {
         assert!(version_eq("0.1.1", "v0.1.1"));
         assert!(!version_eq("0.1.1", "0.1.2"));
+    }
+
+    #[test]
+    fn field_aligns_values_and_keeps_colon() {
+        assert_eq!(field("current", "0.1.0"), "current: 0.1.0");
+        assert_eq!(field("latest", "0.1.1"), "latest:  0.1.1");
+        assert_eq!(field("channel", "beta"), "channel: beta");
+        assert_eq!(field("status", "up to date"), "status:  up to date");
+        assert_eq!(
+            field("path", "/home/duyet/.local/bin/anyr"),
+            "path:    /home/duyet/.local/bin/anyr"
+        );
+    }
+
+    #[test]
+    fn status_change_is_old_then_new_not_a_path() {
+        let line = status_change("updated", "0.1.11-beta.70", "0.1.11-beta.76");
+        assert_eq!(line, "status:  updated  0.1.11-beta.70 -> 0.1.11-beta.76");
+        assert!(
+            !line.contains("/"),
+            "status must not reuse -> for an install path: {line}"
+        );
     }
 }
