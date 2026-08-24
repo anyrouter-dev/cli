@@ -110,7 +110,7 @@ impl PickerState {
                 self.cursor = 0;
                 Outcome::Continue
             }
-            Action::Unset => Outcome::Continue,
+            Action::Unset | Action::NextTab | Action::PrevTab => Outcome::Continue,
         }
     }
 
@@ -170,7 +170,9 @@ impl MenuState {
                 Outcome::Continue
             }
             Action::Backspace => Outcome::Continue,
-            Action::Char(_) | Action::Unset => Outcome::Continue,
+            Action::Char(_) | Action::Unset | Action::NextTab | Action::PrevTab => {
+                Outcome::Continue
+            }
         }
     }
 
@@ -221,6 +223,8 @@ pub enum SettingsOutcome {
     Edit(usize),
     /// Reset the entry at the given row index to its default (`x`).
     Reset(usize),
+    NextTab,
+    PrevTab,
     Close,
 }
 
@@ -231,6 +235,8 @@ pub struct SettingsState {
     pub rows: Vec<SettingRow>,
     /// Cursor index into `rows`; always points at an Entry.
     pub cursor: usize,
+    pub tabs: Vec<String>,
+    pub tab: usize,
 }
 
 impl SettingsState {
@@ -240,9 +246,21 @@ impl SettingsState {
             header,
             rows,
             cursor: 0,
+            tabs: Vec::new(),
+            tab: 0,
         };
         state.cursor = state.rows.iter().position(|r| r.selectable()).unwrap_or(0);
         state
+    }
+
+    pub fn with_tabs(mut self, tabs: Vec<String>, tab: usize) -> Self {
+        self.tab = if tabs.is_empty() {
+            0
+        } else {
+            tab.min(tabs.len() - 1)
+        };
+        self.tabs = tabs;
+        self
     }
 
     /// Indices of selectable (Entry) rows.
@@ -260,6 +278,8 @@ impl SettingsState {
         if entries.is_empty() {
             return match action {
                 Action::Quit | Action::Esc => SettingsOutcome::Close,
+                Action::NextTab => SettingsOutcome::NextTab,
+                Action::PrevTab => SettingsOutcome::PrevTab,
                 _ => SettingsOutcome::Stay,
             };
         }
@@ -268,6 +288,8 @@ impl SettingsState {
             Action::Quit | Action::Esc => SettingsOutcome::Close,
             Action::Enter => SettingsOutcome::Edit(self.cursor),
             Action::Unset => SettingsOutcome::Reset(self.cursor),
+            Action::NextTab => SettingsOutcome::NextTab,
+            Action::PrevTab => SettingsOutcome::PrevTab,
             Action::Up => {
                 let prev = if pos == 0 { entries.len() - 1 } else { pos - 1 };
                 self.cursor = entries[prev];
@@ -413,7 +435,7 @@ impl PaletteState {
                 self.cursor = 0;
                 Outcome::Continue
             }
-            Action::Unset => Outcome::Continue,
+            Action::Unset | Action::NextTab | Action::PrevTab => Outcome::Continue,
         }
     }
 

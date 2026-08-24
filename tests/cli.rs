@@ -1168,6 +1168,7 @@ profiles:
     .unwrap();
     let out = anyr()
         .args(["menu", "--dump-tui", "--config", path.to_str().unwrap()])
+        .env("ANYR_AGENTS", "claude,codex")
         .output()
         .expect("menu dump");
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -1186,6 +1187,7 @@ profiles:
     assert!(stdout.contains("account…"), "{stdout}");
     assert!(stdout.contains("key…"), "{stdout}");
     assert!(stdout.contains("model…"), "{stdout}");
+    assert!(stdout.contains("install…"), "{stdout}");
     assert!(stdout.contains("quit"), "{stdout}");
     assert!(stdout.contains('❯'), "palette must show the input line: {stdout}");
     assert!(
@@ -1196,6 +1198,36 @@ profiles:
         !stdout.contains("menu-dump-secret-value"),
         "dump must not leak full secret: {stdout}"
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn menu_dump_tui_empty_agents_shows_install() {
+    let dir = std::env::temp_dir().join(format!("anyr-cli-menu-empty-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("config.yaml");
+    std::fs::write(
+        &path,
+        "\
+active_profile: default
+profiles:
+  default:
+    api_key: sk-ar-v1-empty-agents-secret-abcdef
+    default_model: auto
+",
+    )
+    .unwrap();
+    let out = anyr()
+        .args(["menu", "--dump-tui", "--config", path.to_str().unwrap()])
+        .env("ANYR_AGENTS", "none")
+        .output()
+        .expect("menu dump empty");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code().unwrap_or(1), 0, "{stdout}{stderr}");
+    assert!(stdout.contains("install an agent…"), "{stdout}");
+    assert!(stdout.contains("none detected"), "{stdout}");
+    assert!(!stdout.contains("◆ claude"), "{stdout}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1251,13 +1283,12 @@ profiles:
         "account",
         "api key",
         "default",
-        "haiku",
-        "sonnet",
-        "opus",
-        "fable",
         "coding agent",
         "auto-update",
         "update channel",
+        "[general]",
+        "claude",
+        "codex",
     ] {
         assert!(stdout.contains(row), "missing row \"{row}\" in:\n{stdout}");
     }

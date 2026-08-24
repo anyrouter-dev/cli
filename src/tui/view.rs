@@ -317,11 +317,12 @@ pub fn render_settings(frame: &mut Frame, state: &SettingsState) {
     frame.render_widget(block, dialog);
 
     let status_h = state.header.len().max(1) as u16;
+    let tab_h = if state.tabs.len() > 1 { 2 } else { 0 };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(status_h),
-            Constraint::Length(1),
+            Constraint::Length(tab_h),
             Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Min(state.rows.len().max(1) as u16),
@@ -331,6 +332,9 @@ pub fn render_settings(frame: &mut Frame, state: &SettingsState) {
         .split(inner);
 
     render_status_lines(frame, chunks[0], &state.header);
+    if tab_h > 0 {
+        frame.render_widget(Paragraph::new(tab_bar_line(state)), chunks[1]);
+    }
 
     let rule = Paragraph::new(Span::styled(
         "─".repeat(chunks[2].width as usize),
@@ -351,11 +355,27 @@ pub fn render_settings(frame: &mut Frame, state: &SettingsState) {
     frame.render_widget(footer, chunks[6]);
 }
 
+fn tab_bar_line(state: &SettingsState) -> Line<'static> {
+    let mut spans: Vec<Span> = Vec::new();
+    for (i, name) in state.tabs.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled("  ", theme::muted()));
+        }
+        if i == state.tab {
+            spans.push(Span::styled(format!("[{name}]"), theme::brand()));
+        } else {
+            spans.push(Span::styled(name.clone(), theme::muted()));
+        }
+    }
+    Line::from(spans)
+}
+
 fn settings_dialog_height(state: &SettingsState) -> u16 {
-    // borders(2) + inset(2) + status + pads(3) + rule(1) + rows + hint(1)
+    // borders(2) + inset(2) + status + pads(3) + rule(1) + rows + hint(1) + tabs
     let status = state.header.len().max(1) as u16;
     let rows = state.rows.len().max(1) as u16;
-    2 + 2 + status + 3 + 1 + rows + 1
+    let tabs = if state.tabs.len() > 1 { 2 } else { 0 };
+    2 + 2 + status + tabs + 3 + 1 + rows + 1
 }
 
 fn tone_style(tone: Tone) -> Style {
@@ -684,6 +704,23 @@ pub fn plain_settings_lines(state: &SettingsState, cols: usize) -> Vec<String> {
         }
     }
     lines.push(format!("{pad_s}│{}│", pad_content("", content_w)));
+    if state.tabs.len() > 1 {
+        let bar = state
+            .tabs
+            .iter()
+            .enumerate()
+            .map(|(i, name)| {
+                if i == state.tab {
+                    format!("[{name}]")
+                } else {
+                    name.clone()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("  ");
+        lines.push(format!("{pad_s}│{}│", pad_content(&bar, content_w)));
+        lines.push(format!("{pad_s}│{}│", pad_content("", content_w)));
+    }
     lines.push(format!("{pad_s}├{}┤", "─".repeat(content_w)));
     lines.push(format!("{pad_s}│{}│", pad_content("", content_w)));
 
@@ -828,10 +865,15 @@ mod tests {
                     tone: Tone::Model,
                 },
             ],
+        )
+        .with_tabs(
+            vec!["general".into(), "claude".into(), "codex".into()],
+            0,
         );
         let frame = plain_settings_frame(&state, 80);
         assert!(!frame.contains('\u{1b}'), "must be ANSI-free: {frame}");
         assert!(frame.contains("▲ Config"), "{frame}");
+        assert!(frame.contains("[general]"), "{frame}");
         assert!(frame.contains("ACCOUNT"), "{frame}");
         assert!(frame.contains("MODEL"), "{frame}");
         assert!(frame.contains("◆ account"), "{frame}");

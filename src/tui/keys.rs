@@ -14,6 +14,10 @@ pub enum Action {
     Enter,
     Up,
     Down,
+    /// Settings: next coding-agent tab.
+    NextTab,
+    /// Settings: previous coding-agent tab.
+    PrevTab,
     /// Reset the focused settings row to its default (`x`).
     Unset,
     Backspace,
@@ -26,6 +30,7 @@ pub enum Action {
 pub struct KeyEvent {
     pub code: KeyCode,
     pub ctrl: bool,
+    pub shift: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,12 +59,18 @@ pub fn map_key(surface: Surface, key: KeyEvent) -> Action {
         KeyCode::Esc => Action::Esc,
         KeyCode::Up => Action::Up,
         KeyCode::Down => Action::Down,
-        KeyCode::Tab => Action::Down,
+        KeyCode::Tab => match (surface, key.shift) {
+            (Surface::Settings, false) => Action::NextTab,
+            (Surface::Settings, true) => Action::PrevTab,
+            _ => Action::Down,
+        },
         KeyCode::Backspace | KeyCode::Delete => Action::Backspace,
         KeyCode::Char(c) => match (surface, c) {
             (Surface::Launcher, 'q' | 'x' | 'Q' | 'X') => Action::Quit,
             (Surface::Settings, 'q') => Action::Quit,
             (Surface::Settings, 'x' | 'X') => Action::Unset,
+            (Surface::Settings, '[') => Action::PrevTab,
+            (Surface::Settings, ']') => Action::NextTab,
             // The palette is type-first: every printable char — including
             // q / j / k — goes into the query.
             (Surface::Palette, _) => Action::Char(c),
@@ -73,7 +84,7 @@ pub fn map_key(surface: Surface, key: KeyEvent) -> Action {
 pub fn hint_line(surface: Surface) -> &'static str {
     match surface {
         Surface::Launcher => "↑↓  move    ↵  select    q/esc  quit",
-        Surface::Settings => "↑↓  move    ↵  edit    x  reset    q/esc  close",
+        Surface::Settings => "tab  agent    ↑↓  move    ↵  edit    x  reset    q  close",
         Surface::Picker => "type to search    ↑↓  move    ↵  select    esc  cancel",
         Surface::Palette => "type to filter    ↑↓  move    ↵  run    esc  quit",
     }
@@ -90,6 +101,7 @@ mod tests {
             KeyEvent {
                 code: KeyCode::Char('q'),
                 ctrl: false,
+                shift: false,
             },
         );
         assert_eq!(a, Action::Quit);
@@ -102,6 +114,7 @@ mod tests {
             KeyEvent {
                 code: KeyCode::Char('q'),
                 ctrl: false,
+                shift: false,
             },
         );
         assert_eq!(a, Action::Char('q'));
@@ -114,6 +127,7 @@ mod tests {
             KeyEvent {
                 code: KeyCode::Char('c'),
                 ctrl: true,
+                shift: false,
             },
         );
         assert_eq!(a, Action::Quit);
@@ -126,6 +140,7 @@ mod tests {
             KeyEvent {
                 code: KeyCode::Char('q'),
                 ctrl: false,
+                shift: false,
             },
         );
         assert_eq!(a, Action::Char('q'));
@@ -138,6 +153,7 @@ mod tests {
             KeyEvent {
                 code: KeyCode::Char('x'),
                 ctrl: false,
+                shift: false,
             },
         );
         assert_eq!(x, Action::Unset);
@@ -146,8 +162,40 @@ mod tests {
             KeyEvent {
                 code: KeyCode::Char('q'),
                 ctrl: false,
+                shift: false,
             },
         );
         assert_eq!(q, Action::Quit);
+    }
+
+    #[test]
+    fn settings_tab_cycles_agents() {
+        let next = map_key(
+            Surface::Settings,
+            KeyEvent {
+                code: KeyCode::Tab,
+                ctrl: false,
+                shift: false,
+            },
+        );
+        assert_eq!(next, Action::NextTab);
+        let prev = map_key(
+            Surface::Settings,
+            KeyEvent {
+                code: KeyCode::Tab,
+                ctrl: false,
+                shift: true,
+            },
+        );
+        assert_eq!(prev, Action::PrevTab);
+        let brack = map_key(
+            Surface::Settings,
+            KeyEvent {
+                code: KeyCode::Char(']'),
+                ctrl: false,
+                shift: false,
+            },
+        );
+        assert_eq!(brack, Action::NextTab);
     }
 }

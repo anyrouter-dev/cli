@@ -14,6 +14,77 @@ pub struct ToolHint {
     pub env: &'static str,
 }
 
+/// Agents the launcher/settings know about, in display order.
+pub const KNOWN_AGENTS: &[(&str, &str)] = &[
+    ("claude", "Claude Code"),
+    ("codex", "Codex"),
+    ("grok", "Grok Build"),
+    ("opencode", "OpenCode"),
+    ("pi", "Pi"),
+    ("pool", "Poolside"),
+];
+
+/// `ANYR_AGENTS` overrides PATH detection (tests / dump). Unset = probe PATH.
+/// Empty / `-` / `none` = nothing installed. Comma list = those ids.
+pub fn agents_override(env: &std::collections::BTreeMap<String, String>) -> Option<Vec<String>> {
+    let raw = env.get("ANYR_AGENTS")?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed == "-" || trimmed.eq_ignore_ascii_case("none") {
+        return Some(Vec::new());
+    }
+    Some(
+        trimmed
+            .split(',')
+            .map(|s| crate::spawn::canonical_tool(s.trim()).to_string())
+            .filter(|s| !s.is_empty())
+            .collect(),
+    )
+}
+
+/// Whether this agent can be launched: override list, `ANYROUTER_*_PATH`, or PATH.
+pub fn agent_available(
+    id: &str,
+    command: &str,
+    env: &std::collections::BTreeMap<String, String>,
+) -> bool {
+    if let Some(list) = agents_override(env) {
+        let id = crate::spawn::canonical_tool(id);
+        return list.iter().any(|s| s == id);
+    }
+    if let Some(hint) = tool_hint(id) {
+        if env
+            .get(hint.env)
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false)
+        {
+            return true;
+        }
+    }
+    resolve_executable(command).is_some()
+}
+
+pub fn available_agents(
+    env: &std::collections::BTreeMap<String, String>,
+    command_for: impl Fn(&str) -> String,
+) -> Vec<(&'static str, &'static str)> {
+    KNOWN_AGENTS
+        .iter()
+        .copied()
+        .filter(|(id, _)| agent_available(id, &command_for(id), env))
+        .collect()
+}
+
+pub fn missing_agents(
+    env: &std::collections::BTreeMap<String, String>,
+    command_for: impl Fn(&str) -> String,
+) -> Vec<(&'static str, &'static str)> {
+    KNOWN_AGENTS
+        .iter()
+        .copied()
+        .filter(|(id, _)| !agent_available(id, &command_for(id), env))
+        .collect()
+}
+
 pub fn tool_hint(tool: &str) -> Option<ToolHint> {
     Some(match canonical_tool(tool) {
         "claude" => ToolHint {
@@ -175,5 +246,28 @@ mod tests {
             resolve_executable("./bin/claude").as_deref(),
             Some("./bin/claude")
         );
+    }
+
+    #[test]
+    fn agents_override_empty_means_none() {
+        let mut env = std::collections::BTreeMap::new();
+        assert!(agents_override(&env).is_none());
+        env.insert("ANYR_AGENTS".into(), "".into());
+        assert_eq!(agents_override(&env), Some(vec![]));
+        env.insert("ANYR_AGENTS".into(), "none".into());
+        assert_eq!(agents_override(&env), Some(vec![]));
+        env.insert("ANYR_AGENTS".into(), "claude, grok".into());
+        assert_eq!(
+            agents_override(&env),
+            Some(vec!["claude".into(), "grok".into()])
+        );
+    }
+
+    #[test]
+    fn agent_available_honors_override() {
+        let mut env = std::collections::BTreeMap::new();
+        env.insert("ANYR_AGENTS".into(), "codex".into());
+        assert!(!agent_available("claude", "claude", &env));
+        assert!(agent_available("codex", "codex", &env));
     }
 }
