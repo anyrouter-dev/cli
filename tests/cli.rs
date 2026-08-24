@@ -354,7 +354,11 @@ fn pi_dry_run_uses_anyrouter_provider() {
     assert!(stdout.contains("--provider"), "{stdout}");
     assert!(stdout.contains("anyrouter"), "{stdout}");
     assert!(stdout.contains("--model"), "{stdout}");
-    assert!(stdout.contains("anyrouter/z-ai/glm-4.7-flash"), "{stdout}");
+    assert!(stdout.contains("z-ai/glm-4.7-flash"), "{stdout}");
+    assert!(
+        !stdout.contains("anyrouter/z-ai/glm-4.7-flash"),
+        "Pi --model is the catalog id, not anyrouter/<id>:\n{stdout}"
+    );
     assert!(stdout.contains("PI_CODING_AGENT_DIR"), "{stdout}");
     assert!(stdout.contains("ANYROUTER_API_KEY"), "{stdout}");
     assert!(stdout.contains("anyrouter.dev/api/v1"), "{stdout}");
