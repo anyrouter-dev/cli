@@ -4,6 +4,41 @@ This file is maintained automatically by [release-please](https://github.com/goo
 
 GitHub Releases use this file as the release notes (full history through that tag).
 
+## [0.1.11](https://github.com/anyrouter-dev/cli/compare/v0.1.10...v0.1.11) (2026-08-24)
+
+
+### Features
+
+* **cli:** ar update --beta|--stable switches channel and updates ([4b3db1b](https://github.com/anyrouter-dev/cli/commit/4b3db1b3ecf903805b9a52f12020a366da6fc6e6))
+* **cli:** ar update --beta|--stable switches channel and updates ([dcf1b60](https://github.com/anyrouter-dev/cli/commit/dcf1b6035966b1c1f9eb7c7e0a554e51ce3e601e))
+* **cli:** embed build time, shown in local timezone ([2fd669d](https://github.com/anyrouter-dev/cli/commit/2fd669dd8af37123a994932ce04f71024dd5e9d7))
+* **cli:** looping launcher with config, login, and agent pick ([3b901c1](https://github.com/anyrouter-dev/cli/commit/3b901c1bc38782ee99825349020c71e9b9e5bc25))
+* **cli:** model pin collapses alias slots; fable slot; build time ([256e0cb](https://github.com/anyrouter-dev/cli/commit/256e0cbcf5c84aaaf8eea419dbdbd155d5c67ec7))
+* **cli:** pin model collapses claude alias slots; add fable slot ([96ef51a](https://github.com/anyrouter-dev/cli/commit/96ef51ae14ebe4471cfcf3539018bc21a3b2bc07))
+* **cli:** Ratatui interactive TUI as the default launcher ([ee93b54](https://github.com/anyrouter-dev/cli/commit/ee93b54f0789dc9140db60dc305254c993db126c))
+* **cli:** Ratatui launcher TUI as default ([aa7d4fb](https://github.com/anyrouter-dev/cli/commit/aa7d4fb3f22773840a394df1c912e5d58f19693d))
+* **cli:** two-pane launcher with icons and cached credits ([26f9980](https://github.com/anyrouter-dev/cli/commit/26f9980649c2b4895b45f5844fd4cacabbc0167d))
+* **tui:** centered dialog welcome launcher ([61a22ee](https://github.com/anyrouter-dev/cli/commit/61a22ee98e6d8130dce27f153497ebf0349c1ba5))
+* **tui:** command-palette launcher with inline fallback ([ba25454](https://github.com/anyrouter-dev/cli/commit/ba25454fd665aed782c39322b3df81fd8a6a0f8d))
+* **tui:** interactive config screen with identity and model memory ([#8](https://github.com/anyrouter-dev/cli/issues/8)) ([8a343d6](https://github.com/anyrouter-dev/cli/commit/8a343d67f5e3344f5b5102ec1f371b7d7de8013b))
+* **tui:** show installed agents and per-agent settings tabs ([#10](https://github.com/anyrouter-dev/cli/issues/10)) ([8c7554c](https://github.com/anyrouter-dev/cli/commit/8c7554c84ddb7b23d9166f445e2921e3cedf0675))
+
+
+### Bug Fixes
+
+* **ci:** unblock stable release binaries ([99ba2bc](https://github.com/anyrouter-dev/cli/commit/99ba2bcb09a985249bf191e706e73d9a3e35af2c))
+* **cli:** gate days_from_civil test to unix ([276098d](https://github.com/anyrouter-dev/cli/commit/276098d459d3d5576b7a1533738b96bab2312ba9))
+* **cli:** label update current, latest, and status ([#14](https://github.com/anyrouter-dev/cli/issues/14)) ([629336a](https://github.com/anyrouter-dev/cli/commit/629336a041e1ab38e89e4ac26b4de6339dd7d5cf))
+* **models:** catalog ids, Claude [1m] suffix, auto = most used ([#12](https://github.com/anyrouter-dev/cli/issues/12)) ([7fc97ba](https://github.com/anyrouter-dev/cli/commit/7fc97ba96748f02568a5cb20d23164166f5093f7))
+* **pi:** pass catalog model ids and strip ANSI from --model ([#11](https://github.com/anyrouter-dev/cli/issues/11)) ([aad7641](https://github.com/anyrouter-dev/cli/commit/aad7641d4ac92fcfb4ba50aaf940c8488429fd37))
+* **tui:** pick keys, accounts, and models from the CLI ([#9](https://github.com/anyrouter-dev/cli/issues/9)) ([ad95180](https://github.com/anyrouter-dev/cli/commit/ad951805eecb7ee3538c5c1844af8a8099194633))
+* **wasm:** gate launcher palette entries behind native feature ([ddc7887](https://github.com/anyrouter-dev/cli/commit/ddc788721473a7a5074de457fb7b1dcada22a036))
+
+
+### Performance Improvements
+
+* **tui:** open the launcher without blocking on network or which ([#13](https://github.com/anyrouter-dev/cli/issues/13)) ([58fdb8b](https://github.com/anyrouter-dev/cli/commit/58fdb8b16dd8d6b532b57250db89dd00afdcd57e))
+
 ## [0.1.10](https://github.com/anyrouter-dev/cli/compare/v0.1.9...v0.1.10) (2026-08-21)
 
 
