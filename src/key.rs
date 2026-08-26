@@ -4,6 +4,18 @@ use std::path::Path;
 use crate::config::{get_active_profile, read_config, Config, Profile, DEFAULT_BASE_URL};
 use crate::parse::{get_string_flag, FlagValue};
 
+/// Known non-secret fixture literals (mirrors the TS CLI's persistApiKey guard):
+/// these exact values once overwrote a user's real key via a test fixture, so
+/// they must never act as a live credential — treat them like "no key".
+const DUMMY_KEYS: [&str; 3] = ["sk-ar-v1-test", "sk-ar-v1-testkey", "sk-ar-v1-test-key"];
+
+pub fn is_dummy_key(value: &str) -> bool {
+    let trimmed = value.trim();
+    DUMMY_KEYS
+        .iter()
+        .any(|dummy| trimmed.eq_ignore_ascii_case(dummy))
+}
+
 pub fn resolve_api_key(
     flags: &std::collections::HashMap<String, FlagValue>,
     env: &BTreeMap<String, String>,
@@ -11,21 +23,21 @@ pub fn resolve_api_key(
 ) -> Option<String> {
     if let Some(key) = get_string_flag(flags, "key") {
         let trimmed = key.trim();
-        if !trimmed.is_empty() {
+        if !trimmed.is_empty() && !is_dummy_key(trimmed) {
             return Some(trimmed.to_string());
         }
     }
     if let Some(key) = env
         .get("ANYROUTER_API_KEY")
         .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
+        .filter(|s| !s.is_empty() && !is_dummy_key(s))
     {
         return Some(key.to_string());
     }
     profile
         .and_then(|p| p.api_key.as_deref())
         .map(str::trim)
-        .filter(|s| !s.is_empty())
+        .filter(|s| !s.is_empty() && !is_dummy_key(s))
         .map(str::to_string)
 }
 
@@ -81,4 +93,83 @@ pub fn no_key_error() -> String {
 or use --device/--device-code for headless environments, \
 or run in an interactive terminal to log in."
         .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parse::FlagValue;
+
+    fn profile_with_key(key: &str) -> Profile {
+        Profile {
+            api_key: Some(key.into()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn dummy_literals_are_detected_trimmed_and_case_insensitive() {
+        for dummy in DUMMY_KEYS {
+            assert!(is_dummy_key(dummy), "{dummy}");
+            assert!(is_dummy_key(&format!("  {dummy}  ")), "{dummy}");
+            assert!(is_dummy_key(&dummy.to_ascii_uppercase()), "{dummy}");
+        }
+        assert!(!is_dummy_key("sk-ar-v1-test-extra"));
+        assert!(!is_dummy_key("sk-ar-v1-real0123456789"));
+    }
+
+    #[test]
+    fn each_dummy_literal_resolves_to_none() {
+        let env = BTreeMap::new();
+        let mut flags = std::collections::HashMap::new();
+        for dummy in DUMMY_KEYS {
+            // Stored in the profile.
+            let profile = profile_with_key(dummy);
+            assert_eq!(
+                resolve_api_key(&flags, &env, Some(&profile)),
+                None,
+                "{dummy}"
+            );
+            // Passed via --key.
+            flags.insert("key".into(), FlagValue::Value(dummy.to_string()));
+            assert_eq!(resolve_api_key(&flags, &env, None), None, "{dummy}");
+            flags.clear();
+            // Exported via ANYROUTER_API_KEY.
+            let mut with_env = BTreeMap::new();
+            with_env.insert("ANYROUTER_API_KEY".into(), dummy.to_string());
+            assert_eq!(resolve_api_key(&flags, &with_env, None), None, "{dummy}");
+        }
+    }
+
+    #[test]
+    fn real_keys_still_resolve_from_every_source() {
+        let real = "sk-ar-v1-real0123456789abcdef";
+        let mut flags =
+            std::collections::HashMap::from([("key".into(), FlagValue::Value(real.to_string()))]);
+        assert_eq!(
+            resolve_api_key(&flags, &BTreeMap::new(), None).as_deref(),
+            Some(real)
+        );
+        flags.clear();
+        let mut env = BTreeMap::new();
+        env.insert("ANYROUTER_API_KEY".into(), real.to_string());
+        assert_eq!(resolve_api_key(&flags, &env, None).as_deref(), Some(real));
+        let profile = profile_with_key(real);
+        assert_eq!(
+            resolve_api_key(&flags, &BTreeMap::new(), Some(&profile)).as_deref(),
+            Some(real)
+        );
+    }
+
+    #[test]
+    fn dummy_env_falls_through_to_real_profile_key() {
+        let mut env = BTreeMap::new();
+        env.insert("ANYROUTER_API_KEY".into(), "SK-AR-V1-TESTKEY".into());
+        let profile = profile_with_key("sk-ar-v1-real0123456789");
+        let flags = std::collections::HashMap::new();
+        assert_eq!(
+            resolve_api_key(&flags, &env, Some(&profile)).as_deref(),
+            Some("sk-ar-v1-real0123456789")
+        );
+    }
 }

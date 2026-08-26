@@ -280,7 +280,7 @@ fn stub_help_is_honest() {
 
 #[test]
 fn spawn_targets_dry_run_inject_gateway_and_redact_key() {
-    let key = "sk-ar-v1-testkey";
+    let key = "sk-ar-v1-fixture-key-0001";
     let cases: &[(&[&str], &str)] = &[
         (
             &["claude", "--dry-run", "--yes", "--key", key],
@@ -323,7 +323,7 @@ fn spawn_targets_dry_run_inject_gateway_and_redact_key() {
 
 #[test]
 fn pi_dry_run_uses_anyrouter_provider() {
-    let key = "sk-ar-v1-testkey";
+    let key = "sk-ar-v1-fixture-key-0001";
     let dir = std::env::temp_dir().join(format!("anyr-pi-cli-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -382,7 +382,7 @@ fn pi_dry_run_uses_anyrouter_provider() {
 
 #[test]
 fn claude_dry_run_with_key_prints_base_and_redacts_secret() {
-    let key = "sk-ar-v1-testkey";
+    let key = "sk-ar-v1-fixture-key-0001";
     let (code, stdout, stderr) = {
         let out = anyr()
             .args([
@@ -427,7 +427,7 @@ fn claude_dry_run_with_key_prints_base_and_redacts_secret() {
 
 #[test]
 fn claude_dry_run_pinned_model_collapses_aliases() {
-    let key = "sk-ar-v1-testkey";
+    let key = "sk-ar-v1-fixture-key-0001";
     let (code, stdout, stderr) = {
         let out = anyr()
             .args([
@@ -468,7 +468,7 @@ fn claude_dry_run_pinned_model_collapses_aliases() {
 
 #[test]
 fn claude_dry_run_haiku_flag_beats_pinned_model() {
-    let key = "sk-ar-v1-testkey";
+    let key = "sk-ar-v1-fixture-key-0001";
     let (code, stdout, stderr) = {
         let out = anyr()
             .args([
@@ -505,7 +505,7 @@ fn claude_dry_run_haiku_flag_beats_pinned_model() {
 
 #[test]
 fn claude_yolo_flag_expands_to_dangerously_skip_permissions() {
-    let key = "sk-ar-v1-testkey";
+    let key = "sk-ar-v1-fixture-key-0001";
     let (code, stdout, stderr) = {
         let out = anyr()
             .args(["claude", "--dry-run", "--yes", "--key", key, "--yolo"])
@@ -528,7 +528,7 @@ fn claude_yolo_flag_expands_to_dangerously_skip_permissions() {
 
 #[test]
 fn codex_yolo_flag_is_accepted_but_not_forwarded() {
-    let key = "sk-ar-v1-testkey";
+    let key = "sk-ar-v1-fixture-key-0001";
     let (code, stdout, stderr) = {
         let out = anyr()
             .args(["codex", "--dry-run", "--yes", "--key", key, "--yolo"])
@@ -551,7 +551,7 @@ fn codex_yolo_flag_is_accepted_but_not_forwarded() {
 
 #[test]
 fn claude_dry_run_fable_flag_beats_pinned_model() {
-    let key = "sk-ar-v1-testkey";
+    let key = "sk-ar-v1-fixture-key-0001";
     let (code, stdout, stderr) = {
         let out = anyr()
             .args([
@@ -592,7 +592,7 @@ fn claude_dry_run_fable_flag_beats_pinned_model() {
 
 #[test]
 fn claude_dry_run_haiku_flag_overrides_alias() {
-    let key = "sk-ar-v1-testkey";
+    let key = "sk-ar-v1-fixture-key-0001";
     let (code, stdout, stderr) = {
         let out = anyr()
             .args([
@@ -648,7 +648,7 @@ fn launch_remembers_explicit_model_as_session_default() {
             "claude",
             "--yes",
             "--key",
-            "sk-ar-v1-testkey",
+            "sk-ar-v1-fixture-key-0001",
             "--model",
             "z-ai/glm-4.7-flash",
         ])
@@ -666,7 +666,7 @@ fn launch_remembers_explicit_model_as_session_default() {
             "claude",
             "--yes",
             "--key",
-            "sk-ar-v1-testkey",
+            "sk-ar-v1-fixture-key-0001",
             "--model",
             "stealth/ox-alpha[1m]",
         ])
@@ -690,7 +690,7 @@ fn launch_remembers_explicit_model_as_session_default() {
 
     // Second launch with no --model: dry-run reveals which model was picked.
     let out = anyr()
-        .args(["claude", "--yes", "--dry-run", "--key", "sk-ar-v1-testkey"])
+        .args(["claude", "--yes", "--dry-run", "--key", "sk-ar-v1-fixture-key-0001"])
         .env("ANYROUTER_HOME", &home)
         .env_remove("ANYROUTER_API_KEY")
         .output()
@@ -1083,7 +1083,7 @@ fn install_flag_is_known_on_launch() {
         "--install",
         "--dry-run",
         "--key",
-        "sk-ar-v1-testkey",
+        "sk-ar-v1-fixture-key-0001",
     ]);
     assert_eq!(code, 0, "{stdout}{stderr}");
     assert!(stdout.contains("ANTHROPIC_BASE_URL"), "{stdout}");
@@ -1366,4 +1366,58 @@ fn menu_help_mentions_dump_tui() {
         combined.contains("dump-tui") || combined.contains("Ratatui"),
         "{combined}"
     );
+}
+
+#[test]
+fn relay_help_documents_subcommands_and_flags() {
+    let (code, stdout, stderr) = run(&["relay", "--help"]);
+    assert_eq!(code, 0, "{stdout}{stderr}");
+    let combined = format!("{stdout}{stderr}");
+    for word in [
+        "start", "pair", "--target", "--pool", "--max-concurrency", "fm serve",
+    ] {
+        assert!(
+            combined.contains(word),
+            "relay help missing {word}:\n{combined}"
+        );
+    }
+    assert!(
+        !combined.contains("not yet implemented") && !combined.contains("coming later"),
+        "relay is implemented; help must not call it a stub:\n{combined}"
+    );
+}
+
+#[test]
+fn relay_unknown_subcommand_prints_usage_and_fails() {
+    let (code, _stdout, stderr) = run(&["relay", "wat"]);
+    assert_eq!(code, 1);
+    assert!(stderr.contains("Unknown relay subcommand: wat"), "{stderr}");
+    assert!(stderr.contains("Usage:"), "{stderr}");
+}
+
+#[test]
+fn relay_rejects_unknown_flag_before_running() {
+    let (code, _stdout, stderr) = run(&["relay", "start", "--bogus"]);
+    assert_eq!(code, 1);
+    assert!(stderr.contains("Unknown flag --bogus"), "{stderr}");
+}
+
+#[test]
+fn relay_start_without_target_or_server_reports_detection_fallback() {
+    // No --target and nothing listening on the probed ports: start resolves a
+    // token first — with none configured it must fail loudly BEFORE printing
+    // anything misleading about targets.
+    let dir = temp_home();
+    let out = anyr()
+        .args(["relay", "start"])
+        .env("ANYROUTER_HOME", &dir)
+        .output()
+        .expect("spawn anyr");
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert_ne!(out.status.code(), Some(0), "unauthenticated start must fail");
+    assert!(
+        !stderr.is_empty(),
+        "expected an error explaining what to do next"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }

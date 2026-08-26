@@ -148,6 +148,26 @@ fn print_redacted_env(env: &BTreeMap<String, String>) {
     }
 }
 
+/// Install-time error for a failed asset download. A 404 means the selected
+/// release has no binary assets uploaded yet (stable v0.1.11 shipped empty),
+/// so name the release instead of surfacing a bare HTTP code.
+fn download_status_error(status: u16, url: &str) -> String {
+    if status == 404 {
+        if let Some(tag) = url
+            .split_once("/releases/download/")
+            .and_then(|(_, rest)| rest.split('/').next())
+            .filter(|tag| !tag.is_empty())
+        {
+            return format!(
+                "Release {tag} has no binary assets uploaded yet. Try `{} update --beta`, \
+or re-run later.",
+                crate::help::invoked_bin()
+            );
+        }
+    }
+    format!("download HTTP {status} from {url}")
+}
+
 #[cfg(not(feature = "native"))]
 fn download_binary(_url: &str, _dest: &Path) -> Result<(), String> {
     Err("download is not available in the browser demo".into())
@@ -163,12 +183,12 @@ fn download_binary(url: &str, dest: &Path) -> Result<(), String> {
         Ok(resp) => resp,
         Err(ureq::Error::Status(code, resp)) => {
             let _ = resp.into_string();
-            return Err(format!("download HTTP {code} from {url}"));
+            return Err(download_status_error(code, url));
         }
         Err(err) => return Err(format!("download failed: {err}")),
     };
     if !(200..300).contains(&resp.status()) {
-        return Err(format!("download HTTP {} from {url}", resp.status()));
+        return Err(download_status_error(resp.status(), url));
     }
     let mut reader = resp.into_reader();
     let mut file =
@@ -784,6 +804,28 @@ mod tests {
         assert!(
             !line.contains("/"),
             "status must not reuse -> for an install path: {line}"
+        );
+    }
+
+    #[test]
+    fn download_404_names_release_and_suggests_beta() {
+        let url =
+            "https://github.com/anyrouter-dev/cli/releases/download/v0.1.11/anyr-linux-x86_64";
+        let err = download_status_error(404, url);
+        assert!(err.contains("v0.1.11"), "{err}");
+        assert!(err.contains("no binary assets uploaded yet"), "{err}");
+        assert!(err.contains("update --beta"), "{err}");
+        // Never leak the bare HTTP line for the known case.
+        assert!(!err.contains("HTTP 404"), "{err}");
+    }
+
+    #[test]
+    fn download_other_statuses_keep_plain_http_error() {
+        let url =
+            "https://github.com/anyrouter-dev/cli/releases/download/v0.1.11/anyr-linux-x86_64";
+        assert_eq!(
+            download_status_error(500, url),
+            format!("download HTTP 500 from {url}")
         );
     }
 }
