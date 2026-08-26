@@ -236,12 +236,11 @@ fn cmd_kind(command: &str) -> Option<CmdKind> {
     Some(match c {
         "setup" | "login" | "auth" | "menu" | "models" | "config" | "keys" | "whoami"
         | "status" | "logout" | "account" | "usage" | "claude" | "codex" | "grok" | "opencode"
-        | "pool" | "pi" | "upgrade" | "onboard" | "impl" | "plan" | "fix" | "deploy" | "cp" => {
-            CmdKind::Implemented
-        }
+        | "pool" | "pi" | "upgrade" | "onboard" | "impl" | "plan" | "fix" | "deploy" | "cp"
+        | "relay" => CmdKind::Implemented,
         "cursor" | "cline" | "windsurf" => CmdKind::HelpOnly,
         "chat" | "task" | "delegate" | "audit" | "logs" | "transactions" | "skills" | "prompt"
-        | "relay" | "byok" => CmdKind::Stub,
+        | "byok" => CmdKind::Stub,
         _ => return None,
     })
 }
@@ -608,6 +607,17 @@ fn dispatch(
         "menu" => run_menu(parsed, env),
         "claude" | "codex" | "grok" | "opencode" | "pool" | "pi" => {
             run_launch(command, parsed, env)
+        }
+        "relay" => {
+            #[cfg(feature = "native")]
+            {
+                crate::relay::run(parsed, env)
+            }
+            #[cfg(not(feature = "native"))]
+            {
+                let _ = parsed;
+                stub("relay")
+            }
         }
         "cursor" | "cline" | "windsurf" => {
             print!("{}", command_help(command).unwrap_or_default());

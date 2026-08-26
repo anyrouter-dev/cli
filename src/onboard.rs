@@ -593,12 +593,21 @@ mod tests {
     #[test]
     fn mode_token_from_aliases() {
         let parsed = parse_cli_args(["onboard", "impl"]).unwrap();
-        assert_eq!(mode_token("onboard", &parsed.passthrough).as_deref(), Some("impl"));
+        assert_eq!(
+            mode_token("onboard", &parsed.passthrough).as_deref(),
+            Some("impl")
+        );
         let parsed = parse_cli_args(["onboard", "cp", "plan"]).unwrap();
-        assert_eq!(mode_token("onboard", &parsed.passthrough).as_deref(), Some("plan"));
+        assert_eq!(
+            mode_token("onboard", &parsed.passthrough).as_deref(),
+            Some("plan")
+        );
         assert!(want_copy(&parsed, "onboard", &parsed.passthrough));
         let parsed = parse_cli_args(["fix"]).unwrap();
-        assert_eq!(mode_token("fix", &parsed.passthrough).as_deref(), Some("fix"));
+        assert_eq!(
+            mode_token("fix", &parsed.passthrough).as_deref(),
+            Some("fix")
+        );
         let mut flags = HashMap::new();
         flags.insert("copy".into(), FlagValue::Bool(true));
         let with_flag = ParsedArgs {
@@ -619,6 +628,9 @@ mod tests {
             "prompt": v.prompt,
         });
         assert_eq!(payload["mode"], "impl");
-        assert!(payload["prompt"].as_str().unwrap().contains("ANYROUTER_API_KEY"));
+        assert!(payload["prompt"]
+            .as_str()
+            .unwrap()
+            .contains("ANYROUTER_API_KEY"));
     }
 }

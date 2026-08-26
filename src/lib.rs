@@ -12,6 +12,8 @@ pub mod install;
 pub mod key;
 pub mod onboard;
 pub mod parse;
+#[cfg(feature = "native")]
+pub mod relay;
 pub mod spawn;
 pub mod term;
 #[cfg(feature = "native")]

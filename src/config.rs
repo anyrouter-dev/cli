@@ -61,6 +61,10 @@ pub struct Profile {
     pub claude_opus: Option<String>,
     pub claude_fable: Option<String>,
     pub timeout_ms: Option<i64>,
+    /// rk_ pairing token for `anyr relay` (shared with the TS CLI).
+    pub relay_token: Option<String>,
+    /// Cached paired-device id so `relay --pool` can PATCH without a lookup.
+    pub relay_device_id: Option<String>,
     pub extra: BTreeMap<String, YamlValue>,
 }
 
@@ -368,6 +372,10 @@ fn profile_from_map(map: &BTreeMap<String, YamlValue>) -> Profile {
                     _ => v.as_string_lossy().parse().ok(),
                 }
             }
+            "relay_token" => p.relay_token = Some(v.as_string_lossy()).filter(|s| !s.is_empty()),
+            "relay_device_id" => {
+                p.relay_device_id = Some(v.as_string_lossy()).filter(|s| !s.is_empty())
+            }
             _ => {
                 p.extra.insert(k.clone(), v.clone());
             }
@@ -477,6 +485,12 @@ pub fn serialize_config(config: &Config) -> String {
         }
         if let Some(t) = profile.timeout_ms {
             lines.push(format!("    timeout_ms: {t}"));
+        }
+        if let Some(k) = &profile.relay_token {
+            lines.push(format!("    relay_token: {}", yaml_scalar(k)));
+        }
+        if let Some(id) = &profile.relay_device_id {
+            lines.push(format!("    relay_device_id: {}", yaml_scalar(id)));
         }
     }
     lines.push("tools:".into());

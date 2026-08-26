@@ -170,10 +170,7 @@ pub fn command_help(command: &str) -> Option<String> {
             &bin,
             "{bin} skills — not yet in the native CLI (coming later).\n",
         ),
-        "relay" => fill(
-            &bin,
-            "{bin} relay — not yet in the native CLI (coming later).\n",
-        ),
+        "relay" => fill(&bin, RELAY),
         "byok" => fill(
             &bin,
             "{bin} byok — not yet in the native CLI. Manage BYOK in the dashboard.\n",
@@ -418,6 +415,33 @@ Downloads:
 --fixture <path> / ANYR_RELEASES_JSON skips the network (tests / dry-run).
 --channel stable|beta overrides the config file for this run only.
 --beta / --stable write channel: into the config, then install that channel.
+";
+
+const RELAY: &str = "\
+{bin} relay — pair this machine and serve a local OpenAI-compatible server to the cloud
+
+Runs your local models (fm serve on Apple Silicon, Ollama, LM Studio, …)
+behind one https://anyrouter.dev endpoint. The CLI dials out; no ports open.
+
+Subcommands:
+  {bin} relay start   connect and keep serving (Ctrl-C to stop)
+  {bin} relay pair    pair this device only (start auto-pairs)
+
+Start options:
+  --target <url>         local OpenAI-compatible base URL
+                         (default: auto-detect fm serve :1976, :8000,
+                         Ollama :11434)
+  --token <rk_…>         pairing token (else $ANYROUTER_RELAY_TOKEN or the
+                         stored relay_token; an sk-ar key also works)
+  --url <wss://…>        relay websocket URL
+  --name <device>        device name when auto-pairing (default \"My Mac\")
+  --pool                 donate idle capacity to the shared pool, earn credits
+  --max-concurrency <n>  concurrent requests advertised to the pool
+  --verbose              show relay transport diagnostics
+
+Examples:
+  fm serve && {bin} relay start
+  {bin} relay start --pool --target http://localhost:11434/v1
 ";
 
 #[cfg(test)]

@@ -21,7 +21,13 @@ pub fn display_time() -> String {
 #[cfg(unix)]
 fn local_time_from_utc(stamp: &str) -> Option<String> {
     let b = stamp.as_bytes();
-    if b.len() != 20 || b[4] != b'-' || b[7] != b'-' || b[10] != b'T' || b[13] != b':' || b[16] != b':' {
+    if b.len() != 20
+        || b[4] != b'-'
+        || b[7] != b'-'
+        || b[10] != b'T'
+        || b[13] != b':'
+        || b[16] != b':'
+    {
         return None;
     }
     let num = |r: std::ops::Range<usize>| stamp.get(r)?.parse::<i64>().ok();
@@ -63,7 +69,10 @@ mod tests {
 
     #[test]
     fn build_time_is_stamped() {
-        assert_ne!(BUILD_TIME, "unknown", "build.rs must stamp ANYR_BUILD_TIME_UTC");
+        assert_ne!(
+            BUILD_TIME, "unknown",
+            "build.rs must stamp ANYR_BUILD_TIME_UTC"
+        );
         assert!(BUILD_TIME.ends_with('Z'), "{BUILD_TIME}");
     }
 

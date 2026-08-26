@@ -72,6 +72,16 @@ pub fn http_delete(url: &str, api_key: Option<&str>) -> Result<(u16, String), St
     into_status_body(with_auth(agent().delete(url), api_key).call())
 }
 
+#[cfg(feature = "native")]
+pub fn http_patch(
+    url: &str,
+    api_key: Option<&str>,
+    json_body: Option<&str>,
+) -> Result<(u16, String), String> {
+    let req = with_auth(agent().patch(url), api_key).set("Content-Type", "application/json");
+    into_status_body(req.send_string(json_body.unwrap_or("{}")))
+}
+
 #[cfg(not(feature = "native"))]
 fn no_network() -> Result<(u16, String), String> {
     Err("network is not available in the browser demo".into())
@@ -93,6 +103,15 @@ pub fn http_post(
 
 #[cfg(not(feature = "native"))]
 pub fn http_delete(_url: &str, _api_key: Option<&str>) -> Result<(u16, String), String> {
+    no_network()
+}
+
+#[cfg(not(feature = "native"))]
+pub fn http_patch(
+    _url: &str,
+    _api_key: Option<&str>,
+    _json_body: Option<&str>,
+) -> Result<(u16, String), String> {
     no_network()
 }
 
