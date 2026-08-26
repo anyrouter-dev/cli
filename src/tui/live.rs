@@ -3,19 +3,24 @@
 use std::io::{self, stdout};
 use std::time::Duration;
 
-use crossterm::event::{self, Event, KeyCode as CtKeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode as CtKeyCode, KeyEventKind,
+    KeyModifiers, MouseButton, MouseEventKind,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use ratatui::backend::CrosstermBackend;
+use ratatui::layout::Rect;
 use ratatui::Terminal;
 
-use super::keys::{map_key, KeyCode, KeyEvent, Surface};
+use super::keys::{map_key, Action, KeyCode, KeyEvent, Surface};
 use super::state::{MenuState, Outcome, PaletteState, PickerState, SettingsOutcome, SettingsState};
 use super::view::{
-    plain_menu_frame, plain_palette_frame, plain_picker_frame, plain_settings_frame, render_menu,
-    render_palette, render_picker, render_settings,
+    hit_menu, hit_palette, hit_picker, hit_settings, plain_menu_frame, plain_palette_frame,
+    plain_picker_frame, plain_settings_frame, render_menu, render_palette, render_picker,
+    render_settings, SettingsHit,
 };
 
 pub fn is_interactive() -> bool {
@@ -63,7 +68,7 @@ impl LiveTerminal {
         enable_raw_mode().map_err(|e| e.to_string())?;
         drain_pending_events();
         let mut out = stdout();
-        execute!(out, EnterAlternateScreen).map_err(|e| e.to_string())?;
+        execute!(out, EnterAlternateScreen, EnableMouseCapture).map_err(|e| e.to_string())?;
         drain_pending_events();
         let backend = CrosstermBackend::new(stdout());
         let terminal = Terminal::new(backend).map_err(|e| e.to_string())?;
@@ -71,9 +76,30 @@ impl LiveTerminal {
     }
 }
 
+fn term_area(live: &LiveTerminal) -> Result<Rect, String> {
+    let size = live.terminal.size().map_err(|e| e.to_string())?;
+    Ok(Rect::new(0, 0, size.width, size.height))
+}
+
+fn scroll_action(kind: MouseEventKind) -> Option<Action> {
+    match kind {
+        MouseEventKind::ScrollUp => Some(Action::Up),
+        MouseEventKind::ScrollDown => Some(Action::Down),
+        _ => None,
+    }
+}
+
+fn left_click(kind: MouseEventKind) -> bool {
+    matches!(kind, MouseEventKind::Down(MouseButton::Left))
+}
+
 impl Drop for LiveTerminal {
     fn drop(&mut self) {
-        let _ = execute!(self.terminal.backend_mut(), LeaveAlternateScreen);
+        let _ = execute!(
+            self.terminal.backend_mut(),
+            DisableMouseCapture,
+            LeaveAlternateScreen
+        );
         let _ = disable_raw_mode();
         let _ = self.terminal.show_cursor();
     }
@@ -101,6 +127,25 @@ pub fn run_picker_live(mut state: PickerState) -> Result<Outcome, String> {
                     return Ok(outcome);
                 }
             }
+            Event::Mouse(m) => {
+                if let Some(action) = scroll_action(m.kind) {
+                    state.apply(action);
+                    continue;
+                }
+                if left_click(m.kind) {
+                    let area = term_area(&live)?;
+                    if let Some(i) = hit_picker(area, &state, m.column, m.row) {
+                        if state.cursor == i {
+                            let outcome = state.apply(Action::Enter);
+                            if outcome != Outcome::Continue {
+                                return Ok(outcome);
+                            }
+                        } else {
+                            state.cursor = i;
+                        }
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -126,6 +171,25 @@ pub fn run_menu_live(mut state: MenuState) -> Result<Outcome, String> {
                 let outcome = state.apply(map_key(Surface::Launcher, key));
                 if outcome != Outcome::Continue {
                     return Ok(outcome);
+                }
+            }
+            Event::Mouse(m) => {
+                if let Some(action) = scroll_action(m.kind) {
+                    state.apply(action);
+                    continue;
+                }
+                if left_click(m.kind) {
+                    let area = term_area(&live)?;
+                    if let Some(i) = hit_menu(area, &state, m.column, m.row) {
+                        if state.cursor == i {
+                            let outcome = state.apply(Action::Enter);
+                            if outcome != Outcome::Continue {
+                                return Ok(outcome);
+                            }
+                        } else {
+                            state.cursor = i;
+                        }
+                    }
                 }
             }
             _ => {}
@@ -178,6 +242,25 @@ pub fn run_palette_live_with(
                     return Ok(outcome);
                 }
             }
+            Event::Mouse(m) => {
+                if let Some(action) = scroll_action(m.kind) {
+                    state.apply(action);
+                    continue;
+                }
+                if left_click(m.kind) {
+                    let area = term_area(&live)?;
+                    if let Some(i) = hit_palette(area, &state, m.column, m.row) {
+                        if state.cursor == i {
+                            let outcome = state.apply(Action::Enter);
+                            if outcome != Outcome::Continue {
+                                return Ok(outcome);
+                            }
+                        } else {
+                            state.cursor = i;
+                        }
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -215,6 +298,27 @@ pub fn run_settings_live(mut state: SettingsState) -> Result<SettingsOutcome, St
                 let outcome = state.apply(map_key(Surface::Settings, key));
                 if outcome != SettingsOutcome::Stay {
                     return Ok(outcome);
+                }
+            }
+            Event::Mouse(m) => {
+                if let Some(action) = scroll_action(m.kind) {
+                    state.apply(action);
+                    continue;
+                }
+                if left_click(m.kind) {
+                    let area = term_area(&live)?;
+                    match hit_settings(area, &state, m.column, m.row) {
+                        Some(SettingsHit::Tab(i)) => {
+                            return Ok(SettingsOutcome::GotoTab(i));
+                        }
+                        Some(SettingsHit::Row(i)) => {
+                            if state.cursor == i {
+                                return Ok(SettingsOutcome::Edit(i));
+                            }
+                            state.cursor = i;
+                        }
+                        None => {}
+                    }
                 }
             }
             _ => {}

@@ -225,6 +225,7 @@ pub enum SettingsOutcome {
     Reset(usize),
     NextTab,
     PrevTab,
+    GotoTab(usize),
     Close,
 }
 

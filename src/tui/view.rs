@@ -10,7 +10,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
 
-use super::state::{MenuState, PaletteEntry, PaletteState, PickerState, SettingRow, SettingsState, Tone};
+use super::state::{
+    MenuState, PaletteEntry, PaletteState, PickerState, SettingRow, SettingsState, Tone,
+};
 use super::theme;
 
 /// Preferred dialog width; shrinks on narrow terminals.
@@ -162,8 +164,8 @@ fn dialog_height(state: &MenuState) -> u16 {
     2 + 2 + status + 3 + 1 + items + 1
 }
 
-/// Palette preferred width — detail columns need a little more room.
-const PALETTE_PREF_WIDTH: u16 = 64;
+/// Palette preferred width — AR mark + status captions need room.
+const PALETTE_PREF_WIDTH: u16 = 72;
 
 /// Command palette: floating input on top, fuzzy results below, groups
 /// rendered only where they change. Same centered-card language as the menu.
@@ -174,53 +176,39 @@ pub fn render_palette(frame: &mut Frame, state: &PaletteState) {
         area,
     );
 
-    let filtered = state.filtered();
-    let visible = filtered.len().min(12);
-    // Group headers share the result area, so the dialog must grow by the
-    // number of distinct groups among the visible rows.
-    let groups = palette_groups(state, &filtered, visible);
-    // borders(2) + inset(2) + input + pads + rule + rows + group headers
-    // + blank between groups + hint
-    let between = groups.saturating_sub(1);
-    let height = 2 + 2 + 1 + 3 + 1 + visible.max(1) as u16 + groups as u16 + between as u16 + 1;
-    let dialog = centered_dialog(area, height, PALETTE_PREF_WIDTH);
+    let (dialog, chunks, visible) = palette_card(area, state);
     frame.render_widget(Clear, dialog);
 
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(theme::brand())
-        .title(Span::styled(" ▲ anyr ", theme::brand()))
+        .title(Span::styled(" anyr ", theme::brand()))
         .style(Style::default().bg(theme::surface_rgb()));
-    let inner = inset(block.inner(dialog), INSET_X, INSET_Y);
     frame.render_widget(block, dialog);
 
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),               // input line
-            Constraint::Length(1),               // pad
-            Constraint::Length(1),               // rule
-            Constraint::Length(1),               // pad
-            Constraint::Min(visible.max(1) as u16), // results
-            Constraint::Length(1),               // pad
-            Constraint::Length(1),               // hint
-        ])
-        .split(inner);
+    frame.render_widget(
+        Paragraph::new(palette_header_lines(
+            &state.header,
+            chunks[0].width as usize,
+        )),
+        chunks[0],
+    );
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            "─".repeat(chunks[1].width as usize),
+            theme::muted(),
+        )),
+        chunks[1],
+    );
 
     let input = Paragraph::new(Line::from(vec![
         Span::styled("❯ ", theme::accent()),
         Span::styled(state.query.clone(), theme::white()),
         Span::styled("█", theme::accent()),
     ]));
-    frame.render_widget(input, chunks[0]);
-    frame.render_widget(
-        Paragraph::new(Span::styled(
-            "─".repeat(chunks[2].width as usize),
-            theme::muted(),
-        )),
-        chunks[2],
-    );
+    frame.render_widget(input, chunks[2]);
 
+    let filtered = state.filtered();
     if filtered.is_empty() {
         frame.render_widget(
             Paragraph::new(Span::styled("no matches", theme::muted())),
@@ -277,18 +265,28 @@ fn palette_rows(
             last_group = Some(&entry.group);
         }
         let selected = row_i == cursor_row;
-        let marker_style = if selected { theme::accent() } else { theme::muted() };
+        let marker_style = if selected {
+            theme::accent()
+        } else {
+            theme::muted()
+        };
         let label = entry.label.clone();
+        let icon = item_icon(&label);
         // Right-align the detail: pad between label and detail like the
         // settings screen pads its value column.
-        let used = 2 + label.chars().count() + entry.detail.chars().count();
+        let used = 2 + icon.chars().count() + label.chars().count() + entry.detail.chars().count();
         let gap = inner_w.saturating_sub(used).max(1);
         let marker: String = if selected { "❯ ".into() } else { "  ".into() };
         rows.push(Line::from(vec![
             Span::styled(marker, marker_style),
+            Span::styled(icon.to_string(), item_icon_style(&label)),
             Span::styled(
                 format!("{label}{}", " ".repeat(gap)),
-                if selected { theme::selected() } else { theme::white() },
+                if selected {
+                    theme::selected()
+                } else {
+                    theme::white()
+                },
             ),
             Span::styled(entry.detail.clone(), theme::muted()),
         ]));
@@ -450,6 +448,198 @@ fn centered_dialog(area: Rect, content_height: u16, pref_width: u16) -> Rect {
     Rect::new(x, y, width, height)
 }
 
+fn card_inner(dialog: Rect) -> Rect {
+    inset(inset(dialog, 1, 1), INSET_X, INSET_Y)
+}
+
+fn in_rect(r: Rect, col: u16, row: u16) -> bool {
+    col >= r.x
+        && row >= r.y
+        && col < r.x.saturating_add(r.width)
+        && row < r.y.saturating_add(r.height)
+}
+
+fn palette_card(area: Rect, state: &PaletteState) -> (Rect, Vec<Rect>, usize) {
+    let filtered = state.filtered();
+    let header_h = palette_header_height(&state.header);
+    let visible = filtered.len().min(10);
+    let groups = palette_groups(state, &filtered, visible);
+    let between = groups.saturating_sub(1);
+    let height = 2
+        + 2
+        + header_h
+        + 1
+        + 1
+        + 1
+        + visible.max(1) as u16
+        + groups as u16
+        + between as u16
+        + 1
+        + 1;
+    let dialog = centered_dialog(area, height, PALETTE_PREF_WIDTH);
+    let inner = card_inner(dialog);
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(header_h),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Min(visible.max(1) as u16),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
+        .split(inner);
+    (dialog, chunks.to_vec(), visible)
+}
+
+/// Filtered-row index under the cell, skipping group headers and gaps.
+pub fn hit_palette(area: Rect, state: &PaletteState, col: u16, row: u16) -> Option<usize> {
+    let (_, chunks, visible) = palette_card(area, state);
+    let results = chunks[4];
+    if !in_rect(results, col, row) {
+        return None;
+    }
+    let dy = (row - results.y) as usize;
+    palette_hit_map(state, visible).get(dy).copied().flatten()
+}
+
+fn palette_hit_map(state: &PaletteState, visible: usize) -> Vec<Option<usize>> {
+    let filtered = state.filtered();
+    let mut map = Vec::new();
+    let mut last_group: Option<&str> = None;
+    for (row_i, &entry_i) in filtered.iter().take(visible).enumerate() {
+        let entry = &state.entries[entry_i];
+        if last_group != Some(entry.group.as_str()) {
+            if last_group.is_some() {
+                map.push(None);
+            }
+            if !entry.group.is_empty() {
+                map.push(None);
+            }
+            last_group = Some(entry.group.as_str());
+        }
+        map.push(Some(row_i));
+    }
+    map
+}
+
+pub fn hit_menu(area: Rect, state: &MenuState, col: u16, row: u16) -> Option<usize> {
+    let dialog = centered_dialog(area, dialog_height(state), DIALOG_PREF_WIDTH);
+    let inner = card_inner(dialog);
+    let status_h = state.header.len().max(1) as u16;
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(status_h),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Min(state.items.len().max(1) as u16),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
+        .split(inner);
+    let list = chunks[4];
+    if !in_rect(list, col, row) {
+        return None;
+    }
+    let i = (row - list.y) as usize;
+    if i < state.items.len() {
+        Some(i)
+    } else {
+        None
+    }
+}
+
+pub fn hit_picker(area: Rect, state: &PickerState, col: u16, row: u16) -> Option<usize> {
+    let area = inset(area, 1, 0);
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1 + state.header.len() as u16),
+            Constraint::Length(1),
+            Constraint::Length(3),
+            Constraint::Length(1),
+            Constraint::Min(3),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
+        .split(area);
+    let inner = inset(chunks[4], 1, 1);
+    if !in_rect(inner, col, row) {
+        return None;
+    }
+    let i = (row - inner.y) as usize;
+    let n = state.filtered().len();
+    if i < n {
+        Some(i)
+    } else {
+        None
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsHit {
+    Row(usize),
+    Tab(usize),
+}
+
+pub fn hit_settings(area: Rect, state: &SettingsState, col: u16, row: u16) -> Option<SettingsHit> {
+    let dialog = centered_dialog(area, settings_dialog_height(state), SETTINGS_PREF_WIDTH);
+    let inner = card_inner(dialog);
+    let status_h = state.header.len().max(1) as u16;
+    let tab_h = if state.tabs.len() > 1 { 2 } else { 0 };
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(status_h),
+            Constraint::Length(tab_h),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Min(state.rows.len().max(1) as u16),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
+        .split(inner);
+    if tab_h > 0 {
+        if let Some(tab) = settings_tab_at(state, chunks[1], col, row) {
+            return Some(SettingsHit::Tab(tab));
+        }
+    }
+    let list = chunks[4];
+    if !in_rect(list, col, row) {
+        return None;
+    }
+    let i = (row - list.y) as usize;
+    match state.rows.get(i) {
+        Some(SettingRow::Entry { .. }) => Some(SettingsHit::Row(i)),
+        _ => None,
+    }
+}
+
+fn settings_tab_at(state: &SettingsState, bar: Rect, col: u16, row: u16) -> Option<usize> {
+    if !in_rect(bar, col, row) {
+        return None;
+    }
+    let mut x = bar.x;
+    for (i, name) in state.tabs.iter().enumerate() {
+        if i > 0 {
+            x = x.saturating_add(2);
+        }
+        let label_w = if i == state.tab {
+            name.chars().count() + 2
+        } else {
+            name.chars().count()
+        } as u16;
+        if col >= x && col < x.saturating_add(label_w) {
+            return Some(i);
+        }
+        x = x.saturating_add(label_w);
+    }
+    None
+}
+
 fn render_status_lines(frame: &mut Frame, area: Rect, header: &[String]) {
     let mut lines: Vec<Line> = Vec::new();
     if header.is_empty() {
@@ -483,7 +673,17 @@ fn render_header(frame: &mut Frame, area: Rect, title: &str, header: &[String]) 
 /// Icon for a launcher/picker row, derived from its label.
 pub fn item_icon(label: &str) -> &'static str {
     let l = label.to_ascii_lowercase();
-    if label.starts_with("Launch") || l.contains("claude") || l.contains("codex") {
+    let stem = l.trim_end_matches('…').trim();
+    if l.contains("onboard") {
+        "📋 "
+    } else if label.starts_with("Launch")
+        || matches!(
+            stem,
+            "claude" | "codex" | "grok" | "opencode" | "pi" | "pool" | "agent"
+        )
+        || l.contains("claude")
+        || l.contains("codex")
+    {
         "⚡ "
     } else if l.contains("config") || l.contains("settings") {
         "⚙  "
@@ -491,19 +691,81 @@ pub fn item_icon(label: &str) -> &'static str {
         "⇄  "
     } else if l.contains("credit") {
         "¤  "
-    } else if l.contains("login") || l.contains("sign in") {
-        "🔑 "
     } else if l.contains("logout") || l.contains("log out") {
         "🚪 "
-    } else if l.contains("onboard") {
-        "📋 "
+    } else if l.contains("login") || l.contains("sign in") || stem == "key" {
+        "🔑 "
     } else if l.contains("quit") || l.contains("done") {
         "✕  "
+    } else if l.contains("install") {
+        "⬇  "
     } else if l.contains("model") {
         "◆  "
     } else {
         "·  "
     }
+}
+
+fn mark_line_width() -> usize {
+    crate::term::MARK_LINES
+        .iter()
+        .map(|s| s.chars().count())
+        .max()
+        .unwrap_or(0)
+}
+
+fn palette_shows_mark(inner_w: usize) -> bool {
+    inner_w >= mark_line_width() + 2 + 12
+}
+
+fn padded_mark_line(i: usize) -> String {
+    let raw = crate::term::MARK_LINES.get(i).copied().unwrap_or("");
+    let w = mark_line_width();
+    format!("{raw}{}", " ".repeat(w.saturating_sub(raw.chars().count())))
+}
+
+fn palette_header_height(header: &[String]) -> u16 {
+    crate::term::MARK_LINES.len().max(header.len()).max(1) as u16
+}
+
+fn status_caption_spans(line: &str) -> Vec<Span<'static>> {
+    if let Some((key, rest)) = line.split_once("  ") {
+        vec![
+            Span::styled(format!("{key:<9}"), theme::muted()),
+            Span::styled(rest.to_string(), theme::white()),
+        ]
+    } else {
+        vec![Span::styled(line.to_string(), theme::white())]
+    }
+}
+
+fn palette_header_lines(header: &[String], inner_w: usize) -> Vec<Line<'static>> {
+    let with_mark = palette_shows_mark(inner_w);
+    let n = if with_mark {
+        crate::term::MARK_LINES.len().max(header.len()).max(1)
+    } else {
+        header.len().max(1)
+    };
+    let mut lines = Vec::with_capacity(n);
+    for i in 0..n {
+        let cap = header.get(i).map(String::as_str).unwrap_or("");
+        let mut spans = Vec::new();
+        if with_mark {
+            spans.push(Span::styled(padded_mark_line(i), theme::white()));
+            if !cap.is_empty() {
+                spans.push(Span::raw("  "));
+            }
+        }
+        if cap.is_empty() {
+            if spans.is_empty() {
+                spans.push(Span::styled("—", theme::muted()));
+            }
+        } else {
+            spans.extend(status_caption_spans(cap));
+        }
+        lines.push(Line::from(spans));
+    }
+    lines
 }
 
 fn item_icon_style(label: &str) -> Style {
@@ -616,9 +878,33 @@ pub fn plain_palette_lines(state: &PaletteState, cols: usize) -> Vec<String> {
     let content_w = inner.saturating_sub(2);
 
     let mut lines = Vec::new();
-    let title_raw = " ▲ anyr ".to_string();
+    let title_raw = " anyr ".to_string();
     let dash_n = content_w.saturating_sub(title_raw.chars().count());
     lines.push(format!("{pad_s}╭{title_raw}{}╮", "─".repeat(dash_n)));
+
+    let with_mark = palette_shows_mark(content_w);
+    let header_n = if with_mark {
+        crate::term::MARK_LINES.len().max(state.header.len()).max(1)
+    } else {
+        state.header.len().max(1)
+    };
+    for i in 0..header_n {
+        let cap = state.header.get(i).map(String::as_str).unwrap_or("");
+        let row = if with_mark {
+            let mark = padded_mark_line(i);
+            if cap.is_empty() {
+                mark
+            } else {
+                format!("{mark}  {cap}")
+            }
+        } else if cap.is_empty() {
+            "—".into()
+        } else {
+            cap.to_string()
+        };
+        lines.push(format!("{pad_s}│{}│", pad_content(&row, content_w)));
+    }
+    lines.push(format!("{pad_s}├{}┤", "─".repeat(content_w)));
 
     // Input line with a block cursor.
     lines.push(format!(
@@ -653,12 +939,14 @@ pub fn plain_palette_lines(state: &PaletteState, cols: usize) -> Vec<String> {
             }
             let selected = row_i == cursor_row;
             let marker = if selected { "◆" } else { " " };
-            let used = 3 + entry.label.chars().count() + entry.detail.chars().count();
-            let gap = content_w
-                .saturating_sub(used)
-                .max(1);
+            let icon = item_icon(&entry.label);
+            let used = 3
+                + icon.chars().count()
+                + entry.label.chars().count()
+                + entry.detail.chars().count();
+            let gap = content_w.saturating_sub(used).max(1);
             let row = format!(
-                "{marker} {label}{}{detail}",
+                "{marker} {icon}{label}{}{detail}",
                 " ".repeat(gap),
                 label = entry.label,
                 detail = entry.detail
@@ -820,9 +1108,61 @@ mod tests {
             ("Log out", "🚪"),
             ("Agent onboard prompt…", "📋"),
             ("Quit", "✕"),
+            ("claude", "⚡"),
+            ("grok", "⚡"),
+            ("opencode", "⚡"),
+            ("pi", "⚡"),
+            ("model…", "◆"),
+            ("key…", "🔑"),
+            ("install…", "⬇"),
+            ("agent…", "⚡"),
         ] {
             assert_eq!(item_icon(label).trim(), icon, "icon for {label}");
         }
+    }
+
+    #[test]
+    fn dump_palette_shows_mark_status_and_icons() {
+        let state = PaletteState::new(
+            vec![
+                "account  duyet · me@example.co".into(),
+                "key      sk-ar-v1-ab…wxyz".into(),
+                "model    stealth/ox-alpha".into(),
+                "agent    claude".into(),
+                "credits  $12.50".into(),
+            ],
+            vec![
+                PaletteEntry::new("claude", "stealth/ox-alpha", "launch", "Launch claude"),
+                PaletteEntry::new(
+                    "model…",
+                    "switch session default",
+                    "configure",
+                    "Switch model",
+                ),
+                PaletteEntry::new("quit", "esc works too", "configure", "Quit"),
+            ],
+        );
+        let frame = plain_palette_frame(&state, 80);
+        assert!(!frame.contains('\u{1b}'), "must be ANSI-free: {frame}");
+        assert!(frame.contains(" anyr "), "{frame}");
+        assert!(
+            frame.contains(crate::term::MARK_LINES[0].trim()),
+            "AR mark missing:\n{frame}"
+        );
+        for line in [
+            "account  duyet · me@example.co",
+            "key      sk-ar-v1-ab…wxyz",
+            "model    stealth/ox-alpha",
+            "agent    claude",
+            "credits  $12.50",
+        ] {
+            assert!(frame.contains(line), "missing {line} in:\n{frame}");
+        }
+        assert!(frame.contains("⚡"), "row icons missing:\n{frame}");
+        assert!(frame.contains("◆"), "{frame}");
+        assert!(frame.contains("LAUNCH"), "{frame}");
+        assert!(frame.contains("CONFIGURE"), "{frame}");
+        assert!(frame.contains('❯'), "{frame}");
     }
 
     #[test]
@@ -866,10 +1206,7 @@ mod tests {
                 },
             ],
         )
-        .with_tabs(
-            vec!["general".into(), "claude".into(), "codex".into()],
-            0,
-        );
+        .with_tabs(vec!["general".into(), "claude".into(), "codex".into()], 0);
         let frame = plain_settings_frame(&state, 80);
         assert!(!frame.contains('\u{1b}'), "must be ANSI-free: {frame}");
         assert!(frame.contains("▲ Config"), "{frame}");
@@ -880,9 +1217,18 @@ mod tests {
         assert!(frame.contains('╭') && frame.contains('╯'), "{frame}");
         // Blank line between ACCOUNT and MODEL sections.
         let dumped: Vec<&str> = frame.lines().collect();
-        let acct = dumped.iter().position(|l| l.contains("ACCOUNT")).expect("ACCOUNT");
-        let model = dumped.iter().position(|l| l.contains("MODEL")).expect("MODEL");
-        assert!(model > acct + 1, "expected padding between sections:\n{frame}");
+        let acct = dumped
+            .iter()
+            .position(|l| l.contains("ACCOUNT"))
+            .expect("ACCOUNT");
+        let model = dumped
+            .iter()
+            .position(|l| l.contains("MODEL"))
+            .expect("MODEL");
+        assert!(
+            model > acct + 1,
+            "expected padding between sections:\n{frame}"
+        );
         // Values right-aligned inside the card (before the right border).
         let row_line = frame
             .lines()
@@ -900,5 +1246,65 @@ mod tests {
         let narrow = plain_settings_frame(&state, 30);
         assert!(!narrow.contains('\u{1b}'));
         assert!(narrow.contains("▲ Config"), "{narrow}");
+    }
+
+    #[test]
+    fn palette_click_skips_group_headers_and_hits_rows() {
+        let state = PaletteState::new(
+            vec![
+                "account  default".into(),
+                "key      sk-ar-…".into(),
+                "model    auto".into(),
+                "agent    claude".into(),
+                "credits  -".into(),
+            ],
+            vec![
+                PaletteEntry::new("claude", "x", "launch", "Launch claude"),
+                PaletteEntry::new("codex", "y", "launch", "Launch codex"),
+                PaletteEntry::new("model…", "z", "configure", "Switch model"),
+            ],
+        );
+        let area = Rect::new(0, 0, 80, 40);
+        let (_, chunks, _) = palette_card(area, &state);
+        let results = chunks[4];
+        let x = results.x + 2;
+        assert_eq!(hit_palette(area, &state, x, results.y), None);
+        assert_eq!(hit_palette(area, &state, x, results.y + 1), Some(0));
+        assert_eq!(hit_palette(area, &state, x, results.y + 2), Some(1));
+        assert_eq!(hit_palette(area, &state, x, results.y + 3), None);
+        assert_eq!(hit_palette(area, &state, x, results.y + 4), None);
+        assert_eq!(hit_palette(area, &state, x, results.y + 5), Some(2));
+        assert_eq!(hit_palette(area, &state, 0, 0), None);
+    }
+
+    #[test]
+    fn menu_click_maps_row_index() {
+        let state = MenuState::new(
+            "AnyRouter",
+            vec!["account  default".into()],
+            vec!["Launch claude".into(), "Config".into(), "Quit".into()],
+        );
+        let area = Rect::new(0, 0, 80, 24);
+        let dialog = centered_dialog(area, dialog_height(&state), DIALOG_PREF_WIDTH);
+        let inner = card_inner(dialog);
+        let status_h = 1u16;
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(status_h),
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Min(3),
+                Constraint::Length(1),
+                Constraint::Length(1),
+            ])
+            .split(inner);
+        let list = chunks[4];
+        let x = list.x + 2;
+        assert_eq!(hit_menu(area, &state, x, list.y), Some(0));
+        assert_eq!(hit_menu(area, &state, x, list.y + 1), Some(1));
+        assert_eq!(hit_menu(area, &state, x, list.y + 2), Some(2));
+        assert_eq!(hit_menu(area, &state, 0, 0), None);
     }
 }

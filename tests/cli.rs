@@ -1219,8 +1219,17 @@ profiles:
         !stdout.contains('\u{1b}'),
         "dump must be ANSI-free: {stdout}"
     );
-    // Palette frame: input line, grouped launch rows, configure rows.
-    assert!(stdout.contains("▲ anyr"), "{stdout}");
+    // Palette frame: AR mark, auth/defaults, input, grouped rows.
+    assert!(stdout.contains("anyr"), "{stdout}");
+    assert!(
+        stdout.contains("▄█▄") || stdout.contains("████"),
+        "AR mark missing:\n{stdout}"
+    );
+    assert!(stdout.contains("account"), "{stdout}");
+    assert!(stdout.contains("key"), "{stdout}");
+    assert!(stdout.contains("model"), "{stdout}");
+    assert!(stdout.contains("agent"), "{stdout}");
+    assert!(stdout.contains("credits"), "{stdout}");
     assert!(stdout.contains("LAUNCH"), "{stdout}");
     assert!(stdout.contains("claude"), "{stdout}");
     assert!(stdout.contains("CONFIGURE"), "{stdout}");
@@ -1228,8 +1237,13 @@ profiles:
     assert!(stdout.contains("account…"), "{stdout}");
     assert!(stdout.contains("key…"), "{stdout}");
     assert!(stdout.contains("model…"), "{stdout}");
+    assert!(stdout.contains("agent…"), "{stdout}");
     assert!(stdout.contains("install…"), "{stdout}");
     assert!(stdout.contains("quit"), "{stdout}");
+    assert!(
+        stdout.contains("⚡") || stdout.contains("◆"),
+        "row icons missing:\n{stdout}"
+    );
     assert!(
         stdout.contains('❯'),
         "palette must show the input line: {stdout}"

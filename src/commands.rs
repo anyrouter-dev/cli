@@ -1641,6 +1641,10 @@ fn config_settings_loop(
                 tab = (tab + n_tabs - 1) % n_tabs;
                 None
             }
+            crate::tui::SettingsOutcome::GotoTab(i) => {
+                tab = i.min(n_tabs.saturating_sub(1));
+                None
+            }
             crate::tui::SettingsOutcome::Close | crate::tui::SettingsOutcome::Stay => None,
         };
         if let Some(Err(err)) = result {
@@ -2676,30 +2680,23 @@ fn launcher_palette(
     let dump_or_pipe = tui_wants_dump(parsed, env) || !term::is_interactive();
     let credits_line = format!("credits  {}", credits.peek_credits());
     let account_line = if dump_or_pipe {
-        format!(
-            "account  {}  {}",
-            cfg.active_profile,
-            if signed_in {
-                mask_api_key(profile.and_then(|p| p.api_key.as_deref()))
-            } else {
-                "(not signed in)".into()
-            }
-        )
+        format!("account  {}", cfg.active_profile)
     } else if let Some(label) = credits.peek_identity().map(|me| me.display_label()) {
         format!("account  {label}")
     } else {
-        format!(
-            "account  {}  {}",
-            cfg.active_profile,
-            if signed_in {
-                mask_api_key(key.as_deref())
-            } else {
-                "(not signed in)".into()
-            }
-        )
+        format!("account  {}", cfg.active_profile)
     };
+    let key_line = format!(
+        "key      {}",
+        if signed_in {
+            mask_api_key(key.as_deref())
+        } else {
+            "(not signed in)".into()
+        }
+    );
     let header = vec![
         account_line,
+        key_line,
         format!("model    {model_line}"),
         format!("agent    {last}"),
         credits_line,
@@ -2723,6 +2720,12 @@ fn launcher_palette(
         "switch session default",
         "configure",
         "Switch model",
+    ));
+    entries.push(PaletteEntry::new(
+        "agent…",
+        "switch default agent",
+        "configure",
+        "Switch agent",
     ));
     entries.push(PaletteEntry::new(
         "account…",
@@ -2771,9 +2774,9 @@ fn launcher_palette(
     let last = launcher_last_tool(path, parsed, env);
     let model_line = session_model_label(profile.map(|p| p.default_model()).unwrap_or("auto"));
     let header = vec![
+        format!("account  {}", cfg.active_profile),
         format!(
-            "account  {}  {}",
-            cfg.active_profile,
+            "key      {}",
             if signed_in {
                 mask_api_key(profile.and_then(|p| p.api_key.as_deref()))
             } else {
@@ -2828,6 +2831,12 @@ fn launcher_palette(
         "switch session default",
         "configure",
         "Switch model",
+    ));
+    entries.push(InlineEntry::new(
+        "agent…",
+        "switch default agent",
+        "configure",
+        "Switch agent",
     ));
     entries.push(InlineEntry::new(
         "account…",
@@ -3202,6 +3211,14 @@ fn launcher_dispatch(
         next.flags.insert("pick".into(), FlagValue::Bool(true));
         if let Err(err) = run_models(&next, env) {
             eprintln!("{}", term::err(&err));
+        }
+        return Ok(LauncherNext::Continue);
+    }
+    if action == "Switch agent" {
+        match config_edit_row(parsed, env, path, SettingKind::Agent) {
+            Ok(_) => {}
+            Err(err) if err == "Cancelled." => {}
+            Err(err) => eprintln!("{}", term::err(&err)),
         }
         return Ok(LauncherNext::Continue);
     }
