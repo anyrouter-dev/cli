@@ -492,6 +492,11 @@ pub fn serialize_config(config: &Config) -> String {
         if let Some(id) = &profile.relay_device_id {
             lines.push(format!("    relay_device_id: {}", yaml_scalar(id)));
         }
+        // Unknown/forward-compat fields (e.g. written by other CLI builds)
+        // round-trip instead of being silently dropped on rewrite.
+        for (key, value) in &profile.extra {
+            lines.push(format!("    {key}: {}", yaml_scalar_value(value)));
+        }
     }
     lines.push("tools:".into());
     for (name, tool) in &config.tools {

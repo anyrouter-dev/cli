@@ -682,6 +682,14 @@ fn persist_login(
         profile.claude_opus = prev.claude_opus.clone();
         profile.claude_fable = prev.claude_fable.clone();
     }
+    // Relay pairing and any unrecognized keys survive a relogin — re-pairing
+    // the device (or losing unknown fields) on every login made credentials
+    // feel like they were never persisted.
+    if let Some(prev) = stored {
+        profile.relay_token = prev.relay_token.clone();
+        profile.relay_device_id = prev.relay_device_id.clone();
+        profile.extra = prev.extra.clone();
+    }
     let mut cfg = upsert_profile(existing.unwrap_or_default(), &name, profile);
     cfg.active_profile = name.clone();
     if !parsed.flag_true("yes") && term::is_interactive() {
@@ -2630,6 +2638,10 @@ fn resolve_latest_key(base: &str, current: &str) -> String {
     if is_active_key_row(&latest.masked, Some(current)) {
         return current.to_string();
     }
+    if !latest.can_reveal {
+        // Reveal would 409 for pre-reveal-support rows; the stored key stays.
+        return current.to_string();
+    }
     reveal_key(base, current, &latest.hash).unwrap_or_else(|_| current.to_string())
 }
 
@@ -3338,5 +3350,88 @@ mod tests {
         assert!(!should_open_launcher(&["help".into()], true, false));
         assert!(!should_open_launcher(&["--help".into()], true, false));
         assert!(!should_open_launcher(&["config".into()], true, false));
+    }
+}
+
+#[cfg(test)]
+mod persist_login_tests {
+    use super::*;
+    use crate::config::{parse_config, serialize_config};
+
+    #[test]
+    fn relogin_preserves_relay_pairing_and_extra_fields() {
+        // Simulates persist_login's profile-rebuild: stored fields must carry
+        // over or every login drops relay pairing and unrecognized keys.
+        let before = "\
+active_profile: default
+profiles:
+  default:
+    api_key: sk-ar-v1-old-key
+    base_url: https://anyrouter.dev/api
+    pinned_preset: \"@preset/coding-stack\"
+    default_model: anthropic/claude-sonnet-4.6
+    default_tool: codex
+    claude_haiku: z/glm
+    timeout_ms: 3000000
+    relay_token: rk_device-token
+    relay_device_id: dev_abc
+    future_field: keep-me
+";
+        let cfg = parse_config(before);
+        let stored = cfg.profiles.get("default");
+
+        // The rebuild in persist_login: fresh default + carried-over fields.
+        let mut profile = create_default_profile(DefaultProfileInput {
+            api_key: Some("sk-ar-v1-new-key".into()),
+            base_url: stored.map(|p| p.base_url().to_string()),
+            preset: None,
+            timeout_ms: None,
+            default_model: stored.and_then(|p| p.default_model.clone()),
+        });
+        profile.management_key = None;
+        if let Some(tool) = stored.and_then(|p| p.default_tool.clone()) {
+            profile.default_tool = Some(tool);
+        }
+        if let Some(prev) = stored {
+            for slot in [
+                "claude_haiku",
+                "claude_sonnet",
+                "claude_opus",
+                "claude_fable",
+            ] {
+                let value = match slot {
+                    "claude_haiku" => prev.claude_haiku.clone(),
+                    "claude_sonnet" => prev.claude_sonnet.clone(),
+                    "claude_opus" => prev.claude_opus.clone(),
+                    _ => prev.claude_fable.clone(),
+                };
+                if let Some(v) = value {
+                    match slot {
+                        "claude_haiku" => profile.claude_haiku = Some(v),
+                        "claude_sonnet" => profile.claude_sonnet = Some(v),
+                        "claude_opus" => profile.claude_opus = Some(v),
+                        _ => profile.claude_fable = Some(v),
+                    }
+                }
+            }
+            profile.relay_token = prev.relay_token.clone();
+            profile.relay_device_id = prev.relay_device_id.clone();
+            profile.extra = prev.extra.clone();
+        }
+
+        let out = parse_config(&serialize_config(&upsert_profile(cfg, "default", profile)));
+        let p = out.profiles.get("default").unwrap();
+        assert_eq!(p.api_key.as_deref(), Some("sk-ar-v1-new-key"));
+        assert_eq!(p.relay_token.as_deref(), Some("rk_device-token"));
+        assert_eq!(p.relay_device_id.as_deref(), Some("dev_abc"));
+        assert_eq!(
+            p.default_model.as_deref(),
+            Some("anthropic/claude-sonnet-4.6")
+        );
+        assert_eq!(p.default_tool.as_deref(), Some("codex"));
+        assert_eq!(
+            p.extra.get("future_field").and_then(|v| v.as_str()),
+            Some("keep-me")
+        );
     }
 }

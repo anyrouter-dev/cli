@@ -483,10 +483,34 @@ pub fn delete_key(base_url: &str, credential: &str, hash: &str) -> Result<(), St
     Ok(())
 }
 
+/// Is this listed key the one currently in use? The list endpoint returns a
+/// mask, never the secret — and masks come in two shapes:
+///
+///   * label-style `sk-ar-v1-abcd…` — everything before the separator is a
+///     literal head of the key; compare with starts_with (≥12 chars so a
+///     generic prefix like `sk-ar-v1-` can't match every row).
+///   * the server's getKeyPrefix() shape `sk-ar-v1-...x9K2` — head + ASCII
+///     dots + the key's LAST 4 characters. The head alone is only 9 chars
+///     (below the threshold), but the tail is real key material: match with
+///     starts_with(head) && ends_with(tail).
+///
+/// Treating the whole `head...tail` mask as one prefix never matches anything
+/// (the middle chars differ from the real key), which made login decide its
+/// own stored key "wasn't the newest" and re-reveal/rotate on every run.
 pub fn is_active_key_row(masked: &str, api_key: Option<&str>) -> bool {
     let key = api_key.unwrap_or("");
-    let prefix = masked.split(['…', '*']).next().unwrap_or("");
-    !key.is_empty() && prefix.len() >= 12 && key.starts_with(prefix)
+    if key.is_empty() || masked.is_empty() {
+        return false;
+    }
+    if let Some((head, tail)) = masked.split_once("...") {
+        // A clean head+tail mask (no further separators inside the tail).
+        if !tail.is_empty() && !tail.contains(['…', '.', '*']) {
+            return head.len() + tail.len() >= 12 && key.starts_with(head) && key.ends_with(tail);
+        }
+    }
+    // Label-style: everything before the first separator is the head.
+    let head = masked.split(['…', '.', '*']).next().unwrap_or("");
+    head.len() >= 12 && key.starts_with(head)
 }
 
 /// Newest `created_at` first. Missing timestamps sort last.
@@ -623,5 +647,35 @@ mod tests {
             Some("sk-ar-v1-zzzz")
         ));
         assert!(!is_active_key_row("short", Some("sk-ar-v1-abcd-secret")));
+    }
+
+    #[test]
+    fn is_active_key_row_matches_server_getkeyprefix_mask() {
+        // Server getKeyPrefix(): first 9 chars + "..." + last 4. The tail is
+        // NOT part of the key's head — matching on the whole mask never
+        // succeeds and made every login think its stored key was a different
+        // one (relogin / re-reveal loop).
+        let mask = "sk-ar-v1-...x9K2";
+        assert!(is_active_key_row(
+            mask,
+            Some("sk-ar-v1-Ab3dF7hJ9kLmNpQrStUvWxYz0123456789x9K2")
+        ));
+        // A different key with the same head must NOT match.
+        assert!(!is_active_key_row(
+            mask,
+            Some("sk-ar-v1-DifferentTail00000000000000000000abcd")
+        ));
+        // A longer-head ASCII-dot mask matches on head AND literal tail.
+        let long = getKeyPrefixStyleMask("sk-ar-v1-abcd", "wxyz");
+        assert!(is_active_key_row(
+            &long,
+            Some("sk-ar-v1-abcd-middle-secret-wxyz")
+        ));
+        assert!(!is_active_key_row(&long, Some("sk-ar-v1-abcd-other-tail")));
+    }
+
+    /// Helper mirroring the server's getKeyPrefix() shape for tests.
+    fn getKeyPrefixStyleMask(head: &str, tail: &str) -> String {
+        format!("{head}...{tail}")
     }
 }
