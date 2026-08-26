@@ -32,6 +32,37 @@ fn run(args: &[&str]) -> (i32, String, String) {
     )
 }
 
+/// Write a stand-in "claude" executable that exits 0 whatever args it receives
+/// (claude-style flags break bare `cmd` on Windows). Returns the path to pass
+/// as ANYROUTER_CLAUDE_PATH; the file lives in its own temp dir.
+fn exit_zero_stub() -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "anyr-stub-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).expect("create stub dir");
+    #[cfg(windows)]
+    let path = dir.join("stub.cmd");
+    #[cfg(not(windows))]
+    let path = dir.join("stub.sh");
+    #[cfg(windows)]
+    let body = "@echo off\r\nexit /b 0\r\n";
+    #[cfg(not(windows))]
+    let body = "#!/bin/sh\nexit 0\n";
+    std::fs::write(&path, body).expect("write stub");
+    #[cfg(not(windows))]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod stub");
+    }
+    path
+}
+
 #[test]
 fn help_lists_login_claude_account_and_spawn_targets() {
     let (code, stdout, stderr) = run(&["--help"]);
@@ -640,8 +671,10 @@ fn model_without_value_errors() {
 fn launch_remembers_explicit_model_as_session_default() {
     // Launching with --model must persist it as default_model so a bare
     // `{bin} claude` next time starts with the same model. A trivially
-    // successful binary stands in for claude so the spawn works everywhere.
-    let stub = if cfg!(windows) { "cmd" } else { "true" };
+    // successful stub stands in for claude: a script file (not `cmd`, which
+    // rejects/hangs on claude-style flags) that exits 0 whatever args arrive.
+    let stub_path = exit_zero_stub();
+    let stub = stub_path.to_str().unwrap();
     let home = temp_home();
     let out = anyr()
         .args([
@@ -690,7 +723,13 @@ fn launch_remembers_explicit_model_as_session_default() {
 
     // Second launch with no --model: dry-run reveals which model was picked.
     let out = anyr()
-        .args(["claude", "--yes", "--dry-run", "--key", "sk-ar-v1-fixture-key-0001"])
+        .args([
+            "claude",
+            "--yes",
+            "--dry-run",
+            "--key",
+            "sk-ar-v1-fixture-key-0001",
+        ])
         .env("ANYROUTER_HOME", &home)
         .env_remove("ANYROUTER_API_KEY")
         .output()
@@ -1374,7 +1413,12 @@ fn relay_help_documents_subcommands_and_flags() {
     assert_eq!(code, 0, "{stdout}{stderr}");
     let combined = format!("{stdout}{stderr}");
     for word in [
-        "start", "pair", "--target", "--pool", "--max-concurrency", "fm serve",
+        "start",
+        "pair",
+        "--target",
+        "--pool",
+        "--max-concurrency",
+        "fm serve",
     ] {
         assert!(
             combined.contains(word),
@@ -1414,7 +1458,12 @@ fn relay_start_without_target_or_server_reports_detection_fallback() {
         .output()
         .expect("spawn anyr");
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
-    assert_ne!(out.status.code(), Some(0), "unauthenticated start must fail");
+    // unwrap_or(1): a signal death (None) must count as failure, not pass.
+    assert_ne!(
+        out.status.code().unwrap_or(1),
+        0,
+        "unauthenticated start must fail"
+    );
     assert!(
         !stderr.is_empty(),
         "expected an error explaining what to do next"
