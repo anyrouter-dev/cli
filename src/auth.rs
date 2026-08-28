@@ -385,7 +385,7 @@ pub fn acquire_api_key(
     eprintln!();
 
     if matches!(flags.get("paste"), Some(FlagValue::Bool(true))) {
-        let api_key = term::prompt("Paste your AnyRouter API key (sk-ar-...): ")?;
+        let api_key = term::prompt_secret("Paste your AnyRouter API key (sk-ar-...): ")?;
         if api_key.is_empty() {
             return Err("No key entered.".into());
         }
@@ -407,7 +407,7 @@ pub fn acquire_api_key(
         }),
         Err(err) => {
             eprintln!("{}", term::warn(&format!("{err} — paste a key instead.")));
-            let api_key = term::prompt("Paste your AnyRouter API key (sk-ar-...): ")?;
+            let api_key = term::prompt_secret("Paste your AnyRouter API key (sk-ar-...): ")?;
             if api_key.is_empty() {
                 return Err("No key entered.".into());
             }
