@@ -519,8 +519,34 @@ pub fn read_config(path: &Path) -> Result<Config, String> {
 pub fn write_config(config: &Config, path: &Path) -> Result<(), String> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir).map_err(|e| format!("Could not create config dir: {e}"))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(dir)
+                .map_err(|e| format!("could not stat {}: {e}", dir.display()))?
+                .permissions();
+            perms.set_mode(0o700);
+            fs::set_permissions(dir, perms)
+                .map_err(|e| format!("could not secure config dir: {e}"))?;
+        }
     }
-    fs::write(path, serialize_config(config)).map_err(|e| format!("Could not write config: {e}"))
+    let body = serialize_config(config);
+    let tmp = path.with_extension("yaml.tmp");
+    fs::write(&tmp, &body).map_err(|e| format!("Could not write config: {e}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&tmp)
+            .map_err(|e| format!("Could not write config: {e}"))?
+            .permissions();
+        perms.set_mode(0o600);
+        fs::set_permissions(&tmp, perms).map_err(|e| format!("Could not secure config: {e}"))?;
+    }
+    fs::rename(&tmp, path).map_err(|e| {
+        let _ = fs::remove_file(&tmp);
+        format!("Could not replace config: {e}")
+    })?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -655,5 +681,64 @@ profiles:
             "active_profile: default\nupdate_channel: BETA\nprofiles:\n  default:\n    api_key: x\n",
         );
         assert_eq!(alias.channel(), "beta");
+    }
+
+    #[test]
+    fn write_config_sets_owner_only_permissions_on_unix() {
+        let dir = std::env::temp_dir().join(format!(
+            "anyr-cfg-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let path = dir.join("config.yaml");
+        let cfg = parse_config(
+            "active_profile: default\nprofiles:\n  default:\n    api_key: sk-ar-v1-test\n",
+        );
+        write_config(&cfg, &path).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600, "file mode {mode:o}");
+            let dmode = std::fs::metadata(&dir).unwrap().permissions().mode();
+            assert_eq!(dmode & 0o777, 0o700, "dir mode {dmode:o}");
+        }
+        // Content survived intact.
+        assert_eq!(
+            read_config(&path)
+                .unwrap()
+                .profiles
+                .get("default")
+                .unwrap()
+                .api_key
+                .as_deref(),
+            Some("sk-ar-v1-test")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_config_leaves_no_tmp_file_behind() {
+        let dir = std::env::temp_dir().join(format!(
+            "anyr-cfg-tmp-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let path = dir.join("config.yaml");
+        let cfg = parse_config("active_profile: default\nprofiles:\n  default:\n    api_key: x\n");
+        write_config(&cfg, &path).unwrap();
+        let entries: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(entries, vec!["config.yaml".to_string()], "{entries:?}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
