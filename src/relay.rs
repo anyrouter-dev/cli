@@ -825,6 +825,12 @@ fn serve_connection(
     }
 }
 
+/// First up-to-`max_chars` characters of `s`, safe on any input (the id is
+/// cloud-controlled and only used for diagnostics).
+fn short_id(s: &str, max_chars: usize) -> String {
+    s.chars().take(max_chars).collect()
+}
+
 /// Spawn a worker thread for one incoming request frame and register its
 /// cancel flag. `target` is 'static by construction: either one of the built-in
 /// probe constants or a leaked --target value (resolved once per process).
@@ -837,7 +843,7 @@ fn spawn_request(state: &ConnState, frame: RequestFrame, target: &'static str) {
         .insert(frame.id.clone(), Arc::clone(&cancel));
     let tx = state.tx.clone();
     std::thread::Builder::new()
-        .name(format!("relay-req-{}", &frame.id[..frame.id.len().min(8)]))
+        .name(format!("relay-req-{}", short_id(&frame.id, 8)))
         .spawn(move || handle_request(&tx, &frame, target, &cancel))
         .expect("spawn relay worker");
 }
@@ -1139,6 +1145,15 @@ mod tests {
 
     fn advertised_modules_placeholder(fetched: &[String]) -> Vec<String> {
         advertised_models("http://10.0.0.5:8000/v1", fetched)
+    }
+
+    #[test]
+    fn short_id_is_char_boundary_safe_and_bounded() {
+        assert_eq!(short_id("abcdefghijklmnop", 8), "abcdefgh");
+        // Multibyte inside the first 8 BYTES must not panic.
+        assert_eq!(short_id("héllo-world", 4), "héll");
+        assert_eq!(short_id("🚀🚀🚀", 2), "🚀🚀");
+        assert_eq!(short_id("", 8), "");
     }
 
     #[test]
