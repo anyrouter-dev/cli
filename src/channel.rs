@@ -449,6 +449,19 @@ pub fn latest_stable_download_url(os: &str, arch: &str) -> String {
     format!("{GITHUB_LATEST_DOWNLOAD}/{}", asset_name(os, arch))
 }
 
+/// One line per asset: `"<64 lowercase hex>  <name>"` (sha256sum format).
+pub fn parse_checksums(body: &str) -> BTreeMap<String, String> {
+    body.lines()
+        .filter_map(|line| {
+            let (hex, name) = line.split_once("  ")?;
+            let hex = hex.trim();
+            let name = name.trim();
+            (hex.len() == 64 && hex.chars().all(|c| c.is_ascii_hexdigit()))
+                .then(|| (name.to_string(), hex.to_ascii_lowercase()))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -492,6 +505,37 @@ mod tests {
             "https://github.com/anyrouter-dev/cli/releases/latest/download/anyr-linux-x86_64"
         );
         assert!(!url.contains("duyet/anyrouter"));
+    }
+
+    #[test]
+    fn parse_checksums_valid_line() {
+        let map = parse_checksums(
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef  anyr-linux-x86_64\n",
+        );
+        assert_eq!(
+            map.get("anyr-linux-x86_64").map(String::as_str),
+            Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+        );
+    }
+
+    #[test]
+    fn parse_checksums_skips_garbage() {
+        let map = parse_checksums(
+            "# comment\nnot a checksum\n0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef  anyr-linux-x86_64\nshort  name\n",
+        );
+        assert_eq!(map.len(), 1);
+        assert!(map.contains_key("anyr-linux-x86_64"));
+    }
+
+    #[test]
+    fn parse_checksums_normalizes_uppercase_hex() {
+        let map = parse_checksums(
+            "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF  anyr-linux-x86_64\n",
+        );
+        assert_eq!(
+            map.get("anyr-linux-x86_64").map(String::as_str),
+            Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+        );
     }
 
     #[test]

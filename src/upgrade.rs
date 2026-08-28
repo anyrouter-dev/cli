@@ -6,14 +6,17 @@ use std::fs;
 use std::fs::OpenOptions;
 #[cfg(feature = "native")]
 use std::io;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use sha2::{Digest, Sha256};
+
 use crate::channel::{
-    asset_name, current_arch, current_os, github_token, merge_expanded_assets, parse_releases,
-    parse_releases_html, release_asset_url, releases_http_error, select_latest_release_with_asset,
-    Channel, Release, GITHUB_EXPANDED_ASSETS_PREFIX, GITHUB_RELEASES_API, GITHUB_RELEASES_HTML,
+    asset_name, current_arch, current_os, github_token, merge_expanded_assets, parse_checksums,
+    parse_releases, parse_releases_html, release_asset_url, releases_http_error,
+    select_latest_release_with_asset, Channel, Release, GITHUB_EXPANDED_ASSETS_PREFIX,
+    GITHUB_RELEASES_API, GITHUB_RELEASES_HTML,
 };
 use crate::config::{resolve_config_path, write_config, Config};
 use crate::http::{http_get_github, http_get_web};
@@ -290,6 +293,9 @@ fn replace_current_binary(url: &str) -> Result<PathBuf, String> {
             .unwrap_or_else(|| "anyr".into())
     ));
     download_binary(url, &tmp)?;
+    if let Err(e) = verify_downloaded_asset(url, &tmp) {
+        return abort_download(&tmp, e);
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -304,6 +310,122 @@ fn replace_current_binary(url: &str) -> Result<PathBuf, String> {
         format!("could not replace {}: {e}", dest.display())
     })?;
     Ok(dest)
+}
+
+/// Sibling `checksums.txt` in the same release-asset directory as `asset_url`.
+fn checksums_url(asset_url: &str) -> String {
+    match asset_url.rsplit_once('/') {
+        Some((dir, _)) => format!("{dir}/checksums.txt"),
+        None => "checksums.txt".into(),
+    }
+}
+
+fn asset_name_from_url(url: &str) -> &str {
+    url.rsplit('/')
+        .next()
+        .filter(|s| !s.is_empty())
+        .unwrap_or("anyr")
+}
+
+/// HTTP 404 on checksums.txt means a legacy release; skip verification.
+fn checksums_missing_is_legacy(status: u16) -> bool {
+    status == 404
+}
+
+fn verify_checksum_file(
+    map: &BTreeMap<String, String>,
+    asset_name: &str,
+    actual_hex: &str,
+) -> Result<(), String> {
+    let Some(expected) = map.get(asset_name) else {
+        return Err(format!(
+            "checksums.txt has no entry for {asset_name}; download aborted"
+        ));
+    };
+    let expected = expected.trim().to_ascii_lowercase();
+    let actual = actual_hex.trim().to_ascii_lowercase();
+    if expected == actual {
+        Ok(())
+    } else {
+        Err(format!(
+            "checksum mismatch for {asset_name}: expected {expected}, got {actual}; download aborted"
+        ))
+    }
+}
+
+fn abort_download(tmp: &Path, err: String) -> Result<PathBuf, String> {
+    let _ = fs::remove_file(tmp);
+    Err(err)
+}
+
+fn sha256_hex_file(path: &Path) -> Result<String, String> {
+    let mut file =
+        fs::File::open(path).map_err(|e| format!("could not read {}: {e}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = file
+            .read(&mut buf)
+            .map_err(|e| format!("could not hash {}: {e}", path.display()))?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+#[cfg(not(feature = "native"))]
+fn fetch_checksums_body(_url: &str) -> Result<Option<String>, String> {
+    Err("download is not available in the browser demo".into())
+}
+
+#[cfg(feature = "native")]
+fn fetch_checksums_body(url: &str) -> Result<Option<String>, String> {
+    let agent = ureq::AgentBuilder::new()
+        .timeout(std::time::Duration::from_secs(60))
+        .user_agent(&format!("anyr-cli/{VERSION}"))
+        .build();
+    match agent.get(url).call() {
+        Ok(resp) => {
+            let status = resp.status();
+            if checksums_missing_is_legacy(status) {
+                return Ok(None);
+            }
+            if !(200..300).contains(&status) {
+                return Err(format!("checksums download HTTP {status} from {url}"));
+            }
+            resp.into_string()
+                .map(Some)
+                .map_err(|e| format!("could not read checksums.txt: {e}"))
+        }
+        Err(ureq::Error::Status(code, resp)) => {
+            let _ = resp.into_string();
+            if checksums_missing_is_legacy(code) {
+                Ok(None)
+            } else {
+                Err(format!("checksums download HTTP {code} from {url}"))
+            }
+        }
+        Err(err) => Err(format!("checksums download failed: {err}")),
+    }
+}
+
+/// Verify `tmp` against sibling `checksums.txt`. 404 → warn and skip (legacy).
+fn verify_downloaded_asset(url: &str, tmp: &Path) -> Result<(), String> {
+    let checksums = checksums_url(url);
+    match fetch_checksums_body(&checksums)? {
+        None => {
+            eprintln!("warning: release has no checksums.txt — skipping verification");
+            Ok(())
+        }
+        Some(body) => {
+            let map = parse_checksums(&body);
+            let asset = asset_name_from_url(url);
+            let actual = sha256_hex_file(tmp)?;
+            verify_checksum_file(&map, asset, &actual)
+        }
+    }
 }
 
 fn env_flag(env: &BTreeMap<String, String>, key: &str) -> Option<bool> {
@@ -1005,6 +1127,71 @@ mod tests {
         let beta =
             select_latest_release_with_asset(&rels, Channel::Beta, "anyr-linux-x86_64").unwrap();
         assert_eq!(beta.tag_name, "v0.1.12-beta.98");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn checksums_url_is_sibling_of_asset() {
+        assert_eq!(
+            checksums_url(
+                "https://github.com/anyrouter-dev/cli/releases/download/v0.1.11/anyr-linux-x86_64"
+            ),
+            "https://github.com/anyrouter-dev/cli/releases/download/v0.1.11/checksums.txt"
+        );
+    }
+
+    #[test]
+    fn checksums_missing_is_legacy_on_404() {
+        assert!(checksums_missing_is_legacy(404));
+        assert!(!checksums_missing_is_legacy(200));
+        assert!(!checksums_missing_is_legacy(500));
+    }
+
+    #[test]
+    fn verify_checksum_file_match() {
+        let mut map = BTreeMap::new();
+        map.insert("anyr-linux-x86_64".into(), "AbCdef".into());
+        assert!(verify_checksum_file(&map, "anyr-linux-x86_64", "abcdef").is_ok());
+    }
+
+    #[test]
+    fn verify_checksum_file_mismatch_mentions_both_hashes() {
+        let mut map = BTreeMap::new();
+        map.insert("anyr-linux-x86_64".into(), "expectedhash".into());
+        let err = verify_checksum_file(&map, "anyr-linux-x86_64", "actualhash").unwrap_err();
+        assert!(err.contains("expectedhash"), "{err}");
+        assert!(err.contains("actualhash"), "{err}");
+        assert!(err.contains("anyr-linux-x86_64"), "{err}");
+        assert!(
+            !err.contains('\0') && !err.contains("payload"),
+            "mismatch must not dump downloaded bytes: {err}"
+        );
+    }
+
+    #[test]
+    fn verify_checksum_file_missing_entry_names_asset() {
+        let map = BTreeMap::new();
+        let err = verify_checksum_file(&map, "anyr-linux-x86_64", "abc").unwrap_err();
+        assert!(err.contains("anyr-linux-x86_64"), "{err}");
+    }
+
+    #[test]
+    fn abort_download_removes_temp_and_keeps_hashes_only() {
+        let (_env, dir) = isolated_home();
+        let tmp = dir.join(".anyr.new");
+        fs::write(&tmp, b"downloaded-bytes-must-not-appear-in-error").unwrap();
+        let err = abort_download(
+            &tmp,
+            "checksum mismatch for anyr-linux-x86_64: expected aaa, got bbb; download aborted"
+                .into(),
+        )
+        .unwrap_err();
+        assert!(!tmp.exists(), "temp file must be removed on checksum abort");
+        assert!(err.contains("aaa") && err.contains("bbb"), "{err}");
+        assert!(
+            !err.contains("downloaded-bytes-must-not-appear-in-error"),
+            "mismatch must not dump downloaded bytes: {err}"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 }
