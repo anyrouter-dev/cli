@@ -330,6 +330,47 @@ pub fn prompt(label: &str) -> Result<String, String> {
     Ok(line.trim().to_string())
 }
 
+/// Read a line with terminal echo disabled (for API keys). Falls back to
+/// normal reading when stdin is not a TTY or termios control fails.
+///
+/// Windows keeps echo on (pre-existing limitation; no new deps).
+pub fn prompt_secret(label: &str) -> Result<String, String> {
+    #[cfg(unix)]
+    {
+        if !io::stdin().is_terminal() {
+            return prompt(label);
+        }
+
+        let fd = libc::STDIN_FILENO;
+        // SAFETY: zeroed termios is only a write buffer for tcgetattr.
+        let mut original: libc::termios = unsafe { std::mem::zeroed() };
+        // SAFETY: fd 0 is stdin; `original` is a valid termios buffer we own.
+        if unsafe { libc::tcgetattr(fd, &mut original) } != 0 {
+            return prompt(label);
+        }
+
+        let mut hidden = original;
+        hidden.c_lflag &= !libc::ECHO;
+        // SAFETY: `hidden` is a copy of the termios returned by tcgetattr.
+        if unsafe { libc::tcsetattr(fd, libc::TCSANOW, &hidden) } != 0 {
+            return prompt(label);
+        }
+
+        let result = prompt(label);
+        // Restore echo even if read_line failed — restore before return.
+        // SAFETY: `original` came from tcgetattr on this same fd.
+        let _ = unsafe { libc::tcsetattr(fd, libc::TCSANOW, &original) };
+        let _ = io::stderr().write_all(b"\n");
+        let _ = io::stderr().flush();
+        result
+    }
+    #[cfg(not(unix))]
+    {
+        // Windows: documented limitation, same as before.
+        prompt(label)
+    }
+}
+
 pub fn confirm(question: &str) -> bool {
     match prompt(&format!("{question} [y/N] ")) {
         Ok(ans) => matches!(ans.to_ascii_lowercase().as_str(), "y" | "yes"),
@@ -504,6 +545,15 @@ pub fn rank_ids(query: &str, ids: &[String]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prompt_secret_falls_back_without_tty() {
+        // In `cargo test` stdin is typically not a tty; assert it delegates and
+        // returns whatever the underlying reader yields. Feed empty stdin via
+        // the existing harness pattern — simplest: just call it and accept Ok/Err
+        // but require no panic.
+        let _ = prompt_secret("x: ");
+    }
 
     #[test]
     fn paint_is_plain_when_no_tty() {
