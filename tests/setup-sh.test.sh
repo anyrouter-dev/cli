@@ -61,4 +61,101 @@ echo "$help_out" | grep -q 'AnyRouter CLI'
 echo "$help_out" | grep -q 'login'
 echo "$help_out" | grep -q 'claude'
 
+# --- 404 / 403 paths: fake curl, no network ---
+FAKE_CURL="${ROOT}/tests/fake-curl.py"
+[ -f "$FAKE_CURL" ] || {
+  echo "missing ${FAKE_CURL}" >&2
+  exit 1
+}
+chmod +x "$FAKE_CURL"
+
+grep -q 'GH_TOKEN' "$SETUP"
+grep -q 'never calls api.github.com' "$SETUP"
+
+: >"${tmpdir}/curl.log"
+empty_latest_bin="${tmpdir}/bin-empty-latest"
+mkdir -p "$empty_latest_bin"
+echo "setup.sh stable with empty /latest (no token, no api.github.com)"
+# CI injects GITHUB_TOKEN; this path must not use the REST API.
+if ! env -u GH_TOKEN -u GITHUB_TOKEN \
+  FAKE_CURL_LOG="${tmpdir}/curl.log" \
+  ANYR_CURL="$FAKE_CURL" \
+  ANYR_BIN_DIR="$empty_latest_bin" \
+  bash "$SETUP"; then
+  echo "setup.sh failed on empty /latest fallback" >&2
+  cat "${tmpdir}/curl.log" >&2 || true
+  exit 1
+fi
+[ -x "${empty_latest_bin}/anyr" ] || {
+  echo "stable fallback did not install anyr" >&2
+  exit 1
+}
+if grep -q 'api.github.com' "${tmpdir}/curl.log"; then
+  echo "setup.sh must not call api.github.com without a token:" >&2
+  cat "${tmpdir}/curl.log" >&2
+  exit 1
+fi
+if grep -q 'releases/download/v0.1.12-beta.98/' "${tmpdir}/curl.log"; then
+  :
+else
+  echo "expected download of v0.1.12-beta.98 (release with binaries):" >&2
+  cat "${tmpdir}/curl.log" >&2
+  exit 1
+fi
+python3 -c 'import sys; sys.exit(0 if open(sys.argv[1],"rb").read(4)==b"\x7fELF" else 1)' \
+  "${empty_latest_bin}/anyr" || {
+  echo "installed file is not the fake ELF asset" >&2
+  exit 1
+}
+
+: >"${tmpdir}/curl.log"
+token_bin="${tmpdir}/bin-token"
+mkdir -p "$token_bin"
+echo "setup.sh stable with GH_TOKEN uses authenticated API"
+env -u GITHUB_TOKEN \
+  GH_TOKEN="ghs_test_token" \
+  FAKE_CURL_LOG="${tmpdir}/curl.log" \
+  ANYR_CURL="$FAKE_CURL" \
+  ANYR_BIN_DIR="$token_bin" \
+  bash "$SETUP"
+[ -x "${token_bin}/anyr" ]
+if grep -q 'Authorization: Bearer ghs_test_token' "${tmpdir}/curl.log"; then
+  :
+else
+  echo "expected authenticated GitHub API request:" >&2
+  cat "${tmpdir}/curl.log" >&2
+  exit 1
+fi
+if grep -q 'api.github.com' "${tmpdir}/curl.log"; then
+  :
+else
+  echo "token path should call api.github.com:" >&2
+  cat "${tmpdir}/curl.log" >&2
+  exit 1
+fi
+
+: >"${tmpdir}/curl.log"
+beta_bin="${tmpdir}/bin-beta"
+mkdir -p "$beta_bin"
+echo "setup.sh --channel beta (no token, no api.github.com)"
+env -u GH_TOKEN -u GITHUB_TOKEN \
+  ANYR_CHANNEL=beta \
+  FAKE_CURL_LOG="${tmpdir}/curl.log" \
+  ANYR_CURL="$FAKE_CURL" \
+  ANYR_BIN_DIR="$beta_bin" \
+  bash "$SETUP"
+[ -x "${beta_bin}/anyr" ]
+if grep -q 'api.github.com' "${tmpdir}/curl.log"; then
+  echo "beta without token must not call api.github.com:" >&2
+  cat "${tmpdir}/curl.log" >&2
+  exit 1
+fi
+if grep -q 'releases/download/v0.1.12-beta.98/' "${tmpdir}/curl.log"; then
+  :
+else
+  echo "expected beta download of v0.1.12-beta.98:" >&2
+  cat "${tmpdir}/curl.log" >&2
+  exit 1
+fi
+
 echo "setup-sh.test.sh ok"

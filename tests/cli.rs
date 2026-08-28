@@ -838,7 +838,7 @@ fn upgrade_check_flag_is_known() {
     ));
     std::fs::write(
         &fixture,
-        r#"[{"tag_name":"v0.1.0","prerelease":false,"draft":false,"assets":[{"name":"anyr-linux-x86_64"}]}]"#,
+        r#"[{"tag_name":"v0.1.0","prerelease":false,"draft":false,"assets":[{"name":"anyr-linux-x86_64","browser_download_url":"https://github.com/anyrouter-dev/cli/releases/download/v0.1.0/anyr-linux-x86_64"}]}]"#,
     )
     .expect("write fixture");
     let out = anyr()
@@ -920,6 +920,69 @@ fn upgrade_check_beta_selects_prerelease() {
         "{stdout}"
     );
     assert!(stdout.contains("update available"), "{stdout}");
+}
+
+fn empty_latest_fixture() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/releases-empty-latest.json")
+}
+
+#[test]
+fn update_stable_empty_latest_is_actionable_not_http_403() {
+    let (code, stdout, stderr) = {
+        let out = anyr()
+            .args(["update", "--check", "--channel", "stable"])
+            .env("ANYR_RELEASES_JSON", empty_latest_fixture())
+            .env_remove("ANYR_CHANNEL")
+            .env_remove("GH_TOKEN")
+            .env_remove("GITHUB_TOKEN")
+            .output()
+            .expect("update --check empty stable");
+        (
+            out.status.code().unwrap_or(1),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+    let combined = format!("{stdout}{stderr}");
+    assert_ne!(code, 0, "empty stable should fail:\n{combined}");
+    assert!(
+        !combined.contains("GitHub Releases API HTTP 403"),
+        "bare 403:\n{combined}"
+    );
+    assert!(
+        combined.contains("update --beta") || combined.contains("anyr-linux-x86_64"),
+        "{combined}"
+    );
+}
+
+#[test]
+fn update_beta_empty_latest_catalog_selects_prerelease() {
+    let (code, stdout, stderr) = {
+        let out = anyr()
+            .args(["update", "--check", "--channel", "beta"])
+            .env("ANYR_RELEASES_JSON", empty_latest_fixture())
+            .env_remove("GH_TOKEN")
+            .env_remove("GITHUB_TOKEN")
+            .output()
+            .expect("update --check beta empty-latest catalog");
+        (
+            out.status.code().unwrap_or(1),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+    let combined = format!("{stdout}{stderr}");
+    assert_eq!(code, 0, "{combined}");
+    assert!(
+        !combined.contains("GitHub Releases API HTTP 403"),
+        "{combined}"
+    );
+    assert!(stdout.contains("channel: beta"), "{stdout}");
+    assert!(
+        stdout.contains("latest:") && stdout.contains("0.1.12-beta.98"),
+        "{stdout}"
+    );
 }
 
 #[test]

@@ -11,10 +11,12 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::channel::{
-    current_arch, current_os, release_asset_url, select_latest, Channel, GITHUB_RELEASES_API,
+    asset_name, current_arch, current_os, github_token, merge_expanded_assets, parse_releases,
+    parse_releases_html, release_asset_url, releases_http_error, select_latest_release_with_asset,
+    Channel, Release, GITHUB_EXPANDED_ASSETS_PREFIX, GITHUB_RELEASES_API, GITHUB_RELEASES_HTML,
 };
 use crate::config::{resolve_config_path, write_config, Config};
-use crate::http::http_get;
+use crate::http::{http_get_github, http_get_web};
 use crate::key::load_config_if_present;
 use crate::parse::{get_string_flag, ParsedArgs};
 use crate::spawn::redact_value;
@@ -54,16 +56,84 @@ pub fn fixture_path(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Opti
         .filter(|s| !s.trim().is_empty())
 }
 
-pub fn load_releases_json(fixture: Option<&str>) -> Result<String, String> {
+/// Where `anyr update` lists GitHub Releases. Never unauthenticated REST.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReleasesFetch {
+    Fixture,
+    AuthenticatedApi,
+    GithubHtml,
+}
+
+impl ReleasesFetch {
+    pub fn from_context(fixture: Option<&str>, env: &BTreeMap<String, String>) -> Self {
+        if fixture.is_some() {
+            Self::Fixture
+        } else if github_token(env).is_some() {
+            Self::AuthenticatedApi
+        } else {
+            Self::GithubHtml
+        }
+    }
+}
+
+pub fn load_releases(
+    fixture: Option<&str>,
+    env: &BTreeMap<String, String>,
+) -> Result<Vec<Release>, String> {
     if let Some(path) = fixture {
-        return fs::read_to_string(path)
-            .map_err(|e| format!("could not read releases fixture {path}: {e}"));
+        let json = fs::read_to_string(path)
+            .map_err(|e| format!("could not read releases fixture {path}: {e}"))?;
+        return parse_releases(&json);
     }
-    let (status, body) = http_get(GITHUB_RELEASES_API, None)?;
+    fetch_releases(env)
+}
+
+fn fetch_releases(env: &BTreeMap<String, String>) -> Result<Vec<Release>, String> {
+    let mut api_err = None;
+    if let Some(token) = github_token(env) {
+        match fetch_releases_api(token) {
+            Ok(rels) => return Ok(rels),
+            Err(err) => api_err = Some(err),
+        }
+    }
+    match fetch_releases_html() {
+        Ok(rels) => Ok(rels),
+        Err(html_err) => Err(match api_err {
+            Some(api) => format!(
+                "{api} Fell back to github.com/releases (not the REST API), which also failed: {html_err}"
+            ),
+            None => html_err,
+        }),
+    }
+}
+
+fn fetch_releases_api(token: &str) -> Result<Vec<Release>, String> {
+    let (status, body) = http_get_github(GITHUB_RELEASES_API, token)?;
     if !(200..300).contains(&status) {
-        return Err(format!("GitHub Releases API HTTP {status}"));
+        return Err(releases_http_error(status, &body));
     }
-    Ok(body)
+    parse_releases(&body)
+}
+
+fn fetch_releases_html() -> Result<Vec<Release>, String> {
+    let (status, html) = http_get_web(GITHUB_RELEASES_HTML)?;
+    if !(200..300).contains(&status) {
+        return Err(releases_http_error(status, &html));
+    }
+    let mut releases = parse_releases_html(&html)?;
+    for rel in &mut releases {
+        if !rel.assets.is_empty() {
+            continue;
+        }
+        let url = format!("{GITHUB_EXPANDED_ASSETS_PREFIX}{}", rel.tag_name);
+        match http_get_web(&url) {
+            Ok((st, body)) if (200..300).contains(&st) => {
+                merge_expanded_assets(rel, &body);
+            }
+            _ => {}
+        }
+    }
+    Ok(releases)
 }
 
 /// `--beta` / `--stable` switch the persisted channel. Mutually exclusive with
@@ -141,6 +211,9 @@ fn print_redacted_env(env: &BTreeMap<String, String>) {
         "ANYR_RELEASES_JSON",
         "ANYROUTER_API_KEY",
         "ANYR_SETUP_BIN",
+        "GH_TOKEN",
+        "GITHUB_TOKEN",
+        "ANYR_GITHUB_TOKEN",
     ] {
         if let Some(value) = env.get(key) {
             println!("{key}={}", redact_printed_value(key, value));
@@ -368,14 +441,15 @@ fn run_auto(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, 
     }
     let channel = resolve_channel(parsed, env)?;
     let fixture = fixture_path(parsed, env);
-    let json = match load_releases_json(fixture.as_deref()) {
+    let releases = match load_releases(fixture.as_deref(), env) {
         Ok(j) => j,
         Err(_) => {
             write_stamp(env);
             return Ok(0);
         }
     };
-    let latest = match select_latest(&json, channel) {
+    let asset = asset_name(current_os(), current_arch());
+    let latest = match select_latest_release_with_asset(&releases, channel, &asset) {
         Ok(rel) => rel,
         Err(_) => {
             write_stamp(env);
@@ -503,10 +577,11 @@ pub fn run(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, S
     }
     let channel = resolve_channel(parsed, env)?;
     let fixture = fixture_path(parsed, env);
-    let json = load_releases_json(fixture.as_deref())?;
-    let latest = select_latest(&json, channel)?;
+    let releases = load_releases(fixture.as_deref(), env)?;
     let os = current_os();
     let arch = current_arch();
+    let asset = asset_name(os, arch);
+    let latest = select_latest_release_with_asset(&releases, channel, &asset)?;
     let url = release_asset_url(&latest, os, arch);
     let latest_ver = latest.version_str();
     // Channel switches may need a "downgrade" (beta → older stable). Compare
@@ -827,5 +902,63 @@ mod tests {
             download_status_error(500, url),
             format!("download HTTP 500 from {url}")
         );
+    }
+
+    #[test]
+    fn releases_fetch_never_uses_unauthenticated_api() {
+        let fixture = ReleasesFetch::from_context(Some("x.json"), &BTreeMap::new());
+        match fixture {
+            ReleasesFetch::Fixture => {}
+            other => panic!("expected Fixture, got {other:?}"),
+        }
+
+        let mut env = BTreeMap::new();
+        env.insert("GH_TOKEN".into(), "ghs_test".into());
+        match ReleasesFetch::from_context(None, &env) {
+            ReleasesFetch::AuthenticatedApi => {}
+            other => panic!("expected AuthenticatedApi, got {other:?}"),
+        }
+
+        match ReleasesFetch::from_context(None, &BTreeMap::new()) {
+            ReleasesFetch::GithubHtml => {}
+            other => panic!("token-less fetch must not hit unauth REST, got {other:?}"),
+        }
+
+        fn label(src: ReleasesFetch) -> &'static str {
+            match src {
+                ReleasesFetch::Fixture => "fixture",
+                ReleasesFetch::AuthenticatedApi => "api",
+                ReleasesFetch::GithubHtml => "html",
+            }
+        }
+        assert_eq!(label(ReleasesFetch::GithubHtml), "html");
+    }
+
+    #[test]
+    fn load_releases_fixture_skips_empty_stable_for_linux_x86_64() {
+        let json = r#"[
+  {"tag_name":"v0.1.11","prerelease":false,"assets":[]},
+  {"tag_name":"v0.1.12-beta.98","prerelease":true,"assets":[{"name":"anyr-linux-x86_64","browser_download_url":"https://github.com/anyrouter-dev/cli/releases/download/v0.1.12-beta.98/anyr-linux-x86_64"}]}
+]"#;
+        let dir = std::env::temp_dir().join(format!(
+            "anyr-empty-stable-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = fs::create_dir_all(&dir);
+        let path = dir.join("releases.json");
+        fs::write(&path, json).unwrap();
+        let rels = load_releases(Some(path.to_str().unwrap()), &BTreeMap::new()).unwrap();
+        let err = select_latest_release_with_asset(&rels, Channel::Stable, "anyr-linux-x86_64")
+            .unwrap_err();
+        assert_ne!(err, "GitHub Releases API HTTP 403");
+        assert!(err.contains("update --beta"), "{err}");
+        let beta =
+            select_latest_release_with_asset(&rels, Channel::Beta, "anyr-linux-x86_64").unwrap();
+        assert_eq!(beta.tag_name, "v0.1.12-beta.98");
+        let _ = fs::remove_dir_all(&dir);
     }
 }

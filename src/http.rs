@@ -58,6 +58,43 @@ pub fn http_get(url: &str, api_key: Option<&str>) -> Result<(u16, String), Strin
 }
 
 #[cfg(feature = "native")]
+fn into_status_body_labeled(
+    result: Result<ureq::Response, ureq::Error>,
+    service: &str,
+) -> Result<(u16, String), String> {
+    match result {
+        Ok(resp) => {
+            let status = resp.status();
+            let body = resp.into_string().unwrap_or_default();
+            Ok((status, body))
+        }
+        Err(ureq::Error::Status(code, resp)) => {
+            let body = resp.into_string().unwrap_or_default();
+            Ok((code, body))
+        }
+        Err(err) => Err(format!("Could not reach {service}: {err}")),
+    }
+}
+
+/// Authenticated GitHub REST GET. `token` must be non-empty — never call
+/// `api.github.com` without it (unauth quota returns 403 from shared IPs).
+#[cfg(feature = "native")]
+pub fn http_get_github(url: &str, token: &str) -> Result<(u16, String), String> {
+    let req = agent()
+        .get(url)
+        .set("Accept", "application/vnd.github+json")
+        .set("X-GitHub-Api-Version", "2022-11-28")
+        .set("Authorization", &format!("Bearer {token}"));
+    into_status_body_labeled(req.call(), "GitHub Releases")
+}
+
+/// `github.com` HTML (releases listing / expanded_assets). Not the REST API.
+#[cfg(feature = "native")]
+pub fn http_get_web(url: &str) -> Result<(u16, String), String> {
+    into_status_body_labeled(agent().get(url).call(), "GitHub")
+}
+
+#[cfg(feature = "native")]
 pub fn http_post(
     url: &str,
     api_key: Option<&str>,
@@ -89,6 +126,16 @@ fn no_network() -> Result<(u16, String), String> {
 
 #[cfg(not(feature = "native"))]
 pub fn http_get(_url: &str, _api_key: Option<&str>) -> Result<(u16, String), String> {
+    no_network()
+}
+
+#[cfg(not(feature = "native"))]
+pub fn http_get_github(_url: &str, _token: &str) -> Result<(u16, String), String> {
+    no_network()
+}
+
+#[cfg(not(feature = "native"))]
+pub fn http_get_web(_url: &str) -> Result<(u16, String), String> {
     no_network()
 }
 
