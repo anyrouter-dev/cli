@@ -219,6 +219,46 @@ pub fn start_device_flow(base_url: &str, tool: Option<&str>) -> Result<DeviceSta
     parse_device_start(&resp)
 }
 
+/// What the poll loop should do next, derived from one server response or
+/// transport outcome plus the running clock budget. Pure — unit-testable.
+enum PollAction {
+    Continue,
+    SlowDown,
+    GiveUp(String),
+}
+
+/// Decide the action for one poll iteration. `elapsed_secs` is wall time since
+/// the flow started; `net_errors` counts consecutive transport failures.
+fn poll_action(
+    outcome: &Result<DevicePoll, ()>, // Err(()) = transport/network error
+    elapsed_secs: u64,
+    net_errors: u32,
+    expires_in: u64,
+) -> PollAction {
+    if matches!(outcome, Err(())) && net_errors >= 5 {
+        return PollAction::GiveUp(
+            "Device login lost contact with the server after several retries. Check your network and re-run."
+                .into(),
+        );
+    }
+    if elapsed_secs >= expires_in {
+        return PollAction::GiveUp(
+            "Device login code expired. Re-run to start a new login.".into(),
+        );
+    }
+    match outcome {
+        Err(()) => PollAction::Continue,
+        Ok(DevicePoll::Pending) => PollAction::Continue,
+        Ok(DevicePoll::SlowDown) => PollAction::SlowDown,
+        Ok(DevicePoll::Denied) => PollAction::GiveUp("Device login was denied by the user.".into()),
+        Ok(DevicePoll::Expired) => {
+            PollAction::GiveUp("Device login code expired. Re-run to start a new login.".into())
+        }
+        Ok(DevicePoll::Failed(msg)) => PollAction::GiveUp(msg.clone()),
+        Ok(DevicePoll::Ready(_)) => PollAction::Continue,
+    }
+}
+
 #[cfg(not(feature = "native"))]
 pub fn poll_device_token(_base_url: &str, _start: &DeviceStart) -> Result<DeviceToken, String> {
     Err("device login is not available in the browser demo".into())
@@ -229,26 +269,39 @@ pub fn poll_device_token(base_url: &str, start: &DeviceStart) -> Result<DeviceTo
     let url = join_api(base_url, "/v1/auth/cli/device/token");
     let payload = serde_json::json!({ "device_code": start.device_code }).to_string();
     let mut interval_ms = start.interval.saturating_mul(1000).max(1000);
+    let started = std::time::Instant::now();
+    let mut net_errors: u32 = 0;
+    let expires_secs = start.expires_in.max(60);
     loop {
         thread::sleep(Duration::from_millis(interval_ms));
-        let (status, body) = match http_post(&url, None, Some(&payload)) {
-            Ok(pair) => pair,
-            Err(_) => {
-                eprintln!("{}", term::warn("Network error while polling. Retrying…"));
-                continue;
+        let outcome = http_post(&url, None, Some(&payload))
+            .map(|(status, body)| parse_device_token(status, &body))
+            .map_err(|_| ());
+        match outcome {
+            Ok(DevicePoll::Ready(token)) => return Ok(token),
+            other => {
+                let elapsed = started.elapsed().as_secs();
+                let consecutive_net_errors = if other.is_err() {
+                    net_errors.saturating_add(1)
+                } else {
+                    net_errors
+                };
+                match poll_action(&other, elapsed, consecutive_net_errors, expires_secs) {
+                    PollAction::Continue => {
+                        if other.is_err() {
+                            eprintln!("{}", term::warn("Network error while polling. Retrying…"));
+                            net_errors = consecutive_net_errors;
+                        } else {
+                            net_errors = 0;
+                        }
+                    }
+                    PollAction::SlowDown => {
+                        net_errors = 0;
+                        interval_ms = interval_ms.saturating_add(5000);
+                    }
+                    PollAction::GiveUp(msg) => return Err(msg),
+                }
             }
-        };
-        match parse_device_token(status, &body) {
-            DevicePoll::Pending => continue,
-            DevicePoll::SlowDown => {
-                interval_ms = interval_ms.saturating_add(5000);
-            }
-            DevicePoll::Denied => return Err("Device login was denied by the user.".into()),
-            DevicePoll::Expired => {
-                return Err("Device login code expired. Re-run to start a new login.".into())
-            }
-            DevicePoll::Failed(msg) => return Err(msg),
-            DevicePoll::Ready(token) => return Ok(token),
         }
     }
 }
@@ -455,5 +508,49 @@ mod tests {
     fn local_session_tries_browser() {
         let env = BTreeMap::new();
         assert!(browser_likely_available(&env));
+    }
+
+    #[test]
+    fn poll_action_gives_up_after_five_transport_errors() {
+        for n in [0u32, 1, 3, 4] {
+            assert!(matches!(
+                poll_action(&Err(()), 10, n, 600),
+                PollAction::Continue
+            ));
+        }
+        assert!(matches!(
+            poll_action(&Err(()), 10, 5, 600),
+            PollAction::GiveUp(_)
+        ));
+    }
+
+    #[test]
+    fn poll_action_enforces_wall_clock_expiry() {
+        // Even a clean Pending answer can't outlive expires_in.
+        let pending = Ok(DevicePoll::Pending);
+        assert!(matches!(
+            poll_action(&pending, 599, 0, 600),
+            PollAction::Continue
+        ));
+        assert!(matches!(
+            poll_action(&pending, 600, 0, 600),
+            PollAction::GiveUp(_)
+        ));
+    }
+
+    #[test]
+    fn poll_action_maps_terminal_states() {
+        assert!(matches!(
+            poll_action(&Ok(DevicePoll::Denied), 10, 0, 600),
+            PollAction::GiveUp(_)
+        ));
+        assert!(matches!(
+            poll_action(&Ok(DevicePoll::Expired), 10, 0, 600),
+            PollAction::GiveUp(_)
+        ));
+        assert!(matches!(
+            poll_action(&Ok(DevicePoll::SlowDown), 10, 0, 600),
+            PollAction::SlowDown
+        ));
     }
 }
