@@ -1,0 +1,31 @@
+[
+  {
+    "tag_name": "v0.1.11",
+    "prerelease": false,
+    "draft": false,
+    "assets": []
+  },
+  {
+    "tag_name": "v0.1.12-beta.98",
+    "prerelease": true,
+    "draft": false,
+    "assets": [
+      {
+        "name": "anyr-linux-x86_64",
+        "browser_download_url": "https://github.com/anyrouter-dev/cli/releases/download/v0.1.12-beta.98/anyr-linux-x86_64"
+      },
+      {
+        "name": "anyr-linux-arm64",
+        "browser_download_url": "https://github.com/anyrouter-dev/cli/releases/download/v0.1.12-beta.98/anyr-linux-arm64"
+      },
+      {
+        "name": "anyr-darwin-x86_64",
+        "browser_download_url": "https://github.com/anyrouter-dev/cli/releases/download/v0.1.12-beta.98/anyr-darwin-x86_64"
+      },
+      {
+        "name": "anyr-darwin-arm64",
+        "browser_download_url": "https://github.com/anyrouter-dev/cli/releases/download/v0.1.12-beta.98/anyr-darwin-arm64"
+      }
+    ]
+  }
+]

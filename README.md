@@ -34,15 +34,14 @@ Every PR runs the full test suite (`cargo test --all-targets`) on each of those
 platforms, plus LLVM coverage uploaded to [Codecov](https://codecov.io/gh/anyrouter-dev/cli).
 Every PR and GitHub Release gets a size + startup report (`anyr --version` / `--help`).
 
-Manual (Linux x86_64 example):
+Manual download of `https://github.com/anyrouter-dev/cli/releases/latest/download/anyr-linux-x86_64`
+404s when the latest non-prerelease has no assets (v0.1.11 shipped empty). Use
+`setup.sh` — it probes `/latest` and then picks a release that actually has
+`anyr-linux-x86_64` (currently a `v0.1.12-beta.*` prerelease). Direct tag URLs:
 
-```bash
-curl -fsSL -o anyr \
-  https://github.com/anyrouter-dev/cli/releases/latest/download/anyr-linux-x86_64
-chmod +x anyr
-```
+`https://github.com/anyrouter-dev/cli/releases/download/<tag>/anyr-linux-x86_64`
 
-Hosted setup (same binary):
+Hosted setup (same resolver):
 
 ```bash
 curl -fsSL https://anyrouter.dev/setup.sh | bash

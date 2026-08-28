@@ -2,12 +2,50 @@
 //! Pure: parse fixture JSON, pick a release, build download URLs. No network.
 
 use std::cmp::Ordering;
+use std::collections::BTreeMap;
 
 pub const GITHUB_REPO: &str = "anyrouter-dev/cli";
 pub const GITHUB_RELEASES_API: &str = "https://api.github.com/repos/anyrouter-dev/cli/releases";
+pub const GITHUB_RELEASES_HTML: &str = "https://github.com/anyrouter-dev/cli/releases";
+pub const GITHUB_EXPANDED_ASSETS_PREFIX: &str =
+    "https://github.com/anyrouter-dev/cli/releases/expanded_assets/";
 pub const GITHUB_DOWNLOAD_PREFIX: &str = "https://github.com/anyrouter-dev/cli/releases/download/";
 pub const GITHUB_LATEST_DOWNLOAD: &str =
     "https://github.com/anyrouter-dev/cli/releases/latest/download";
+
+/// Token for `api.github.com`. Never send these to AnyRouter.
+pub fn github_token(env: &BTreeMap<String, String>) -> Option<&str> {
+    for key in ["GH_TOKEN", "GITHUB_TOKEN", "ANYR_GITHUB_TOKEN"] {
+        if let Some(v) = env.get(key).map(|s| s.trim()).filter(|s| !s.is_empty()) {
+            return Some(v);
+        }
+    }
+    None
+}
+
+/// Actionable GitHub Releases HTTP error. Never the bare
+/// `GitHub Releases API HTTP 403` line (rate-limited unauth quota).
+pub fn releases_http_error(status: u16, body: &str) -> String {
+    let snippet: String = body
+        .trim()
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(160)
+        .collect();
+    let rate_limited = status == 403 || status == 429;
+    let hint = if rate_limited {
+        " Unauthenticated api.github.com requests are rate-limited from some networks. \
+Set GH_TOKEN or GITHUB_TOKEN (public-repo scope) and retry, or install with: \
+curl -fsSL https://anyrouter.dev/setup.sh | bash"
+    } else {
+        ""
+    };
+    if snippet.is_empty() {
+        format!("GitHub Releases returned HTTP {status}.{hint}")
+    } else {
+        format!("GitHub Releases returned HTTP {status}: {snippet}.{hint}")
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Channel {
@@ -31,7 +69,7 @@ impl Channel {
         }
     }
 
-    pub fn from_env(env: &std::collections::BTreeMap<String, String>) -> Result<Self, String> {
+    pub fn from_env(env: &BTreeMap<String, String>) -> Result<Self, String> {
         match env.get("ANYR_CHANNEL") {
             Some(v) if !v.trim().is_empty() => Channel::parse(v),
             _ => Ok(Channel::Stable),
@@ -243,6 +281,152 @@ pub fn select_latest_release(releases: &[Release], channel: Channel) -> Result<R
     })
 }
 
+/// Latest release on `channel` that has binaries.
+/// Prefers a release that lists `asset`; otherwise any non-empty asset list.
+/// Empty-asset stables such as v0.1.11 are skipped so we do not 404 `/latest`.
+pub fn select_latest_release_with_asset(
+    releases: &[Release],
+    channel: Channel,
+    asset: &str,
+) -> Result<Release, String> {
+    let named: Vec<Release> = releases
+        .iter()
+        .filter(|rel| rel.assets.iter().any(|a| a.name == asset))
+        .cloned()
+        .collect();
+    if let Ok(rel) = select_latest_release(&named, channel) {
+        return Ok(rel);
+    }
+    let nonempty: Vec<Release> = releases
+        .iter()
+        .filter(|rel| !rel.assets.is_empty())
+        .cloned()
+        .collect();
+    match select_latest_release(&nonempty, channel) {
+        Ok(rel) => Ok(rel),
+        Err(_) => match channel {
+            Channel::Stable => Err(format!(
+                "No stable GitHub release has {asset} (latest non-prerelease may be empty). \
+Try `anyr update --beta`."
+            )),
+            Channel::Beta => Err(format!("No beta (prerelease) has {asset}.")),
+        },
+    }
+}
+
+fn href_end(s: &str) -> usize {
+    s.find(|c: char| {
+        matches!(
+            c,
+            '"' | '\'' | '<' | '>' | ' ' | '\n' | '\r' | '\t' | '#' | '?'
+        )
+    })
+    .unwrap_or(s.len())
+}
+
+fn find_all_after<'a>(html: &'a str, prefix: &str) -> Vec<(usize, &'a str)> {
+    let mut out = Vec::new();
+    let mut search_from = 0;
+    while let Some(rel) = html[search_from..].find(prefix) {
+        let start = search_from + rel + prefix.len();
+        let after = &html[start..];
+        let end = href_end(after);
+        if end > 0 {
+            out.push((start, &after[..end]));
+        }
+        search_from = start + end.max(1);
+    }
+    out
+}
+
+/// Tag names and prerelease flags from a GitHub `/releases` HTML page.
+pub fn parse_release_tags_html(html: &str) -> Vec<(String, bool)> {
+    let found = find_all_after(html, "anyrouter-dev/cli/releases/tag/");
+    let mut out = Vec::new();
+    let mut seen = BTreeMap::new();
+    for (i, (start, tag)) in found.iter().enumerate() {
+        if !tag.starts_with('v') || tag.contains('/') {
+            continue;
+        }
+        if seen.contains_key(*tag) {
+            continue;
+        }
+        let after_tag = start + tag.len();
+        let next_start = found
+            .iter()
+            .skip(i + 1)
+            .map(|(s, _)| *s)
+            .find(|s| *s > after_tag)
+            .unwrap_or(html.len());
+        let window = &html[after_tag..next_start.min(html.len())];
+        // Hyphen tags are this repo's prereleases; also honor GitHub's label
+        // in the block that follows this tag (not the previous release).
+        let prerelease = tag.contains('-') || window.contains("Pre-release");
+        seen.insert(tag.to_string(), prerelease);
+        out.push((tag.to_string(), prerelease));
+    }
+    out
+}
+
+/// Asset hrefs from a release page or `expanded_assets` HTML fragment.
+pub fn parse_download_hrefs(html: &str) -> BTreeMap<String, Vec<ReleaseAsset>> {
+    let mut by_tag: BTreeMap<String, Vec<ReleaseAsset>> = BTreeMap::new();
+    for (_, spec) in find_all_after(html, "anyrouter-dev/cli/releases/download/") {
+        let Some((tag, name)) = spec.split_once('/') else {
+            continue;
+        };
+        if tag.is_empty() || name.is_empty() {
+            continue;
+        }
+        let url = format!("{GITHUB_DOWNLOAD_PREFIX}{tag}/{name}");
+        let assets = by_tag.entry(tag.to_string()).or_default();
+        if assets.iter().any(|a| a.name == name) {
+            continue;
+        }
+        assets.push(ReleaseAsset {
+            name: name.to_string(),
+            browser_download_url: url,
+        });
+    }
+    by_tag
+}
+
+/// GitHub `/releases` HTML → `Release` list (tags + any download hrefs present).
+pub fn parse_releases_html(html: &str) -> Result<Vec<Release>, String> {
+    let mut by_tag = parse_download_hrefs(html);
+    let tags = parse_release_tags_html(html);
+    if tags.is_empty() && by_tag.is_empty() {
+        return Err("no GitHub release tags found in HTML".into());
+    }
+    let mut out = Vec::new();
+    for (tag, prerelease) in tags {
+        let assets = by_tag.remove(&tag).unwrap_or_default();
+        out.push(Release {
+            tag_name: tag,
+            prerelease,
+            assets,
+        });
+    }
+    for (tag, assets) in by_tag {
+        let prerelease = tag.contains('-');
+        out.push(Release {
+            tag_name: tag,
+            prerelease,
+            assets,
+        });
+    }
+    Ok(out)
+}
+
+pub fn merge_expanded_assets(release: &mut Release, html: &str) {
+    let Some(assets) = parse_download_hrefs(html).remove(&release.tag_name) else {
+        return;
+    };
+    if !assets.is_empty() {
+        release.assets = assets;
+    }
+}
+
 /// Download URL for `anyr-{os}-{arch}` on this release.
 /// Prefers `browser_download_url` from the asset list; otherwise constructs
 /// `https://github.com/anyrouter-dev/cli/releases/download/{tag}/{asset}`.
@@ -312,10 +496,101 @@ mod tests {
 
     #[test]
     fn from_env_defaults_stable() {
-        let env = std::collections::BTreeMap::new();
+        let env = BTreeMap::new();
         assert_eq!(Channel::from_env(&env).unwrap(), Channel::Stable);
-        let mut env = std::collections::BTreeMap::new();
+        let mut env = BTreeMap::new();
         env.insert("ANYR_CHANNEL".into(), "beta".into());
         assert_eq!(Channel::from_env(&env).unwrap(), Channel::Beta);
+    }
+
+    #[test]
+    fn github_token_prefers_gh_token() {
+        let mut env = BTreeMap::new();
+        env.insert("GITHUB_TOKEN".into(), "ghs_other".into());
+        env.insert("GH_TOKEN".into(), "ghs_preferred".into());
+        assert_eq!(github_token(&env), Some("ghs_preferred"));
+        let empty = BTreeMap::new();
+        assert_eq!(github_token(&empty), None);
+    }
+
+    #[test]
+    fn releases_http_error_403_is_not_bare_api_line() {
+        let err = releases_http_error(403, "API rate limit exceeded for 1.2.3.4");
+        assert_ne!(err, "GitHub Releases API HTTP 403");
+        assert!(!err.starts_with("GitHub Releases API HTTP "), "{err}");
+        assert!(err.contains("403"), "{err}");
+        assert!(
+            err.contains("GH_TOKEN") || err.contains("GITHUB_TOKEN"),
+            "{err}"
+        );
+        assert!(err.contains("rate-limited"), "{err}");
+        assert!(err.contains("setup.sh"), "{err}");
+    }
+
+    #[test]
+    fn releases_http_error_other_status_keeps_code() {
+        let err = releases_http_error(500, "");
+        assert!(err.contains("500"), "{err}");
+        assert_ne!(err, "GitHub Releases API HTTP 500");
+        assert!(!err.contains("GH_TOKEN"), "{err}");
+    }
+
+    const HTML_LISTING: &str = r#"
+<a href="/anyrouter-dev/cli/releases/tag/v0.1.11">v0.1.11</a>
+<span>Latest</span>
+<a href="/anyrouter-dev/cli/releases/tag/v0.1.12-beta.98">v0.1.12-beta.98</a>
+<span class="Label">Pre-release</span>
+<a href="/anyrouter-dev/cli/releases/download/v0.1.12-beta.98/anyr-linux-x86_64">anyr-linux-x86_64</a>
+<a href="https://github.com/anyrouter-dev/cli/releases/download/v0.1.12-beta.98/anyr-darwin-arm64">anyr-darwin-arm64</a>
+"#;
+
+    #[test]
+    fn parse_releases_html_skips_empty_stable_and_keeps_beta_assets() {
+        let rels = parse_releases_html(HTML_LISTING).unwrap();
+        let stable = rels.iter().find(|r| r.tag_name == "v0.1.11").unwrap();
+        assert!(!stable.prerelease);
+        assert!(stable.assets.is_empty(), "{stable:?}");
+        let beta = rels
+            .iter()
+            .find(|r| r.tag_name == "v0.1.12-beta.98")
+            .unwrap();
+        assert!(beta.prerelease);
+        assert!(
+            beta.assets.iter().any(|a| a.name == "anyr-linux-x86_64"),
+            "{beta:?}"
+        );
+        assert!(beta.assets.iter().any(|a| a.browser_download_url
+            == "https://github.com/anyrouter-dev/cli/releases/download/v0.1.12-beta.98/anyr-linux-x86_64"));
+    }
+
+    #[test]
+    fn parse_expanded_assets_html_lists_linux_x86_64() {
+        let html = r#"<a href="/anyrouter-dev/cli/releases/download/v0.1.12-beta.98/anyr-linux-x86_64">anyr-linux-x86_64</a>"#;
+        let mut rel = Release {
+            tag_name: "v0.1.12-beta.98".into(),
+            prerelease: true,
+            assets: Vec::new(),
+        };
+        merge_expanded_assets(&mut rel, html);
+        assert_eq!(rel.assets.len(), 1);
+        assert_eq!(rel.assets[0].name, "anyr-linux-x86_64");
+    }
+
+    const EMPTY_STABLE: &str = r#"[
+  {"tag_name":"v0.1.11","prerelease":false,"assets":[]},
+  {"tag_name":"v0.1.12-beta.98","prerelease":true,"assets":[{"name":"anyr-linux-x86_64","browser_download_url":"https://github.com/anyrouter-dev/cli/releases/download/v0.1.12-beta.98/anyr-linux-x86_64"}]}
+]"#;
+
+    #[test]
+    fn select_latest_with_asset_skips_empty_stable() {
+        let rels = parse_releases(EMPTY_STABLE).unwrap();
+        let err = select_latest_release_with_asset(&rels, Channel::Stable, "anyr-linux-x86_64")
+            .unwrap_err();
+        assert!(err.contains("anyr-linux-x86_64"), "{err}");
+        assert!(err.contains("update --beta"), "{err}");
+        assert!(!err.contains("GitHub Releases API HTTP 403"), "{err}");
+        let beta =
+            select_latest_release_with_asset(&rels, Channel::Beta, "anyr-linux-x86_64").unwrap();
+        assert_eq!(beta.tag_name, "v0.1.12-beta.98");
     }
 }
