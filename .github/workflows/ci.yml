@@ -88,6 +88,9 @@ jobs:
           - os: macos-latest
             asset: anyr-darwin-arm64
             target: aarch64-apple-darwin
+          - os: macos-latest
+            asset: anyr-darwin-x86_64
+            target: x86_64-apple-darwin
           - os: windows-latest
             asset: anyr-windows-x86_64.exe
             target: x86_64-pc-windows-msvc
