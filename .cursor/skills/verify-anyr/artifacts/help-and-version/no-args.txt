@@ -1,0 +1,36 @@
+        ▄█▄▀█████████▄  AnyRouter CLI v0.1.11  https://anyrouter.dev
+      ▄█████▄       ███  One key. Every coding agent. Interactive TUI by default.
+    ▄███▀  ▀██▄ ▄▄▄███▀
+  ▄███▀      ▀██▄▀███▄
+▄███▀          ▀██▄▀███▄
+
+USAGE
+  anyr                  Open the interactive TUI (TTY)
+  anyr <command> [flags]
+  anyr <command> --help
+
+CORE COMMANDS
+  menu:       Interactive TUI launcher (default on a TTY)
+  auth:       Authenticate with AnyRouter
+  config:     Interactive settings (key, credits, model)
+  keys:       Manage API keys
+  models:     List catalog and set the default
+  usage:      Credits remaining
+  onboard:    Paste-ready prompts for coding agents
+  impl|plan|fix|deploy|cp
+              Shortcuts for onboard modes
+
+LAUNCH
+  claude    Claude Code
+  cc        Alias of claude
+  codex     Codex
+  grok      Grok Build
+  opencode  OpenCode
+  pi        Pi
+  pool      Poolside
+  poolside  Alias of pool
+
+  anyr                 Sign in if needed, then open the TUI launcher
+  anyr auth login      Sign in
+  anyr onboard impl    Agent paste prompt to wire AnyRouter
+  anyr claude          Launch Claude Code

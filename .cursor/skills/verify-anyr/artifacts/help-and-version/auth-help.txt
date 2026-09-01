@@ -1,0 +1,14 @@
+Authenticate with AnyRouter.
+
+USAGE
+  anyr auth <command> [flags]
+
+AVAILABLE COMMANDS
+  login:       Log in to an AnyRouter account
+  logout:      Log out of an AnyRouter account
+  status:      View authentication status
+  switch:      Switch the active account
+  token:       Print the API key
+
+FLAGS
+  -h, --help   Show help for command
