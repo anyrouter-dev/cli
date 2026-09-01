@@ -1,0 +1,429 @@
+#!/usr/bin/env bash
+# Drive the AnyRouter CLI (`anyr`) the way a user does, inside an isolated
+# ANYROUTER_HOME. One active run at a time.
+#
+# Usage (from repo root):
+#   .cursor/skills/verify-anyr/control-anyr launch
+#   .cursor/skills/verify-anyr/control-anyr doctor
+#   .cursor/skills/verify-anyr/control-anyr cli [--out PATH] -- <anyr-args...>
+#   .cursor/skills/verify-anyr/control-anyr test [-- cargo-test-args...]
+#   .cursor/skills/verify-anyr/control-anyr pty start|send|capture|stop|run
+#   .cursor/skills/verify-anyr/control-anyr path KEY
+#   .cursor/skills/verify-anyr/control-anyr paths
+#   .cursor/skills/verify-anyr/control-anyr cleanup
+set -euo pipefail
+
+SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SKILL_DIR/../../.." && pwd)"
+STATE_DIR="$SKILL_DIR/state"
+STATE_FILE="$STATE_DIR/current"
+ARTIFACTS_DIR="$SKILL_DIR/artifacts"
+TMUX_SESSION="anyr-verify"
+SEED_CONFIG="$SKILL_DIR/seed-config.yaml"
+PTY_HELPER="$SKILL_DIR/helpers/pty-anyr.py"
+
+die() {
+  printf 'control-anyr: %s\n' "$*" >&2
+  exit 1
+}
+
+have_state() {
+  [[ -f "$STATE_FILE" ]]
+}
+
+load_state() {
+  have_state || die "no active run. Start one with: $SKILL_DIR/control-anyr launch"
+  # shellcheck disable=SC1090
+  source "$STATE_FILE"
+  : "${RUN_ID:?}" "${WORKDIR:?}" "${ANYROUTER_HOME:?}" "${BIN:?}"
+}
+
+resolve_path() {
+  local path="$1"
+  if [[ "$path" == /* ]]; then
+    printf '%s\n' "$path"
+  else
+    printf '%s\n' "$SKILL_DIR/$path"
+  fi
+}
+
+write_state() {
+  mkdir -p "$STATE_DIR"
+  cat >"$STATE_FILE" <<EOF
+RUN_ID=$(printf '%q' "$RUN_ID")
+WORKDIR=$(printf '%q' "$WORKDIR")
+ANYROUTER_HOME=$(printf '%q' "$ANYROUTER_HOME")
+CONFIG_FILE=$(printf '%q' "$CONFIG_FILE")
+BIN=$(printf '%q' "$BIN")
+TMUX_SESSION=$(printf '%q' "$TMUX_SESSION")
+ARTIFACTS_DIR=$(printf '%q' "$ARTIFACTS_DIR")
+EOF
+}
+
+isolated_env() {
+  cat <<EOF
+export ANYROUTER_HOME=$(printf '%q' "$ANYROUTER_HOME")
+export ANYR_NO_UPDATE=1
+export ANYR_NO_CATALOG=1
+export ANYR_AGENTS=claude,codex
+export ANYR_GRAPHICS=off
+unset ANYROUTER_API_KEY
+unset ANYROUTER_PROFILE
+EOF
+}
+
+run_anyr() {
+  load_state
+  eval "$(isolated_env)"
+  "$BIN" "$@"
+}
+
+cmd_launch() {
+  if have_state; then
+    printf 'control-anyr: replacing previous isolated run\n' >&2
+    cmd_cleanup >/dev/null
+  fi
+  command -v cargo >/dev/null 2>&1 || die "cargo is not on PATH. Install a recent stable Rust (CI uses rust-toolchain stable; 1.83 cannot parse this lockfile)."
+  command -v rustc >/dev/null 2>&1 || die "rustc is not on PATH."
+
+  mkdir -p "$ARTIFACTS_DIR"
+  (
+    cd "$REPO_ROOT"
+    cargo build --locked --bin anyr
+  ) || die "cargo build --locked --bin anyr failed"
+
+  BIN="$REPO_ROOT/target/debug/anyr"
+  [[ -x "$BIN" ]] || die "build did not produce $BIN"
+
+  RUN_ID="$(date +%Y%m%d-%H%M%S)-$$"
+  WORKDIR="${TMPDIR:-/tmp}/anyr-verify-$RUN_ID"
+  ANYROUTER_HOME="$WORKDIR/home"
+  CONFIG_FILE="$ANYROUTER_HOME/config.yaml"
+  mkdir -p "$ANYROUTER_HOME"
+  cp "$SEED_CONFIG" "$CONFIG_FILE"
+  chmod 700 "$ANYROUTER_HOME"
+  chmod 600 "$CONFIG_FILE"
+
+  write_state
+  printf 'launched RUN_ID=%s\n' "$RUN_ID"
+  printf 'WORKDIR=%s\n' "$WORKDIR"
+  printf 'ANYROUTER_HOME=%s\n' "$ANYROUTER_HOME"
+  printf 'CONFIG_FILE=%s\n' "$CONFIG_FILE"
+  printf 'BIN=%s\n' "$BIN"
+  printf 'ready: anyr --help lists CORE COMMANDS\n'
+}
+
+cmd_doctor() {
+  load_state
+  local failed=0
+  local real_home="${ANYR_VERIFY_REAL_HOME:-$HOME}"
+  local operator_config="$real_home/.anyrouter"
+
+  check() {
+    local name="$1" ok="$2" detail="$3"
+    if [[ "$ok" == "1" ]]; then
+      printf 'ok %s %s\n' "$name" "$detail"
+    else
+      printf 'FAIL %s %s\n' "$name" "$detail"
+      failed=1
+    fi
+  }
+
+  check binary "$([[ -x "$BIN" ]] && echo 1 || echo 0)" "$BIN"
+
+  local version
+  version="$(run_anyr --version 2>/dev/null | head -n1 || true)"
+  check version "$([[ "$version" =~ ^0\.1\. ]] && echo 1 || echo 0)" "${version:-missing}"
+
+  local help_out
+  help_out="$(run_anyr --help 2>&1 || true)"
+  local help_ok=0
+  if [[ "$help_out" == *"CORE COMMANDS"* && "$help_out" == *"LAUNCH"* && "$help_out" == *"auth"* && "$help_out" == *"claude"* && "$help_out" == *"▀█████████▄"* ]]; then
+    help_ok=1
+  fi
+  check help "$help_ok" "anyr --help names CORE COMMANDS / LAUNCH"
+
+  check isolated "$([[ "$ANYROUTER_HOME" == *anyr-verify-* && "$ANYROUTER_HOME" != "$operator_config" && "$ANYROUTER_HOME" != "$real_home/.anyrouter" ]] && echo 1 || echo 0)" "ANYROUTER_HOME=$ANYROUTER_HOME"
+
+  check config "$([[ -f "$CONFIG_FILE" && "$CONFIG_FILE" == "$ANYROUTER_HOME"/* ]] && echo 1 || echo 0)" "$CONFIG_FILE"
+
+  local path_out
+  path_out="$(run_anyr config path 2>/dev/null | tr -d '[:space:]' || true)"
+  check config_path "$([[ "$path_out" == "$CONFIG_FILE" ]] && echo 1 || echo 0)" "config path=$path_out"
+
+  local who_out
+  who_out="$(run_anyr whoami 2>&1 || true)"
+  local who_ok=0
+  if [[ "$who_out" == *"active account"* && "$who_out" == *"default"* && "$who_out" != *"sk-ar-v1-verify-fixture-not-a-real-key"* ]]; then
+    who_ok=1
+  fi
+  check whoami "$who_ok" "whoami shows masked default profile"
+
+  check update_guard 1 "ANYR_NO_UPDATE=1 ANYR_NO_CATALOG=1"
+
+  local pty_state="stopped"
+  if command -v tmux >/dev/null 2>&1 && tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+    pty_state="running"
+  fi
+  check pty 1 "$pty_state"
+
+  check paid_guard 1 "do not run anyr claude/codex/… without --dry-run"
+
+  if [[ "$failed" -ne 0 ]]; then
+    die "doctor found a problem. Do not drive this instance."
+  fi
+}
+
+cmd_cli() {
+  load_state
+  local out=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --out)
+        [[ $# -ge 2 ]] || die "--out requires a path"
+        out="$2"
+        shift 2
+        ;;
+      --)
+        shift
+        break
+        ;;
+      *)
+        break
+        ;;
+    esac
+  done
+  # Empty argv is valid: non-TTY `anyr` prints grouped help.
+
+  local stdout_file stderr_file
+  stdout_file="$(mktemp "$WORKDIR/cli-stdout.XXXXXX")"
+  stderr_file="$(mktemp "$WORKDIR/cli-stderr.XXXXXX")"
+  local code=0
+  set +e
+  run_anyr "$@" >"$stdout_file" 2>"$stderr_file"
+  code=$?
+  set -e
+
+  cat "$stdout_file"
+  if [[ -s "$stderr_file" ]]; then
+    cat "$stderr_file" >&2
+  fi
+
+  if [[ -n "$out" ]]; then
+    local dest
+    dest="$(resolve_path "$out")"
+    mkdir -p "$(dirname "$dest")"
+    cp "$stdout_file" "$dest"
+    cp "$stderr_file" "$dest.err"
+    printf '%s\n' "$code" >"$dest.exit"
+    printf 'wrote %s (exit %s)\n' "$dest" "$code" >&2
+  fi
+
+  rm -f "$stdout_file" "$stderr_file"
+  return "$code"
+}
+
+cmd_test() {
+  # Existing in-repo tests. Prefer these before inventing new drives.
+  if [[ "${1:-}" == "--" ]]; then
+    shift
+  fi
+  (
+    cd "$REPO_ROOT"
+    cargo test --locked --all-targets "$@"
+  )
+}
+
+emit_assignment() {
+  printf '%s=%q\n' "$1" "$2"
+}
+
+cmd_path() {
+  load_state
+  local key="${1:-}"
+  case "$key" in
+    RUN_ID) printf '%s\n' "$RUN_ID" ;;
+    WORKDIR) printf '%s\n' "$WORKDIR" ;;
+    ANYROUTER_HOME) printf '%s\n' "$ANYROUTER_HOME" ;;
+    CONFIG_FILE) printf '%s\n' "$CONFIG_FILE" ;;
+    BIN) printf '%s\n' "$BIN" ;;
+    ARTIFACTS) printf '%s\n' "$ARTIFACTS_DIR" ;;
+    TMUX_SESSION) printf '%s\n' "$TMUX_SESSION" ;;
+    SEED_CONFIG) printf '%s\n' "$SEED_CONFIG" ;;
+    RELEASES_FIXTURE) printf '%s\n' "$REPO_ROOT/tests/fixtures/releases.json" ;;
+    *) die "unknown path key '$key'. Try: control-anyr paths" ;;
+  esac
+}
+
+cmd_paths() {
+  load_state
+  emit_assignment RUN_ID "$RUN_ID"
+  emit_assignment WORKDIR "$WORKDIR"
+  emit_assignment ANYROUTER_HOME "$ANYROUTER_HOME"
+  emit_assignment CONFIG_FILE "$CONFIG_FILE"
+  emit_assignment BIN "$BIN"
+  emit_assignment ARTIFACTS "$ARTIFACTS_DIR"
+  emit_assignment TMUX_SESSION "$TMUX_SESSION"
+  emit_assignment SEED_CONFIG "$SEED_CONFIG"
+  emit_assignment RELEASES_FIXTURE "$REPO_ROOT/tests/fixtures/releases.json"
+  emit_assignment REPO_ROOT "$REPO_ROOT"
+}
+
+pty_running() {
+  command -v tmux >/dev/null 2>&1 || return 1
+  tmux has-session -t "$TMUX_SESSION" 2>/dev/null
+}
+
+cmd_pty() {
+  load_state
+  local action="${1:-}"
+  shift || true
+  case "$action" in
+    start)
+      command -v tmux >/dev/null 2>&1 || die "tmux is required for pty start. Use: control-anyr pty run"
+      if pty_running; then
+        die "tmux session $TMUX_SESSION is already running. Capture or stop it; do not start a second TUI against this HOME."
+      fi
+      local wrapper="$WORKDIR/pty-start.sh"
+      {
+        printf '#!/usr/bin/env bash\nset -euo pipefail\n'
+        isolated_env
+        printf 'exec %q' "$BIN"
+        if [[ $# -gt 0 ]]; then
+          printf ' %q' "$@"
+        fi
+        printf '\n'
+      } >"$wrapper"
+      chmod +x "$wrapper"
+      tmux new-session -d -s "$TMUX_SESSION" -- "$wrapper"
+      printf 'pty started session=%s\n' "$TMUX_SESSION"
+      ;;
+    send)
+      pty_running || die "no PTY session. Start one with: control-anyr pty start -- menu"
+      local literal=0
+      if [[ "${1:-}" == "--literal" ]]; then
+        literal=1
+        shift
+      fi
+      [[ $# -gt 0 ]] || die "usage: control-anyr pty send [--literal] <keys...>"
+      if [[ "$literal" -eq 1 ]]; then
+        tmux send-keys -t "$TMUX_SESSION" -l "$*"
+      else
+        tmux send-keys -t "$TMUX_SESSION" "$@"
+      fi
+      ;;
+    capture)
+      pty_running || die "no PTY session. Start one with: control-anyr pty start -- menu"
+      local out=""
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --path)
+            out="$2"
+            shift 2
+            ;;
+          *)
+            die "usage: control-anyr pty capture [--path PATH]"
+            ;;
+        esac
+      done
+      local pane
+      pane="$(tmux capture-pane -pt "$TMUX_SESSION" -S - -E -)"
+      printf '%s\n' "$pane"
+      if [[ -n "$out" ]]; then
+        local dest
+        dest="$(resolve_path "$out")"
+        mkdir -p "$(dirname "$dest")"
+        printf '%s\n' "$pane" >"$dest"
+        printf 'wrote %s\n' "$dest" >&2
+      fi
+      ;;
+    stop)
+      if pty_running; then
+        tmux send-keys -t "$TMUX_SESSION" q || true
+        sleep 0.2
+        if pty_running; then
+          tmux kill-session -t "$TMUX_SESSION"
+        fi
+        printf 'pty stopped\n'
+      else
+        printf 'pty already stopped\n'
+      fi
+      ;;
+    run)
+      # One-shot PTY via the Python helper (no tmux). Good for dump-style waits.
+      local timeout="8" wait="" send="" out=""
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --timeout)
+            timeout="$2"
+            shift 2
+            ;;
+          --wait)
+            wait="$2"
+            shift 2
+            ;;
+          --send)
+            send="$2"
+            shift 2
+            ;;
+          --out)
+            out="$2"
+            shift 2
+            ;;
+          --)
+            shift
+            break
+            ;;
+          *)
+            break
+            ;;
+        esac
+      done
+      [[ $# -gt 0 ]] || die "usage: control-anyr pty run [--wait REGEX] [--send TEXT] [--out PATH] -- <anyr-args...>"
+      eval "$(isolated_env)"
+      local dest=""
+      if [[ -n "$out" ]]; then
+        dest="$(resolve_path "$out")"
+      fi
+      python3 "$PTY_HELPER" --timeout "$timeout" --wait "$wait" --send "$send" ${dest:+--out "$dest"} -- "$BIN" "$@"
+      ;;
+    *)
+      die "usage: control-anyr pty start|send|capture|stop|run"
+      ;;
+  esac
+}
+
+cmd_cleanup() {
+  if have_state; then
+    # shellcheck disable=SC1090
+    source "$STATE_FILE"
+    if command -v tmux >/dev/null 2>&1 && tmux has-session -t "${TMUX_SESSION:-anyr-verify}" 2>/dev/null; then
+      tmux kill-session -t "$TMUX_SESSION"
+    fi
+    if [[ -n "${WORKDIR:-}" && -d "${WORKDIR:-}" && "$WORKDIR" == *anyr-verify-* ]]; then
+      rm -rf "$WORKDIR"
+    fi
+    rm -f "$STATE_FILE"
+  fi
+  printf 'cleaned isolated run. artifacts remain in %s\n' "$ARTIFACTS_DIR"
+}
+
+main() {
+  local cmd="${1:-}"
+  shift || true
+  case "$cmd" in
+    launch) cmd_launch "$@" ;;
+    doctor) cmd_doctor "$@" ;;
+    cli) cmd_cli "$@" ;;
+    test) cmd_test "$@" ;;
+    pty) cmd_pty "$@" ;;
+    path) cmd_path "$@" ;;
+    paths) cmd_paths "$@" ;;
+    cleanup) cmd_cleanup "$@" ;;
+    *)
+      die "usage: control-anyr launch|doctor|cli|test|pty|path|paths|cleanup"
+      ;;
+  esac
+}
+
+main "$@"
