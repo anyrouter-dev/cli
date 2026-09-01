@@ -1,0 +1,30 @@
+anyr claude — launch Claude Code through AnyRouter
+
+Usage:
+  anyr claude [options] [-- <claude-args>]
+
+Running this with no flags opens the launcher (review settings, then start).
+Add --ok to skip the launcher and start with current settings.
+
+Options:
+  --ok, --yes           Skip the launcher and start with current settings
+  --no-check            Skip the pre-launch reachability probe
+  --model auto|<id>     Session model. "auto" picks the most-used catalog model
+  --haiku <id>          Claude /model haiku and subagents
+  --sonnet <id>         Claude /model sonnet
+  --opus <id>           Claude /model opus
+  --fable <id>          Claude /model fable (also the auto-fallback target)
+  --effort <level>      Reasoning effort: minimal | low | medium | high | xhigh | max
+  --yolo                Claude only: launch with --dangerously-skip-permissions
+  --hub <slug>          Load a hub: sync ~/.anyrouter/hubs + claude --plugin-dir
+  --profile <name>      Use a named profile
+  --command-path <path> Explicit path to the agent executable
+  --install             If the agent isn't installed, install it (skip the prompt)
+  --config <path>       Override the config file path
+  --dry-run             Print the child command and env (secrets redacted)
+  --device              Force the device-code flow (headless / SSH)
+  --device-code         Alias of --device
+  --paste               Force the paste-a-key flow, skipping auto-detection
+
+First run with no config auto-detects the best way to sign in — browser first,
+falling back to the device-code flow automatically.

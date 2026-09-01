@@ -1,0 +1,12 @@
+# Verification scaffolding. Copied into an isolated ANYROUTER_HOME by
+# control-anyr launch. Not a live AnyRouter credential.
+active_profile: default
+auto_update: false
+channel: stable
+profiles:
+  default:
+    api_key: sk-ar-v1-verify-fixture-not-a-real-key
+    default_model: auto
+  work:
+    api_key: sk-ar-v1-verify-work-fixture-not-a-real-key
+    default_model: anthropic/claude-sonnet-4.6
