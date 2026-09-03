@@ -196,7 +196,7 @@ pub fn command_help(command: &str) -> Option<String> {
         ),
         "menu" => fill(
             &bin,
-            "{bin} menu — open the command-palette launcher (default on a TTY)\n\nUsage:\n  {bin}                 Same as `{bin} menu` on a TTY\n  {bin} menu [--dump-tui]\n\nOne input, fuzzy everything: type to filter — \"cla\", \"codex\",\n\"model\" — with account / model / agent / credits status up top and\nright-aligned detail per row. On terminals that can't run the\nfullscreen TUI (dumb TERM, restricted hosts) the same entries fall\nback to an inline numbered prompt.\n\nKeys: type to filter · ↑↓ move · ↵ run · esc quit\n\nConfig opens the grouped settings screen (account, keys, model slots,\nagent, auto-update) with current values on every row.\n`--dump-tui` / ANYR_TUI_DUMP=1 prints one plain frame (for tests and pipes).\n",
+            "{bin} menu — open the command-palette launcher (default on a TTY)\n\nUsage:\n  {bin}                 Same as `{bin} menu` on a TTY\n  {bin} menu [--dump-tui]\n\nOne input, fuzzy everything: type to filter — \"cla\", \"codex\",\n\"model\" — with account / model / agent / credits status up top and\nright-aligned detail per row. On terminals that can't run the\nfullscreen TUI (dumb TERM, restricted hosts) the same entries fall\nback to an inline numbered prompt.\n\nKeys: type to filter · ↑↓ move · ↵ run · esc quit\n\nmodel… / account… / key… bind the current coding agent (the header\n`agent` / last launch) without extra screens. Switch agent first, then\nchange that agent's model, account, or key. Launch uses those bindings;\na per-agent key does not fall back to the default profile key.\nConfig opens the grouped settings screen (account, keys, model slots,\nagent, auto-update) with current values on every row.\n`--dump-tui` / ANYR_TUI_DUMP=1 prints one plain frame (for tests and pipes).\n",
         ),
         "prompt" => fill(
             &bin,
@@ -314,10 +314,12 @@ const ACCOUNT: &str = "\
 Usage:
   {bin} account list
   {bin} account use <name>
+  {bin} account use <name> --agent <claude|codex|grok|opencode|pi|pool>
   {bin} account add [--yes]
 
 Options:
   --yes            Skip confirmations
+  --agent <id>    Bind this account to a coding agent (does not change the session default)
 ";
 
 const MODELS: &str = "\
@@ -326,15 +328,19 @@ const MODELS: &str = "\
 Usage:
   {bin} models [options]
   {bin} models use <id>
+  {bin} models use <id> --agent <claude|codex|grok|opencode|pi|pool>
   {bin} models use --haiku|--sonnet|--opus|--fable <id>
   {bin} models --pick
 
 Lists every model id usable with --model. `use` / `--pick` persist the session
-default, or Claude Code's opus / sonnet / haiku / fable aliases.
+default, or Claude Code's opus / sonnet / haiku / fable aliases. `--agent`
+pins the launch model for that coding agent only (the id must already be known —
+this command does not invent catalog ids).
 
 Options:
   --json            Print as JSON
   --pick            Interactive picker (TTY) — default / haiku / sonnet / opus / fable
+  --agent <id>     Pin the model on one coding agent instead of the session default
   --haiku <id>      Persist Claude haiku alias
   --sonnet <id>     Persist Claude sonnet alias
   --opus <id>       Persist Claude opus alias
@@ -367,10 +373,13 @@ Usage:
   {bin} keys list [--json]
   {bin} keys create [name]
   {bin} keys use [hash]
+  {bin} keys use [hash] --agent <claude|codex|grok|opencode|pi|pool>
   {bin} keys revoke <hash> [--yes]
 
 The signed-in API key must have Key Management permission.
 CLI login (`{bin} auth login`) creates a key with full access.
+`--agent` stores the revealed key on that coding agent so launch does not
+fall back to the default profile key.
 ";
 
 const LOGOUT: &str = "\

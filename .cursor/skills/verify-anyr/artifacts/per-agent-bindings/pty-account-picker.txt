@@ -1,0 +1,24 @@
+ ▲ claude account
+ enter to switch    newest profiles are listed too
+
+ ┌ search ────────────────────────────────────────────────────────────────────┐
+ │⌕ █                                                                         │
+ └────────────────────────────────────────────────────────────────────────────┘
+
+ ┌ claude account ────────────────────────────────────────────────────────────┐
+ │  ·  default  ·  sk-ar-v1-verif…-key  ●                                     │
+ │❯ ·  work  ·  sk-ar-v1-verif…-key                                           │
+ │  ⇄  ＋  Add account                                                        │
+ │  🔑 Re-authenticate (login)                                                │
+ │  🚪 Log out                                                                │
+ │                                                                            │
+ │                                                                            │
+ │                                                                            │
+ │                                                                            │
+ │                                                                            │
+ │                                                                            │
+ │                                                                            │
+ │                                                                            │
+ └────────────────────────────────────────────────────────────────────────────┘
+
+ type to search    ↑↓  move    ↵  select    esc  cancel

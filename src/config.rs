@@ -106,6 +106,38 @@ fn nonempty(value: &Option<String>) -> Option<&str> {
     value.as_deref().map(str::trim).filter(|s| !s.is_empty())
 }
 
+/// Per-coding-agent overrides. When set, launch uses these instead of the
+/// session-wide active profile / default model. A stored `api_key` is used
+/// as-is — launch must not silently fall back to the default profile key.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct AgentBinding {
+    pub profile: Option<String>,
+    pub api_key: Option<String>,
+    pub default_model: Option<String>,
+}
+
+impl AgentBinding {
+    pub fn is_empty(&self) -> bool {
+        self.profile
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or("")
+            .is_empty()
+            && self
+                .api_key
+                .as_deref()
+                .map(str::trim)
+                .unwrap_or("")
+                .is_empty()
+            && self
+                .default_model
+                .as_deref()
+                .map(str::trim)
+                .unwrap_or("")
+                .is_empty()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
     pub active_profile: String,
@@ -115,6 +147,8 @@ pub struct Config {
     /// Upgrade channel: `stable` (default) or `beta`. Not shown in `ar config`.
     pub channel: Option<String>,
     pub profiles: BTreeMap<String, Profile>,
+    /// Per-agent model / account / key. Keys are canonical tool ids (`claude`, …).
+    pub agents: BTreeMap<String, AgentBinding>,
     pub tools: BTreeMap<String, ToolConfig>,
 }
 
@@ -126,6 +160,7 @@ impl Default for Config {
             auto_update: None,
             channel: None,
             profiles: BTreeMap::new(),
+            agents: BTreeMap::new(),
             tools: create_default_tools(),
         }
     }
@@ -146,6 +181,20 @@ impl Config {
             Some(ch) => ch,
             None => "stable",
         }
+    }
+
+    pub fn agent_binding(&self, tool: &str) -> Option<&AgentBinding> {
+        let id = crate::spawn::canonical_tool(tool);
+        self.agents.get(id).or_else(|| self.agents.get(tool))
+    }
+
+    pub fn agent_binding_mut(&mut self, tool: &str) -> &mut AgentBinding {
+        let id = crate::spawn::canonical_tool(tool).to_string();
+        self.agents.entry(id).or_default()
+    }
+
+    pub fn prune_empty_agents(&mut self) {
+        self.agents.retain(|_, b| !b.is_empty());
     }
 }
 
@@ -384,6 +433,21 @@ fn profile_from_map(map: &BTreeMap<String, YamlValue>) -> Profile {
     p
 }
 
+fn agent_binding_from_map(map: &BTreeMap<String, YamlValue>) -> AgentBinding {
+    let mut b = AgentBinding::default();
+    for (k, v) in map {
+        match k.as_str() {
+            "profile" => b.profile = Some(v.as_string_lossy()).filter(|s| !s.is_empty()),
+            "api_key" => b.api_key = Some(v.as_string_lossy()).filter(|s| !s.is_empty()),
+            "default_model" => {
+                b.default_model = Some(v.as_string_lossy()).filter(|s| !s.is_empty())
+            }
+            _ => {}
+        }
+    }
+    b
+}
+
 pub fn parse_config(source: &str) -> Config {
     let root = parse_yaml_map(source);
     let mut config = Config::default();
@@ -417,6 +481,17 @@ pub fn parse_config(source: &str) -> Config {
         for (name, value) in map {
             if let Some(pm) = value.as_map() {
                 config.profiles.insert(name.clone(), profile_from_map(pm));
+            }
+        }
+    }
+    if let Some(map) = root.get("agents").and_then(|v| v.as_map()) {
+        for (name, value) in map {
+            if let Some(am) = value.as_map() {
+                let id = crate::spawn::canonical_tool(name).to_string();
+                let binding = agent_binding_from_map(am);
+                if !binding.is_empty() {
+                    config.agents.insert(id, binding);
+                }
             }
         }
     }
@@ -496,6 +571,26 @@ pub fn serialize_config(config: &Config) -> String {
         // round-trip instead of being silently dropped on rewrite.
         for (key, value) in &profile.extra {
             lines.push(format!("    {key}: {}", yaml_scalar_value(value)));
+        }
+    }
+    let agents: Vec<(&String, &AgentBinding)> = config
+        .agents
+        .iter()
+        .filter(|(_, b)| !b.is_empty())
+        .collect();
+    if !agents.is_empty() {
+        lines.push("agents:".into());
+        for (name, binding) in agents {
+            lines.push(format!("  {name}:"));
+            if let Some(p) = &binding.profile {
+                lines.push(format!("    profile: {}", yaml_scalar(p)));
+            }
+            if let Some(k) = &binding.api_key {
+                lines.push(format!("    api_key: {}", yaml_scalar(k)));
+            }
+            if let Some(m) = &binding.default_model {
+                lines.push(format!("    default_model: {}", yaml_scalar(m)));
+            }
         }
     }
     lines.push("tools:".into());
@@ -638,6 +733,58 @@ profiles:
         let p2 = again.profiles.get("default").unwrap();
         assert_eq!(p2.claude_haiku.as_deref(), Some("z-ai/glm-4.7-flash"));
         assert_eq!(p2.default_model.as_deref(), Some("anyrouter/auto"));
+    }
+
+    #[test]
+    fn agents_section_roundtrips_per_agent_bindings() {
+        let src = "\
+active_profile: default
+last_tool: claude
+profiles:
+  default:
+    api_key: sk-ar-v1-default-key-aaaa
+    default_model: auto
+  work:
+    api_key: sk-ar-v1-work-key-bbbb
+    default_model: anthropic/claude-sonnet-4.6
+agents:
+  claude:
+    profile: work
+    api_key: sk-ar-v1-claude-key-cccc
+    default_model: stealth/ox-alpha
+  grok:
+    default_model: grok-4
+";
+        let cfg = parse_config(src);
+        let claude = cfg.agent_binding("claude").expect("claude binding");
+        assert_eq!(claude.profile.as_deref(), Some("work"));
+        assert_eq!(claude.api_key.as_deref(), Some("sk-ar-v1-claude-key-cccc"));
+        assert_eq!(claude.default_model.as_deref(), Some("stealth/ox-alpha"));
+        let grok = cfg.agent_binding("grok").expect("grok binding");
+        assert_eq!(grok.profile, None);
+        assert_eq!(grok.api_key, None);
+        assert_eq!(grok.default_model.as_deref(), Some("grok-4"));
+        assert!(cfg.agent_binding("codex").is_none());
+        let yaml = serialize_config(&cfg);
+        assert!(yaml.contains("agents:"), "{yaml}");
+        assert!(yaml.contains("  claude:"), "{yaml}");
+        assert!(
+            yaml.contains("    default_model: stealth/ox-alpha"),
+            "{yaml}"
+        );
+        let again = parse_config(&yaml);
+        assert_eq!(
+            again
+                .agent_binding("claude")
+                .and_then(|b| b.api_key.as_deref()),
+            Some("sk-ar-v1-claude-key-cccc")
+        );
+        assert_eq!(
+            again
+                .agent_binding("grok")
+                .and_then(|b| b.default_model.as_deref()),
+            Some("grok-4")
+        );
     }
 
     #[test]

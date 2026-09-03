@@ -24,6 +24,7 @@ pub static VALUE_FLAGS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
         "hub",
         "source",
         "tool",
+        "agent",
         "channel",
         "fixture",
         "haiku",

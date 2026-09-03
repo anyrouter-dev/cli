@@ -1533,3 +1533,245 @@ fn relay_start_without_target_or_server_reports_detection_fallback() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn account_use_agent_binds_without_changing_active_profile() {
+    let home = temp_home();
+    let path = home.join("config.yaml");
+    std::fs::write(
+        &path,
+        "\
+active_profile: default
+profiles:
+  default:
+    api_key: sk-ar-v1-default-key-aaaa
+    default_model: auto
+  work:
+    api_key: sk-ar-v1-work-key-bbbb
+    default_model: anthropic/claude-sonnet-4.6
+",
+    )
+    .unwrap();
+    let out = anyr()
+        .args(["account", "use", "work", "--agent", "claude"])
+        .env("ANYROUTER_HOME", &home)
+        .env_remove("ANYROUTER_API_KEY")
+        .output()
+        .expect("account use --agent");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code().unwrap_or(1), 0, "{stdout}{stderr}");
+    assert!(stdout.contains("claude"), "{stdout}");
+    assert!(stdout.contains("work"), "{stdout}");
+    let cfg = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        cfg.contains("active_profile: default"),
+        "session default must stay default:\n{cfg}"
+    );
+    assert!(cfg.contains("agents:"), "{cfg}");
+    assert!(cfg.contains("  claude:"), "{cfg}");
+    assert!(cfg.contains("    profile: work"), "{cfg}");
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn models_use_agent_pins_without_inventing_ids() {
+    let home = temp_home();
+    let path = home.join("config.yaml");
+    std::fs::write(
+        &path,
+        "\
+active_profile: default
+last_tool: claude
+profiles:
+  default:
+    api_key: sk-ar-v1-default-key-aaaa
+    default_model: auto
+",
+    )
+    .unwrap();
+    let out = anyr()
+        .args(["models", "use", "stealth/ox-alpha", "--agent", "claude"])
+        .env("ANYROUTER_HOME", &home)
+        .env_remove("ANYROUTER_API_KEY")
+        .output()
+        .expect("models use --agent");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code().unwrap_or(1), 0, "{stdout}{stderr}");
+    let cfg = std::fs::read_to_string(&path).unwrap();
+    assert!(cfg.contains("    default_model: stealth/ox-alpha"), "{cfg}");
+    assert!(
+        !cfg.contains("stealth/ox-alpha[1m]"),
+        "catalog id only:\n{cfg}"
+    );
+    assert!(
+        cfg.contains("agents:") && cfg.contains("  claude:"),
+        "{cfg}"
+    );
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn launch_uses_per_agent_key_and_model_not_default() {
+    let home = temp_home();
+    let path = home.join("config.yaml");
+    std::fs::write(
+        &path,
+        "\
+active_profile: default
+profiles:
+  default:
+    api_key: sk-ar-v1-default-key-aaaa
+    default_model: auto
+  work:
+    api_key: sk-ar-v1-work-key-bbbb
+    default_model: anthropic/claude-sonnet-4.6
+agents:
+  claude:
+    api_key: sk-ar-v1-claude-key-cccc
+    default_model: stealth/ox-alpha
+  grok:
+    profile: work
+    api_key: sk-ar-v1-grok-key-dddd
+    default_model: grok-4
+",
+    )
+    .unwrap();
+    let claude = anyr()
+        .args(["claude", "--dry-run", "--yes"])
+        .env("ANYROUTER_HOME", &home)
+        .env_remove("ANYROUTER_API_KEY")
+        .output()
+        .expect("claude dry-run");
+    let grok = anyr()
+        .args(["grok", "--dry-run", "--yes"])
+        .env("ANYROUTER_HOME", &home)
+        .env_remove("ANYROUTER_API_KEY")
+        .output()
+        .expect("grok dry-run");
+    let claude_out = String::from_utf8_lossy(&claude.stdout);
+    let grok_out = String::from_utf8_lossy(&grok.stdout);
+    assert_eq!(
+        claude.status.code().unwrap_or(1),
+        0,
+        "{claude_out}{}",
+        String::from_utf8_lossy(&claude.stderr)
+    );
+    assert_eq!(
+        grok.status.code().unwrap_or(1),
+        0,
+        "{grok_out}{}",
+        String::from_utf8_lossy(&grok.stderr)
+    );
+    assert!(
+        claude_out.contains("ANTHROPIC_MODEL=stealth/ox-alpha[1m]"),
+        "{claude_out}"
+    );
+    assert!(
+        !claude_out.contains("sk-ar-v1-claude-key-cccc"),
+        "full claude key leaked:\n{claude_out}"
+    );
+    assert!(
+        !claude_out.contains("sk-ar-v1-default-key-aaaa"),
+        "must not fall back to default key:\n{claude_out}"
+    );
+    assert!(
+        grok_out.contains("GROK_CODE_XAI_API_KEY") || grok_out.contains("GROK_"),
+        "{grok_out}"
+    );
+    assert!(
+        !grok_out.contains("sk-ar-v1-grok-key-dddd"),
+        "full grok key leaked:\n{grok_out}"
+    );
+    assert!(
+        !grok_out.contains("sk-ar-v1-default-key-aaaa"),
+        "grok must not fall back to default key:\n{grok_out}"
+    );
+    assert!(
+        claude_out.contains("...cccc"),
+        "claude dry-run missing bound key suffix:\n{claude_out}"
+    );
+    assert!(
+        grok_out.contains("...dddd"),
+        "grok dry-run missing bound key suffix:\n{grok_out}"
+    );
+    assert!(
+        !claude_out.contains("...aaaa"),
+        "claude used the default profile key:\n{claude_out}"
+    );
+    assert!(
+        !grok_out.contains("...aaaa"),
+        "grok used the default profile key:\n{grok_out}"
+    );
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn menu_dump_shows_per_agent_bindings_inline() {
+    let dir = std::env::temp_dir().join(format!("anyr-cli-agent-dump-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("config.yaml");
+    std::fs::write(
+        &path,
+        "\
+active_profile: default
+last_tool: claude
+profiles:
+  default:
+    api_key: sk-ar-v1-menu-agent-secret-abcdef
+    default_model: auto
+agents:
+  claude:
+    default_model: stealth/ox-alpha
+  grok:
+    default_model: grok-4
+",
+    )
+    .unwrap();
+    let out = anyr()
+        .args(["menu", "--dump-tui", "--config", path.to_str().unwrap()])
+        .env("ANYR_AGENTS", "claude,grok")
+        .output()
+        .expect("menu dump per-agent");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code().unwrap_or(1), 0, "{stdout}{stderr}");
+    assert!(stdout.contains("LAUNCH"), "{stdout}");
+    assert!(stdout.contains("CONFIGURE"), "{stdout}");
+    assert!(stdout.contains("per agent · claude"), "{stdout}");
+    assert!(stdout.contains("stealth/ox-alpha"), "{stdout}");
+    assert!(stdout.contains("grok-4"), "{stdout}");
+    assert!(
+        !stdout.contains("switch session default"),
+        "CONFIGURE must not describe a session-only switch:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("menu-agent-secret"),
+        "dump must not leak full secret: {stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn claude_model_1m_flag_still_launches() {
+    let (code, stdout, stderr) = run(&[
+        "claude",
+        "--dry-run",
+        "--yes",
+        "--key",
+        "sk-ar-v1-fixture-key-0001",
+        "--model",
+        "stealth/ox-alpha[1m]",
+        "--yolo",
+    ]);
+    assert_eq!(code, 0, "{stdout}{stderr}");
+    assert!(
+        stdout.contains("ANTHROPIC_MODEL=stealth/ox-alpha[1m]"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("--dangerously-skip-permissions"),
+        "{stdout}"
+    );
+}
