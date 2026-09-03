@@ -331,16 +331,21 @@ Usage:
   {bin} models use <id> --agent <claude|codex|grok|opencode|pi|pool>
   {bin} models use --haiku|--sonnet|--opus|--fable <id>
   {bin} models --pick
+  {bin} models --dump-tui
 
 Lists every model id usable with --model. `use` / `--pick` persist the session
 default, or Claude Code's opus / sonnet / haiku / fable aliases. `--agent`
 pins the launch model for that coding agent only (the id must already be known —
 this command does not invent catalog ids).
 
+The inline picker pins `anyrouter/auto` as a selectable preset. Type to
+filter catalog ids. It does not dump a most-used / usage ranking.
+
 Options:
   --json            Print as JSON
   --pick            Interactive picker (TTY) — default / haiku / sonnet / opus / fable
   --agent <id>     Pin the model on one coding agent instead of the session default
+  --dump-tui        Print one picker frame (pins anyrouter/auto) and exit
   --haiku <id>      Persist Claude haiku alias
   --sonnet <id>     Persist Claude sonnet alias
   --opus <id>       Persist Claude opus alias
