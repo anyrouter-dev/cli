@@ -54,3 +54,4 @@ Keep implementation details out of the map. Name only user paths, stable handles
 - [Model picker catalog](./model-picker.md) covers the inline model picker pinning `anyrouter/auto` without a most-used dump.
 - [Accounts and config](./accounts-and-config.md) covers whoami, account switch, config path, and logout against the isolated home.
 - [Per-agent bindings](./per-agent-bindings.md) covers inline model/account/key binds per coding agent and launch that honors per-agent keys.
+- [Update progress](./update-progress.md) covers `anyr update` from→to + channel copy, the success hint, and a TTY spinner that actually ticks.

@@ -1,0 +1,10 @@
+ok binary /workspace/target/debug/anyr
+ok version 0.1.11 (built 2026-09-03 06:05:55)
+ok help anyr --help names CORE COMMANDS / LAUNCH
+ok isolated ANYROUTER_HOME=/tmp/anyr-verify-20260903-060715-6103/home
+ok config /tmp/anyr-verify-20260903-060715-6103/home/config.yaml
+ok config_path config path=/tmp/anyr-verify-20260903-060715-6103/home/config.yaml
+ok whoami whoami shows masked default profile
+ok update_guard ANYR_NO_UPDATE=1 ANYR_NO_CATALOG=1
+ok pty stopped
+ok paid_guard do not run anyr claude/codex/… without --dry-run

@@ -1,0 +1,4 @@
+Updating v0.1.11 -> v0.2.0-beta.1 (beta channel)
+✔ Would update to v0.2.0-beta.1
+
+Run anyr to start using the new version.

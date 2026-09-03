@@ -1,0 +1,8 @@
+bytes=419
+cr_count=10
+distinct_frames=6
+frames=⠋⠙⠹⠸⠼⠴
+has_updating=True
+has_beta_channel=True
+has_from_to=True
+has_hint=True

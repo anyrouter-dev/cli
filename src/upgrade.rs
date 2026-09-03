@@ -594,13 +594,8 @@ pub fn run(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, S
     let check = wants_check(parsed);
     let dry = parsed.flag_true("dry-run") || fixture.is_some();
 
-    print_version_report(channel, latest_ver);
-
-    if parsed.flag_true("dry-run") {
-        print_redacted_env(env);
-    }
-
     if check {
+        print_version_report(channel, latest_ver);
         println!("{}", field("asset", url));
         if update {
             println!(
@@ -614,35 +609,72 @@ pub fn run(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, S
         } else {
             println!("{}", field("status", term::ok("up to date")));
         }
+        if parsed.flag_true("dry-run") {
+            print_redacted_env(env);
+        }
         return Ok(0);
     }
 
     if !update {
-        println!("{}", field("status", term::ok("up to date")));
-        return Ok(0);
-    }
-
-    if dry {
-        println!("{}", field("asset", &url));
         println!(
-            "{}",
-            status_change(term::warn("would update"), VERSION, latest_ver)
+            "{} Already up to date ({}, {} channel)",
+            term::ok("✔"),
+            display_tag(VERSION),
+            channel.as_str()
         );
         return Ok(0);
     }
 
-    println!("Downloading {url}");
-    let dest = replace_current_binary(&url)?;
-    println!(
-        "{}",
-        status_change(term::ok("updated"), VERSION, latest_ver)
-    );
-    println!("{}", field("path", dest.display()));
-    Ok(0)
+    let spinner = crate::spinner::Spinner::start(updating_line(VERSION, latest_ver, channel));
+    if dry {
+        spinner.succeed(&would_update_line(latest_ver));
+        if parsed.flag_true("dry-run") {
+            print_redacted_env(env);
+        }
+        return Ok(0);
+    }
+
+    match replace_current_binary(&url) {
+        Ok(_) => {
+            spinner.succeed(&updated_line(latest_ver));
+            Ok(0)
+        }
+        Err(err) => {
+            spinner.fail();
+            Err(err)
+        }
+    }
 }
 
 fn field(key: &str, value: impl std::fmt::Display) -> String {
     format!("{:<8} {value}", format!("{key}:"))
+}
+
+/// GitHub-tag style (`v0.1.11`). Never invents a version number.
+fn display_tag(ver: &str) -> String {
+    let v = ver.trim();
+    if v.starts_with('v') || v.starts_with('V') {
+        v.to_string()
+    } else {
+        format!("v{v}")
+    }
+}
+
+fn updating_line(from: &str, to: &str, channel: Channel) -> String {
+    format!(
+        "Updating {} -> {} ({} channel)",
+        display_tag(from),
+        display_tag(to),
+        channel.as_str()
+    )
+}
+
+fn updated_line(to: &str) -> String {
+    format!("Updated to {}", display_tag(to))
+}
+
+fn would_update_line(to: &str) -> String {
+    format!("Would update to {}", display_tag(to))
 }
 
 fn print_version_report(channel: Channel, latest_ver: &str) {
@@ -880,6 +912,20 @@ mod tests {
             !line.contains("/"),
             "status must not reuse -> for an install path: {line}"
         );
+    }
+
+    #[test]
+    fn updating_line_shows_from_to_and_channel() {
+        let line = updating_line("0.1.11", "0.1.99", Channel::Stable);
+        assert_eq!(line, "Updating v0.1.11 -> v0.1.99 (stable channel)");
+        let beta = updating_line("v0.1.11", "0.2.0-beta.1", Channel::Beta);
+        assert_eq!(beta, "Updating v0.1.11 -> v0.2.0-beta.1 (beta channel)");
+        assert_eq!(updated_line("0.1.99"), "Updated to v0.1.99");
+        assert_eq!(
+            would_update_line("0.2.0-beta.1"),
+            "Would update to v0.2.0-beta.1"
+        );
+        assert_eq!(display_tag("v0.1.11"), "v0.1.11");
     }
 
     #[test]

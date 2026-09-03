@@ -800,6 +800,10 @@ fn upgrade_help_mentions_channel_stable_beta() {
         stdout.contains("Auto-update") || stdout.contains("auto-update"),
         "upgrade help should mention auto-update, got:\n{stdout}"
     );
+    assert!(
+        stdout.contains("Run anyr to start using the new version."),
+        "upgrade help should show the post-update hint, got:\n{stdout}"
+    );
 }
 
 #[test]
@@ -1416,6 +1420,118 @@ fn upgrade_auto_is_quiet_when_up_to_date() {
         !stdout.contains("would update") && !stdout.contains("update available"),
         "up-to-date auto-update should be silent, got:\n{stdout}"
     );
+}
+
+#[test]
+fn update_prints_from_to_channel_and_success() {
+    let home = std::env::temp_dir().join(format!(
+        "anyr-cli-update-ux-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&home).expect("home");
+    let out = anyr()
+        .args(["update"])
+        .env("ANYROUTER_HOME", &home)
+        .env("ANYR_RELEASES_JSON", fixture_path())
+        .env("ANYR_CHANNEL", "beta")
+        .output()
+        .expect("update");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code().unwrap_or(1), 0, "stderr={stderr}");
+    assert!(
+        stdout.contains("Updating") && stdout.contains("->") && stdout.contains("beta channel"),
+        "expected from→to + channel, got:\n{stdout}"
+    );
+    assert!(stdout.contains("0.2.0-beta.1"), "{stdout}");
+    assert!(
+        stdout.contains("✔") && stdout.contains("Would update to v0.2.0-beta.1"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("Run anyr to start using the new version."),
+        "{stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[cfg(unix)]
+#[test]
+fn update_spinner_animates_on_tty() {
+    let home = std::env::temp_dir().join(format!(
+        "anyr-cli-update-pty-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&home).expect("home");
+    let helper = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join(".cursor/skills/verify-anyr/helpers/pty-anyr.py");
+    let transcript = home.join("tty.txt");
+    let out = Command::new("python3")
+        .args([
+            helper.to_str().unwrap(),
+            "--timeout",
+            "6",
+            "--out",
+            transcript.to_str().unwrap(),
+            "--",
+            env!("CARGO_BIN_EXE_anyr"),
+            "update",
+        ])
+        .env("ANYR_NO_UPDATE", "1")
+        .env("ANYR_NO_CATALOG", "1")
+        .env("ANYROUTER_HOME", &home)
+        .env("ANYR_RELEASES_JSON", fixture_path())
+        .env("ANYR_CHANNEL", "beta")
+        .env("ANYR_SPINNER_MS", "20")
+        .env("ANYR_SPINNER_MIN_TICKS", "6")
+        .env_remove("NO_COLOR")
+        .output()
+        .expect("pty update");
+    let captured = std::fs::read_to_string(&transcript)
+        .unwrap_or_else(|_| String::from_utf8_lossy(&out.stdout).into_owned());
+    let combined = format!(
+        "{}{}{}",
+        captured,
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        out.status.code().unwrap_or(1),
+        0,
+        "pty update failed:\n{combined}"
+    );
+    assert!(
+        combined.contains("Updating") && combined.contains("beta channel"),
+        "{combined}"
+    );
+    assert!(combined.contains("->"), "{combined}");
+    assert!(
+        combined.contains("Would update to") || combined.contains("Updated to"),
+        "{combined}"
+    );
+    assert!(
+        combined.contains("Run anyr to start using the new version."),
+        "{combined}"
+    );
+    let frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+    let seen: Vec<_> = frames.iter().filter(|g| combined.contains(**g)).collect();
+    assert!(
+        seen.len() >= 2,
+        "TTY spinner must tick distinct frames, got {seen:?} in:\n{combined:?}"
+    );
+    assert!(
+        combined.contains('\r'),
+        "animation rewrites the line with CR, got {combined:?}"
+    );
+    let _ = std::fs::remove_dir_all(&home);
 }
 
 #[test]
