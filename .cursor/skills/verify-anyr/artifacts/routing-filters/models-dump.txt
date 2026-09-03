@@ -1,0 +1,5 @@
+▲ Default model
+search: 
+────────────────────────────────────────────────
+◆ anyrouter/auto
+type to search    ↑↓  move    ↵  select    esc  cancel

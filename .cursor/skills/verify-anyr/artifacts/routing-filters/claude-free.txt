@@ -1,0 +1,22 @@
+command: claude
+args: []
+env:
+ANTHROPIC_AUTH_TOKEN=sk-ar-...-key
+ANTHROPIC_BASE_URL=https://anyrouter.dev/api
+ANTHROPIC_DEFAULT_FABLE_MODEL=anyrouter/free
+ANTHROPIC_DEFAULT_FABLE_MODEL_DESCRIPTION=Fable alias + fallback
+ANTHROPIC_DEFAULT_HAIKU_MODEL=anyrouter/free
+ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION=Background & subagents
+ANTHROPIC_DEFAULT_OPUS_MODEL=anyrouter/free
+ANTHROPIC_DEFAULT_OPUS_MODEL_DESCRIPTION=Opus alias
+ANTHROPIC_DEFAULT_SONNET_MODEL=anyrouter/free
+ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION=Sonnet alias
+ANTHROPIC_MODEL=anyrouter/free
+ANYROUTER_EXTRA_BODY={"min_context":1000000,"provider":{"sort":"exacto"},"require_params":["tools"]}
+ANYROUTER_MODEL_MODE=concrete
+ANYROUTER_PINNED_PRESET=@preset/coding-stack
+API_TIMEOUT_MS=3000000
+CLAUDE_CODE_AUTO_COMPACT_WINDOW=1000000
+CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1
+CLAUDE_CODE_EXTRA_BODY={"min_context":1000000,"provider":{"sort":"exacto"},"require_params":["tools"]}
+CLAUDE_CODE_SUBAGENT_MODEL=anyrouter/free
