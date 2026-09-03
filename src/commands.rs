@@ -17,7 +17,8 @@ use crate::install::{
     agent_available, available_agents, ensure_tool_installed, missing_agents, KNOWN_AGENTS,
 };
 use crate::key::{
-    load_config_if_present, mask_api_key, no_key_error, resolve_api_key, resolve_base_url,
+    load_config_if_present, mask_api_key, no_key_error, profile_for_agent, resolve_api_key,
+    resolve_base_url, resolve_launch_api_key, resolve_launch_model,
 };
 use crate::parse::{get_string_flag, parse_cli_args, FlagValue, ParsedArgs};
 use crate::spawn::{
@@ -275,7 +276,7 @@ fn allowed_flags(command: &str) -> Option<&'static [&'static str]> {
         ],
         "models" => &[
             "profile", "config", "json", "key", "base-url", "pick", "haiku", "sonnet", "opus",
-            "fable",
+            "fable", "agent",
         ],
         "usage" => &["profile", "base-url", "config", "json", "key", "no-detail"],
         "whoami" => &["profile", "config", "json"],
@@ -292,6 +293,7 @@ fn allowed_flags(command: &str) -> Option<&'static [&'static str]> {
             "device",
             "device-code",
             "paste",
+            "agent",
         ],
         "logs" => &[
             "profile", "base-url", "config", "json", "key", "limit", "model", "status",
@@ -335,7 +337,7 @@ fn allowed_flags(command: &str) -> Option<&'static [&'static str]> {
         "delegate" => &[
             "to", "from", "model", "profile", "base-url", "config", "key", "yes", "dry-run",
         ],
-        "keys" => &["profile", "base-url", "config", "json", "yes"],
+        "keys" => &["profile", "base-url", "config", "json", "yes", "agent"],
         "audit" => &["profile", "config", "json", "launches", "tool", "limit"],
         "logout" => &["profile", "config"],
         "auth" => &[
@@ -921,16 +923,117 @@ fn save_model_slot(
     Ok(0)
 }
 
+fn flag_agent(parsed: &ParsedArgs) -> Option<String> {
+    get_string_flag(&parsed.flags, "agent").map(|s| canonical_tool(&s).to_string())
+}
+
+fn known_agent(name: &str) -> Result<String, String> {
+    let id = canonical_tool(name);
+    if KNOWN_AGENTS.iter().any(|(k, _)| *k == id) {
+        Ok(id.to_string())
+    } else {
+        Err(format!(
+            "Unknown coding agent \"{name}\". Known: claude, codex, grok, opencode, pi, pool."
+        ))
+    }
+}
+
+fn save_agent_model(path: &PathBuf, agent: &str, id: &str) -> Result<i32, String> {
+    let agent = known_agent(agent)?;
+    let mut cfg = load_config_if_present(path).ok_or_else(no_key_error)?;
+    let id = catalog_model_id(id);
+    let stored = if is_auto_model(&id) {
+        None
+    } else {
+        Some(id.clone())
+    };
+    cfg.agent_binding_mut(&agent).default_model = stored;
+    cfg.prune_empty_agents();
+    write_config(&cfg, path)?;
+    println!(
+        "{}  {agent} model  {}",
+        term::ok("Saved"),
+        term::model_id(&session_model_label(&id))
+    );
+    Ok(0)
+}
+
+fn save_agent_account(path: &PathBuf, agent: &str, profile: &str) -> Result<i32, String> {
+    let agent = known_agent(agent)?;
+    let mut cfg = load_config_if_present(path).ok_or_else(no_key_error)?;
+    if !cfg.profiles.contains_key(profile) {
+        return Err(format!("Account \"{profile}\" was not found."));
+    }
+    cfg.agent_binding_mut(&agent).profile = Some(profile.to_string());
+    write_config(&cfg, path)?;
+    println!(
+        "{}  {agent} account  {}",
+        term::ok("Switched"),
+        term::accent(profile)
+    );
+    Ok(0)
+}
+
+fn save_agent_key(path: &PathBuf, agent: &str, key: &str) -> Result<i32, String> {
+    let agent = known_agent(agent)?;
+    let mut cfg = load_config_if_present(path).ok_or_else(no_key_error)?;
+    cfg.agent_binding_mut(&agent).api_key = Some(key.to_string());
+    write_config(&cfg, path)?;
+    println!(
+        "{}  {agent} key  {}",
+        term::ok("Switched"),
+        mask_api_key(Some(key))
+    );
+    Ok(0)
+}
+
+fn palette_bind_detail(agent: &str) -> String {
+    format!("per agent · {agent}")
+}
+
+fn launch_detail_for(
+    cfg: &crate::config::Config,
+    id: &str,
+    product_label: &str,
+    session_model: &str,
+    is_last: bool,
+) -> String {
+    if let Some(m) = cfg
+        .agent_binding(id)
+        .and_then(|b| b.default_model.as_deref())
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && !is_auto_model(s))
+    {
+        return session_model_label(m);
+    }
+    if is_last {
+        session_model.to_string()
+    } else {
+        product_label.to_string()
+    }
+}
+
 fn run_models(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, String> {
     let path = config_path(parsed, env);
     let existing = load_config_if_present(&path);
     let profile = existing
         .as_ref()
         .and_then(|c| c.profiles.get(&c.active_profile));
+    let sub = parsed.passthrough.first().map(String::as_str);
+    let agent = flag_agent(parsed);
+    // Pinning a caller-supplied id to an agent does not need the catalog —
+    // do not invent ids; the user (or TUI picker) already chose one.
+    if let Some(agent) = agent.as_deref() {
+        let positional = parsed.passthrough.get(1).cloned().filter(|s| !s.is_empty());
+        if sub == Some("use") {
+            if let Some(id) = positional {
+                return save_agent_model(&path, agent, &id);
+            }
+        }
+    }
     let key = resolve_api_key(&parsed.flags, env, profile);
     let base = resolve_base_url(&parsed.flags, profile);
     let models = fetch_models(&base, key.as_deref())?;
-    let sub = parsed.passthrough.first().map(String::as_str);
     let flag_slots = [
         ("haiku", get_string_flag(&parsed.flags, "haiku")),
         ("sonnet", get_string_flag(&parsed.flags, "sonnet")),
@@ -939,6 +1042,20 @@ fn run_models(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32
     ];
     let has_alias_flags = flag_slots.iter().any(|(_, v)| v.is_some());
     if sub == Some("use") || has_alias_flags {
+        if let Some(agent) = agent.as_deref() {
+            if term::is_interactive() {
+                let current = existing
+                    .as_ref()
+                    .and_then(|c| c.agent_binding(agent))
+                    .and_then(|b| b.default_model.clone())
+                    .or_else(|| profile.map(|p| p.default_model().to_string()));
+                let id = pick_model(&models, current.as_deref(), &format!("{agent} model"))?;
+                return save_agent_model(&path, agent, &id);
+            }
+            return Err(hint(
+                "Usage: {bin} models use <id> --agent <claude|codex|grok|opencode|pi|pool>",
+            ));
+        }
         let mut assigned = false;
         for (slot, value) in &flag_slots {
             let Some(id) = value.clone() else {
@@ -996,6 +1113,15 @@ fn run_models(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32
         );
     }
     if parsed.flag_true("pick") && term::is_interactive() {
+        if let Some(agent) = agent.as_deref() {
+            let current = existing
+                .as_ref()
+                .and_then(|c| c.agent_binding(agent))
+                .and_then(|b| b.default_model.clone())
+                .or_else(|| profile.map(|p| p.default_model().to_string()));
+            let id = pick_model(&models, current.as_deref(), &format!("{agent} model"))?;
+            return save_agent_model(&path, agent, &id);
+        }
         let slot = profile
             .map(pick_claude_slot)
             .transpose()?
@@ -1187,6 +1313,9 @@ enum SettingKind {
     GatewayDiscovery,
     /// Read-only mapping row.
     Mapping,
+    AgentAccount(&'static str),
+    AgentKey(&'static str),
+    AgentModel(&'static str),
 }
 
 fn run_config_tui(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, String> {
@@ -1515,6 +1644,61 @@ fn fill_agent_settings(
         SettingKind::Install(id),
     );
 
+    let binding = cfg.as_ref().and_then(|c| c.agent_binding(id));
+    section(rows, kinds, "Bindings");
+    let account = binding
+        .and_then(|b| b.profile.clone())
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "session default".into());
+    entry(
+        rows,
+        kinds,
+        "account",
+        account,
+        if binding.and_then(|b| b.profile.as_deref()).is_some() {
+            Tone::Normal
+        } else {
+            Tone::Muted
+        },
+        SettingKind::AgentAccount(id),
+    );
+    let key_value = binding
+        .and_then(|b| b.api_key.as_deref())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|k| mask_api_key(Some(k)))
+        .unwrap_or_else(|| "profile default".into());
+    entry(
+        rows,
+        kinds,
+        "api key",
+        key_value,
+        if binding.and_then(|b| b.api_key.as_deref()).is_some() {
+            Tone::Normal
+        } else {
+            Tone::Muted
+        },
+        SettingKind::AgentKey(id),
+    );
+    let model_value = binding
+        .and_then(|b| b.default_model.as_deref())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(session_model_label)
+        .unwrap_or_else(|| "session default".into());
+    entry(
+        rows,
+        kinds,
+        "model",
+        model_value,
+        if binding.and_then(|b| b.default_model.as_deref()).is_some() {
+            Tone::Model
+        } else {
+            Tone::Muted
+        },
+        SettingKind::AgentModel(id),
+    );
+
     section(rows, kinds, "Mapping");
     entry(
         rows,
@@ -1785,6 +1969,34 @@ fn config_edit_row(
             Ok(0)
         }
         SettingKind::Mapping => Ok(0),
+        SettingKind::AgentAccount(id) => {
+            let mut next = parsed.clone();
+            next.flags
+                .insert("agent".into(), FlagValue::Value(id.to_string()));
+            config_account_actions(&next, env)
+        }
+        SettingKind::AgentKey(id) => {
+            let mut next = parsed.clone();
+            next.command = "keys".into();
+            next.passthrough = vec!["use".into()];
+            next.flags
+                .insert("agent".into(), FlagValue::Value(id.to_string()));
+            match run_keys(&next, env) {
+                Err(err) if err == "Cancelled." => Ok(0),
+                other => other,
+            }
+        }
+        SettingKind::AgentModel(id) => {
+            let mut next = parsed.clone();
+            next.command = "models".into();
+            next.flags.insert("pick".into(), FlagValue::Bool(true));
+            next.flags
+                .insert("agent".into(), FlagValue::Value(id.to_string()));
+            match run_models(&next, env) {
+                Err(err) if err == "Cancelled." => Ok(0),
+                other => other,
+            }
+        }
         SettingKind::Channel => {
             let choices = ["stable", "beta"];
             let current = choices.iter().position(|c| *c == cfg_channel(path));
@@ -1835,9 +2047,21 @@ fn config_account_actions(
     labels.push("＋  Add account".into());
     labels.push("Re-authenticate (login)".into());
     labels.push("Log out".into());
-    let current = names.iter().position(|n| n == &cfg.active_profile);
+    let current = if let Some(agent) = flag_agent(parsed) {
+        cfg.agent_binding(&agent)
+            .and_then(|b| b.profile.as_ref())
+            .and_then(|n| names.iter().position(|x| x == n))
+            .or_else(|| names.iter().position(|n| n == &cfg.active_profile))
+    } else {
+        names.iter().position(|n| n == &cfg.active_profile)
+    };
+    let title = if let Some(agent) = flag_agent(parsed) {
+        format!("{agent} account")
+    } else {
+        "Account".into()
+    };
     let idx = pick_list(
-        "Account",
+        &title,
         &["enter to switch    newest profiles are listed too".into()],
         &labels,
         current,
@@ -1902,6 +2126,33 @@ fn config_reset_row(path: &std::path::Path, kind: SettingKind) -> Result<i32, St
         | SettingKind::Install(_)
         | SettingKind::ToolCommand(_)
         | SettingKind::Mapping => Ok(0),
+        SettingKind::AgentAccount(id) | SettingKind::AgentKey(id) | SettingKind::AgentModel(id) => {
+            let (label, was_set) = {
+                let Some(b) = cfg.agents.get_mut(id) else {
+                    println!("{}", term::dim(&format!("{id} already at session default")));
+                    return Ok(0);
+                };
+                match kind {
+                    SettingKind::AgentAccount(_) => ("account", b.profile.take().is_some()),
+                    SettingKind::AgentKey(_) => ("key", b.api_key.take().is_some()),
+                    _ => ("model", b.default_model.take().is_some()),
+                }
+            };
+            cfg.prune_empty_agents();
+            if !was_set {
+                println!(
+                    "{}",
+                    term::dim(&format!("{id} {label} already at session default"))
+                );
+                return Ok(0);
+            }
+            write_config(&cfg, path)?;
+            println!(
+                "{}  {id} {label} reset to session default",
+                term::ok("Saved")
+            );
+            Ok(0)
+        }
         SettingKind::GatewayDiscovery => {
             let mut cfg = load_config_if_present(path).unwrap_or_default();
             if let Some(t) = cfg.tools.get_mut("claude") {
@@ -2129,8 +2380,10 @@ fn run_launch(
     let existing = load_config_if_present(&path);
     let stored = existing
         .as_ref()
-        .and_then(|c| c.profiles.get(&c.active_profile));
-    let key = if let Some(key) = resolve_api_key(&parsed.flags, env, stored) {
+        .and_then(|c| profile_for_agent(c, &parsed.flags, env, tool_name));
+    let key = if let Some(key) =
+        resolve_launch_api_key(&parsed.flags, env, existing.as_ref(), tool_name)
+    {
         key
     } else {
         let base = resolve_base_url(&parsed.flags, stored);
@@ -2141,7 +2394,7 @@ fn run_launch(
     let existing = load_config_if_present(&path);
     let stored = existing
         .as_ref()
-        .and_then(|c| c.profiles.get(&c.active_profile));
+        .and_then(|c| profile_for_agent(c, &parsed.flags, env, tool_name));
     let base = resolve_base_url(&parsed.flags, stored);
     let mut profile = stored
         .cloned()
@@ -2149,10 +2402,12 @@ fn run_launch(
     profile.base_url = Some(base.clone());
     let aliases_changed = apply_claude_alias_flags(&mut profile, parsed);
     let tool = resolve_tool(existing.as_ref(), tool_name)?;
-    let requested = catalog_model_id(
-        &get_string_flag(&parsed.flags, "model")
-            .unwrap_or_else(|| profile.default_model().to_string()),
-    );
+    let requested = catalog_model_id(&resolve_launch_model(
+        &parsed.flags,
+        existing.as_ref(),
+        &profile,
+        tool_name,
+    ));
     let resolved = resolve_session_model(&requested, &base, Some(&key), env);
     let model = resolved.id;
     let effort = normalize_effort(get_string_flag(&parsed.flags, "effort").as_deref())?;
@@ -2213,13 +2468,17 @@ fn run_launch(
         }
     }
     // Remember the model this launch used as the session default, so a bare
-    // `{bin} claude` next time starts with it.
+    // `{bin} claude` next time starts with it. Also pin it on this agent so a
+    // later grok launch does not inherit claude's model.
     if let Some(flag_model) = get_string_flag(&parsed.flags, "model") {
         let id = catalog_model_id(&flag_model);
+        let stored = if is_auto_model(&id) { None } else { Some(id) };
         if let Some(p) = cfg.profiles.get_mut(&cfg.active_profile) {
             // Auto stays unset so the next launch re-picks the most-used model.
-            p.default_model = if is_auto_model(&id) { None } else { Some(id) };
+            p.default_model = stored.clone();
         }
+        cfg.agent_binding_mut(tool_name).default_model = stored;
+        cfg.prune_empty_agents();
     }
     let _ = write_config(&cfg, &path);
     let _updater = crate::upgrade::start_session_checker(env);
@@ -2253,6 +2512,9 @@ fn run_account_use(
     name: &str,
 ) -> Result<i32, String> {
     let path = config_path(parsed, env);
+    if let Some(agent) = flag_agent(parsed) {
+        return save_agent_account(&path, &agent, name);
+    }
     let cfg = load_config_if_present(&path).ok_or_else(no_key_error)?;
     let cfg = set_active_profile(cfg, name)?;
     write_config(&cfg, &path)?;
@@ -2564,6 +2826,9 @@ fn run_keys(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, 
                 ));
             };
             let revealed = reveal_key(&base, &api_key, &row.hash)?;
+            if let Some(agent) = flag_agent(parsed) {
+                return save_agent_key(&path, &agent, &revealed);
+            }
             let active = cfg.active_profile.clone();
             if let Some(p) = cfg.profiles.get_mut(&active) {
                 p.api_key = Some(revealed);
@@ -2728,7 +2993,7 @@ fn launcher_palette(
     use crate::tui::PaletteEntry;
     let mut entries = Vec::new();
     if signed_in {
-        push_launch_entries(&mut entries, &present, &last, &model_line);
+        push_launch_entries(&mut entries, &cfg, &present, &last, &model_line);
     } else {
         entries.push(PaletteEntry::new(
             "login",
@@ -2737,9 +3002,10 @@ fn launcher_palette(
             "Login / sign in",
         ));
     }
+    let bind = palette_bind_detail(&last);
     entries.push(PaletteEntry::new(
         "model…",
-        "switch session default",
+        bind.clone(),
         "configure",
         "Switch model",
     ));
@@ -2751,16 +3017,11 @@ fn launcher_palette(
     ));
     entries.push(PaletteEntry::new(
         "account…",
-        "switch profile",
+        bind.clone(),
         "configure",
         "Switch account",
     ));
-    entries.push(PaletteEntry::new(
-        "key…",
-        "switch API key",
-        "configure",
-        "Switch key",
-    ));
+    entries.push(PaletteEntry::new("key…", bind, "configure", "Switch key"));
     entries.push(PaletteEntry::new(
         "install…",
         "install a coding agent",
@@ -2827,14 +3088,14 @@ fn launcher_palette(
             };
             entries.push(InlineEntry::new(
                 last.clone(),
-                model_line,
+                launch_detail_for(&cfg, &last, last.as_str(), &model_line, true),
                 "launch",
                 format!("Launch {last}"),
             ));
             for (id, label) in present.into_iter().filter(|(id, _)| *id != last.as_str()) {
                 entries.push(InlineEntry::new(
                     id,
-                    label,
+                    launch_detail_for(&cfg, id, label, &model_line, false),
                     "launch",
                     format!("Launch {id}"),
                 ));
@@ -2848,9 +3109,10 @@ fn launcher_palette(
             "Login / sign in",
         ));
     }
+    let bind = palette_bind_detail(&last);
     entries.push(InlineEntry::new(
         "model…",
-        "switch session default",
+        bind.clone(),
         "configure",
         "Switch model",
     ));
@@ -2862,16 +3124,11 @@ fn launcher_palette(
     ));
     entries.push(InlineEntry::new(
         "account…",
-        "switch profile",
+        bind.clone(),
         "configure",
         "Switch account",
     ));
-    entries.push(InlineEntry::new(
-        "key…",
-        "switch API key",
-        "configure",
-        "Switch key",
-    ));
+    entries.push(InlineEntry::new("key…", bind, "configure", "Switch key"));
     entries.push(InlineEntry::new(
         "install…",
         "install a coding agent",
@@ -2973,6 +3230,7 @@ enum LauncherNext {
 #[cfg(feature = "native")]
 fn push_launch_entries(
     entries: &mut Vec<crate::tui::PaletteEntry>,
+    cfg: &crate::config::Config,
     present: &[(&'static str, &'static str)],
     last: &str,
     model_line: &str,
@@ -2994,7 +3252,7 @@ fn push_launch_entries(
     };
     entries.push(PaletteEntry::new(
         last.clone(),
-        model_line,
+        launch_detail_for(cfg, &last, last.as_str(), model_line, true),
         "launch",
         format!("Launch {last}"),
     ));
@@ -3005,7 +3263,7 @@ fn push_launch_entries(
     {
         entries.push(PaletteEntry::new(
             id,
-            label,
+            launch_detail_for(cfg, id, label, model_line, false),
             "launch",
             format!("Launch {id}"),
         ));
@@ -3228,9 +3486,11 @@ fn launcher_dispatch(
             eprintln!("{}", term::err("Sign in first (Login / sign in)."));
             return Ok(LauncherNext::Continue);
         }
+        let agent = launcher_last_tool(path, parsed, env);
         let mut next = parsed.clone();
         next.command = "models".into();
         next.flags.insert("pick".into(), FlagValue::Bool(true));
+        next.flags.insert("agent".into(), FlagValue::Value(agent));
         if let Err(err) = run_models(&next, env) {
             eprintln!("{}", term::err(&err));
         }
@@ -3245,7 +3505,10 @@ fn launcher_dispatch(
         return Ok(LauncherNext::Continue);
     }
     if action == "Switch account" || action == "Switch account / key" {
-        match config_account_actions(parsed, env) {
+        let agent = launcher_last_tool(path, parsed, env);
+        let mut next = parsed.clone();
+        next.flags.insert("agent".into(), FlagValue::Value(agent));
+        match config_account_actions(&next, env) {
             Ok(_) => {}
             Err(err) if err == "Cancelled." => {}
             Err(err) => eprintln!("{}", term::err(&err)),
@@ -3257,9 +3520,11 @@ fn launcher_dispatch(
             eprintln!("{}", term::err("Sign in first (Login / sign in)."));
             return Ok(LauncherNext::Continue);
         }
+        let agent = launcher_last_tool(path, parsed, env);
         let mut next = parsed.clone();
         next.command = "keys".into();
         next.passthrough = vec!["use".into()];
+        next.flags.insert("agent".into(), FlagValue::Value(agent));
         match run_keys(&next, env) {
             Ok(_) => {}
             Err(err) if err == "Cancelled." => {}

@@ -1,8 +1,9 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 use crate::config::{get_active_profile, read_config, Config, Profile, DEFAULT_BASE_URL};
 use crate::parse::{get_string_flag, FlagValue};
+use crate::spawn::canonical_tool;
 
 /// Known non-secret fixture literals (mirrors the TS CLI's persistApiKey guard):
 /// these exact values once overwrote a user's real key via a test fixture, so
@@ -39,6 +40,85 @@ pub fn resolve_api_key(
         .map(str::trim)
         .filter(|s| !s.is_empty() && !is_dummy_key(s))
         .map(str::to_string)
+}
+
+/// Profile used when launching `tool`: `--profile` / `ANYROUTER_PROFILE`, then
+/// that agent's bound account, then the session `active_profile`.
+pub fn profile_for_agent<'a>(
+    config: &'a Config,
+    flags: &HashMap<String, FlagValue>,
+    env: &BTreeMap<String, String>,
+    tool: &str,
+) -> Option<&'a Profile> {
+    if get_string_flag(flags, "profile").is_some()
+        || env
+            .get("ANYROUTER_PROFILE")
+            .map(|s| s.trim())
+            .is_some_and(|s| !s.is_empty())
+    {
+        return get_active_profile(config, get_string_flag(flags, "profile").as_deref(), env).ok();
+    }
+    let id = canonical_tool(tool);
+    if let Some(name) = config
+        .agent_binding(id)
+        .and_then(|b| b.profile.as_deref())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        return config.profiles.get(name);
+    }
+    config.profiles.get(&config.active_profile)
+}
+
+/// Launch key for `tool`. `--key` / `ANYROUTER_API_KEY` win. A per-agent
+/// `api_key` is used as stored — it does not fall back to the default profile.
+pub fn resolve_launch_api_key(
+    flags: &HashMap<String, FlagValue>,
+    env: &BTreeMap<String, String>,
+    config: Option<&Config>,
+    tool: &str,
+) -> Option<String> {
+    if let Some(key) = resolve_api_key(flags, env, None) {
+        return Some(key);
+    }
+    let cfg = config?;
+    let id = canonical_tool(tool);
+    if let Some(key) = cfg
+        .agent_binding(id)
+        .and_then(|b| b.api_key.as_deref())
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && !is_dummy_key(s))
+    {
+        return Some(key.to_string());
+    }
+    profile_for_agent(cfg, flags, env, tool)
+        .and_then(|p| p.api_key.as_deref())
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && !is_dummy_key(s))
+        .map(str::to_string)
+}
+
+/// Launch model for `tool`: `--model`, then the agent's bound id, then the
+/// profile default. Does not invent catalog ids.
+pub fn resolve_launch_model(
+    flags: &HashMap<String, FlagValue>,
+    config: Option<&Config>,
+    profile: &Profile,
+    tool: &str,
+) -> String {
+    if let Some(m) = get_string_flag(flags, "model") {
+        return crate::spawn::catalog_model_id(&m);
+    }
+    let id = canonical_tool(tool);
+    if let Some(m) = config
+        .and_then(|c| c.agent_binding(id))
+        .and_then(|b| b.default_model.as_deref())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        return crate::spawn::catalog_model_id(m);
+    }
+    profile.default_model().to_string()
 }
 
 pub fn resolve_base_url(
@@ -170,6 +250,71 @@ mod tests {
         assert_eq!(
             resolve_api_key(&flags, &env, Some(&profile)).as_deref(),
             Some("sk-ar-v1-real0123456789")
+        );
+    }
+
+    fn cfg_two_agents() -> Config {
+        crate::config::parse_config(
+            "\
+active_profile: default
+profiles:
+  default:
+    api_key: sk-ar-v1-default-key-aaaa
+    default_model: auto
+  work:
+    api_key: sk-ar-v1-work-key-bbbb
+    default_model: anthropic/claude-sonnet-4.6
+agents:
+  claude:
+    api_key: sk-ar-v1-claude-key-cccc
+    default_model: stealth/ox-alpha
+  grok:
+    profile: work
+",
+        )
+    }
+
+    #[test]
+    fn launch_key_uses_agent_key_not_default_profile() {
+        let cfg = cfg_two_agents();
+        let flags = HashMap::new();
+        let env = BTreeMap::new();
+        assert_eq!(
+            resolve_launch_api_key(&flags, &env, Some(&cfg), "claude").as_deref(),
+            Some("sk-ar-v1-claude-key-cccc")
+        );
+        assert_eq!(
+            resolve_launch_api_key(&flags, &env, Some(&cfg), "grok").as_deref(),
+            Some("sk-ar-v1-work-key-bbbb")
+        );
+        assert_eq!(
+            resolve_launch_api_key(&flags, &env, Some(&cfg), "codex").as_deref(),
+            Some("sk-ar-v1-default-key-aaaa")
+        );
+    }
+
+    #[test]
+    fn launch_model_uses_agent_id_then_profile_default() {
+        let cfg = cfg_two_agents();
+        let flags = HashMap::new();
+        let claude_profile = profile_for_agent(&cfg, &flags, &BTreeMap::new(), "claude").unwrap();
+        let grok_profile = profile_for_agent(&cfg, &flags, &BTreeMap::new(), "grok").unwrap();
+        assert_eq!(
+            resolve_launch_model(&flags, Some(&cfg), claude_profile, "claude"),
+            "stealth/ox-alpha"
+        );
+        assert_eq!(
+            resolve_launch_model(&flags, Some(&cfg), grok_profile, "grok"),
+            "anthropic/claude-sonnet-4.6"
+        );
+        let mut with_flag = HashMap::new();
+        with_flag.insert(
+            "model".into(),
+            FlagValue::Value("stealth/ox-alpha[1m]".into()),
+        );
+        assert_eq!(
+            resolve_launch_model(&with_flag, Some(&cfg), claude_profile, "claude"),
+            "stealth/ox-alpha"
         );
     }
 }
