@@ -1,0 +1,8 @@
+command: grok
+args: []
+env:
+ANYROUTER_MODEL_MODE=concrete
+ANYROUTER_PINNED_PRESET=@preset/coding-stack
+API_TIMEOUT_MS=3000000
+GROK_CODE_XAI_API_KEY=sk-ar-...dddd
+GROK_MODELS_BASE_URL=https://anyrouter.dev/api/v1

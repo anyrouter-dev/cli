@@ -1,0 +1,20 @@
+
+
+
+    ┌ anyr ────────────────────────────────────────────────────────────────┐
+    │                                                                      │
+    │         ▄█▄▀█████████▄    account  default                           │
+    │       ▄█████▄       ███   key          sk-ar-v1-verif…-key           │
+    │     ▄███▀  ▀██▄ ▄▄▄███▀   model      auto  ·  most used              │
+    │   ▄███▀      ▀██▄▀███▄    agent      claude                          │
+    │ ▄███▀          ▀██▄▀███▄  credits  (unknown)                         │
+    │ ──────────────────────────────────────────────────────────────────── │
+    │ ❯ acc█                                                               │
+    │                                                                      │
+    │   CONFIGURE                                                          │
+    │ ❯ ⇄  account…                                     per agent · claude │
+    │   ⚙  config…                                 accounts · keys · agent │
+    │                                                                      │
+    │ type to filter    ↑↓  move    ↵  run    esc  quit                    │
+    │                                                                      │
+    └──────────────────────────────────────────────────────────────────────┘

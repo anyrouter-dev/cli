@@ -1,0 +1,63 @@
+active_profile: default
+auto_update: false
+channel: stable
+profiles:
+  default:
+    api_key: sk-ar-v1-verify-fixture-not-a-real-key
+    default_model: auto
+  work:
+    api_key: sk-ar-v1-verify-work-fixture-not-a-real-key
+    default_model: anthropic/claude-sonnet-4.6
+agents:
+  claude:
+    profile: work
+    default_model: stealth/ox-alpha
+tools:
+  claude:
+    command: claude
+    base_url_env: ANTHROPIC_BASE_URL
+    auth_env: ANTHROPIC_AUTH_TOKEN
+    model_env: ANTHROPIC_MODEL
+    base_suffix: ""
+    enable_gateway_model_discovery: true
+    shadow_env: ANTHROPIC_API_KEY
+  codex:
+    command: codex
+    base_url_env: OPENAI_BASE_URL
+    auth_env: OPENAI_API_KEY
+    model_env: OPENAI_MODEL
+    base_suffix: /v1
+    enable_gateway_model_discovery: false
+    shadow_env: OPENAI_API_KEY
+  grok:
+    command: grok
+    base_url_env: GROK_MODELS_BASE_URL
+    auth_env: GROK_CODE_XAI_API_KEY
+    model_env: null
+    base_suffix: /v1
+    enable_gateway_model_discovery: false
+    shadow_env: null
+  opencode:
+    command: opencode
+    base_url_env: OPENAI_BASE_URL
+    auth_env: OPENAI_API_KEY
+    model_env: OPENAI_MODEL
+    base_suffix: /v1
+    enable_gateway_model_discovery: false
+    shadow_env: null
+  pi:
+    command: pi
+    base_url_env: OPENAI_BASE_URL
+    auth_env: ANYROUTER_API_KEY
+    model_env: null
+    base_suffix: /v1
+    enable_gateway_model_discovery: false
+    shadow_env: null
+  pool:
+    command: pool
+    base_url_env: POOLSIDE_STANDALONE_BASE_URL
+    auth_env: POOLSIDE_API_KEY
+    model_env: POOLSIDE_STANDALONE_MODEL
+    base_suffix: /v1
+    enable_gateway_model_discovery: false
+    shadow_env: OPENAI_API_KEY

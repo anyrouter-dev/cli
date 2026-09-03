@@ -1,0 +1,24 @@
+    ┌ anyr ────────────────────────────────────────────────────────────────┐
+    │                                                                      │
+    │         ▄█▄▀█████████▄    account  default                           │
+    │       ▄█████▄       ███   key          sk-ar-v1-verif…-key           │
+    │     ▄███▀  ▀██▄ ▄▄▄███▀   model      auto  ·  most used              │
+    │   ▄███▀      ▀██▄▀███▄    agent      claude                          │
+    │ ▄███▀          ▀██▄▀███▄  credits  (unknown)                         │
+    │ ──────────────────────────────────────────────────────────────────── │
+    │ ❯ █                                                                  │
+    │                                                                      │
+    │   LAUNCH                                                             │
+    │ ❯ ⚡ claude                                          stealth/ox-alph │
+    │   ⚡ codex                                                      Code │
+    │                                                                      │
+    │   CONFIGURE                                                          │
+    │   ◆  model…                                       per agent · claude │
+    │   ⚡ agent…                                      switch default agen │
+    │   ⇄  account…                                     per agent · claude │
+    │   🔑 key…                                          per agent · claud │
+    │   ⬇  install…                                 install a coding agent │
+    │                                                                      │
+    │ type to filter    ↑↓  move    ↵  run    esc  quit                    │
+    │                                                                      │
+    └──────────────────────────────────────────────────────────────────────┘
