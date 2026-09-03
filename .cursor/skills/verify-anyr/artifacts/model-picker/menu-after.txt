@@ -1,0 +1,24 @@
+    ╭ anyr ────────────────────────────────────────────────────────────────╮
+    │        ▄█▄▀█████████▄    account  default                            │
+    │      ▄█████▄       ███   key      sk-ar-v1-verif…-key                │
+    │    ▄███▀  ▀██▄ ▄▄▄███▀   model    anyrouter/auto                     │
+    │  ▄███▀      ▀██▄▀███▄    agent    claude                             │
+    │▄███▀          ▀██▄▀███▄  credits  -                                  │
+    ├──────────────────────────────────────────────────────────────────────┤
+    │❯ █                                                                   │
+    ├──────────────────────────────────────────────────────────────────────┤
+    │  LAUNCH                                                              │
+    │◆ ⚡ claude                                             anyrouter/auto │
+    │  ⚡ codex                                                       Codex │
+    │                                                                      │
+    │  CONFIGURE                                                           │
+    │  ◆  model…                                    switch session default │
+    │  ⚡ agent…                                       switch default agent │
+    │  ⇄  account…                                          switch profile │
+    │  🔑 key…                                               switch API key │
+    │  ⬇  install…                                  install a coding agent │
+    │  ⚙  config…                                  accounts · keys · agent │
+    │  ✕  quit                                               esc works too │
+    ├──────────────────────────────────────────────────────────────────────┤
+    │type to filter    ↑↓  move    ↵  run    esc  quit                     │
+    ╰──────────────────────────────────────────────────────────────────────╯

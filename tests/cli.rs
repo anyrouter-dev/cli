@@ -558,6 +558,42 @@ fn claude_yolo_flag_expands_to_dangerously_skip_permissions() {
 }
 
 #[test]
+fn claude_yolo_with_ox_alpha_1m_still_works() {
+    let key = "sk-ar-v1-fixture-key-0001";
+    let (code, stdout, stderr) = {
+        let out = anyr()
+            .args([
+                "claude",
+                "--dry-run",
+                "--yes",
+                "--key",
+                key,
+                "--model",
+                "stealth/ox-alpha[1m]",
+                "--yolo",
+            ])
+            .env("ANYROUTER_HOME", temp_home())
+            .env_remove("ANYROUTER_API_KEY")
+            .output()
+            .expect("dry-run");
+        (
+            out.status.code().unwrap_or(1),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+    assert_eq!(code, 0, "stderr={stderr}");
+    assert!(
+        stdout.contains("ANTHROPIC_MODEL=stealth/ox-alpha[1m]"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("\"--dangerously-skip-permissions\""),
+        "{stdout}"
+    );
+}
+
+#[test]
 fn codex_yolo_flag_is_accepted_but_not_forwarded() {
     let key = "sk-ar-v1-fixture-key-0001";
     let (code, stdout, stderr) = {
@@ -1144,6 +1180,95 @@ profiles:
         .output()
         .expect("models use");
     assert_ne!(out.status.code().unwrap_or(1), 0);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn models_dump_tui_pins_anyrouter_auto_without_usage_dump() {
+    let dir = std::env::temp_dir().join(format!("anyr-cli-models-dump-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("config.yaml");
+    std::fs::write(
+        &path,
+        "\
+active_profile: default
+profiles:
+  default:
+    api_key: sk-ar-v1-models-dump-secret-value-abcdef
+    default_model: auto
+",
+    )
+    .unwrap();
+    let out = anyr()
+        .args(["models", "--dump-tui", "--config", path.to_str().unwrap()])
+        .output()
+        .expect("models dump");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code().unwrap_or(1), 0, "{stdout}{stderr}");
+    assert!(
+        !stdout.contains('\u{1b}'),
+        "dump must be ANSI-free: {stdout}"
+    );
+    assert!(stdout.contains("anyrouter/auto"), "{stdout}");
+    assert!(
+        !stdout.contains("most used"),
+        "picker must not dump a most-used ranking:\n{stdout}"
+    );
+    let auto_at = stdout.find("anyrouter/auto").expect("preset");
+    for ranked in ["stealth/ox-alpha", "openai/gpt", "claude-sonnet"] {
+        if let Some(at) = stdout.find(ranked) {
+            assert!(
+                auto_at < at,
+                "anyrouter/auto must lead, not a usage dump:\n{stdout}"
+            );
+        }
+    }
+    assert!(
+        !stdout.contains("models-dump-secret-value"),
+        "dump must not leak full secret: {stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn models_use_anyrouter_auto_persists_without_network() {
+    let dir = std::env::temp_dir().join(format!("anyr-cli-models-auto-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("config.yaml");
+    std::fs::write(
+        &path,
+        "\
+active_profile: default
+profiles:
+  default:
+    api_key: sk-ar-v1-one
+    default_model: stealth/ox-alpha
+",
+    )
+    .unwrap();
+    let out = anyr()
+        .args([
+            "models",
+            "use",
+            "anyrouter/auto",
+            "--config",
+            path.to_str().unwrap(),
+            "--base-url",
+            "http://127.0.0.1:9",
+        ])
+        .env_remove("ANYROUTER_API_KEY")
+        .output()
+        .expect("models use auto");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code().unwrap_or(1), 0, "{stdout}{stderr}");
+    assert!(stdout.contains("anyrouter/auto"), "{stdout}");
+    let cfg = std::fs::read_to_string(&path).expect("config");
+    assert!(
+        !cfg.contains("default_model: stealth/ox-alpha"),
+        "preset should clear the pinned catalog id:\n{cfg}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 

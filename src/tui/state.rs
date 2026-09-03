@@ -504,6 +504,24 @@ mod tests {
     }
 
     #[test]
+    fn picker_typeahead_selects_anyrouter_auto_preset() {
+        let mut s = PickerState::new(
+            "Default model",
+            vec![
+                "anyrouter/auto".into(),
+                "stealth/ox-alpha  ·  1M".into(),
+                "openai/gpt-5.4-mini".into(),
+            ],
+            Some(1),
+        );
+        for c in "anyrouter/auto".chars() {
+            assert_eq!(s.apply(Action::Char(c)), Outcome::Continue);
+        }
+        assert_eq!(s.filtered()[0].1, "anyrouter/auto");
+        assert_eq!(s.apply(Action::Enter), Outcome::Selected(0));
+    }
+
+    #[test]
     fn menu_wraps_and_selects() {
         let mut s = MenuState::new(
             "Menu",

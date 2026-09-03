@@ -276,7 +276,7 @@ fn allowed_flags(command: &str) -> Option<&'static [&'static str]> {
         ],
         "models" => &[
             "profile", "config", "json", "key", "base-url", "pick", "haiku", "sonnet", "opus",
-            "fable", "agent",
+            "fable", "agent", "dump-tui",
         ],
         "usage" => &["profile", "base-url", "config", "json", "key", "no-detail"],
         "whoami" => &["profile", "config", "json"],
@@ -695,11 +695,10 @@ fn persist_login(
     let mut cfg = upsert_profile(existing.unwrap_or_default(), &name, profile);
     cfg.active_profile = name.clone();
     if !parsed.flag_true("yes") && term::is_interactive() {
-        if let Ok(models) = fetch_models(&base, Some(&key)) {
-            if let Ok(id) = pick_model(&models, None, "Default model") {
-                if let Some(p) = cfg.profiles.get_mut(&name) {
-                    p.default_model = Some(id);
-                }
+        let models = models_for_picker(&base, Some(&key), env);
+        if let Ok(id) = pick_model(&models, None, "Default model") {
+            if let Some(p) = cfg.profiles.get_mut(&name) {
+                set_model_slot(p, "default", id);
             }
         }
         let tools = ["claude", "codex", "grok", "opencode", "pi", "pool"];
@@ -746,11 +745,10 @@ fn run_login(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32,
 
 fn model_pick_label(id: &str, models: &[CatalogModel]) -> String {
     if is_auto_model(id) {
-        match most_used_model_id(models) {
-            Some(top) => format!("auto  ·  most used  ·  {top}"),
-            None => "auto  ·  most used".into(),
-        }
-    } else if models
+        // The selectable preset id — never a "most used" ranking stand-in.
+        return display_model_id(id);
+    }
+    if models
         .iter()
         .find(|m| catalog_model_id(&m.id) == id)
         .and_then(|m| m.context_length)
@@ -762,16 +760,69 @@ fn model_pick_label(id: &str, models: &[CatalogModel]) -> String {
     }
 }
 
+/// Picker catalog: pin `anyrouter/auto`, then real catalog ids in name order.
+/// Usage-sorted fetch order is not the picker contents.
 fn pick_ids(models: &[CatalogModel]) -> Vec<String> {
-    let mut ids = Vec::new();
-    ids.push("auto".into());
-    for model in models {
-        let id = catalog_model_id(&model.id);
-        if !id.is_empty() && !is_auto_model(&id) && !ids.iter().any(|existing| existing == &id) {
+    let mut ids = vec!["anyrouter/auto".into()];
+    let mut catalog: Vec<String> = models
+        .iter()
+        .map(|m| catalog_model_id(&m.id))
+        .filter(|id| !id.is_empty() && !is_auto_model(id))
+        .collect();
+    catalog.sort();
+    catalog.dedup();
+    for id in catalog {
+        if !ids.iter().any(|existing| existing == &id) {
             ids.push(id);
         }
     }
     ids
+}
+
+fn picker_choice_list(models: &[CatalogModel]) -> (Vec<String>, Vec<String>) {
+    let ids = pick_ids(models);
+    let labels = ids.iter().map(|id| model_pick_label(id, models)).collect();
+    (ids, labels)
+}
+
+/// Catalog rows for the inline picker. Live fetch is optional: the preset
+/// `anyrouter/auto` is always selectable even when lookup is off or fails.
+fn models_for_picker(
+    base: &str,
+    key: Option<&str>,
+    env: &BTreeMap<String, String>,
+) -> Vec<CatalogModel> {
+    if !catalog_lookup_enabled(env) {
+        return Vec::new();
+    }
+    fetch_models(base, key).unwrap_or_default()
+}
+
+fn render_model_picker_dump(
+    models: &[CatalogModel],
+    current: Option<&str>,
+    env: &BTreeMap<String, String>,
+) -> String {
+    let (ids, labels) = picker_choice_list(models);
+    let current_id = current.map(catalog_model_id);
+    let shown_idx = current_id.and_then(|id| {
+        ids.iter()
+            .position(|s| s == &id || (is_auto_model(&id) && is_auto_model(s)))
+    });
+    #[cfg(feature = "native")]
+    {
+        crate::tui::dump_pick(
+            "Default model",
+            &labels,
+            shown_idx,
+            crate::tui::dump_cols(env),
+        )
+    }
+    #[cfg(not(feature = "native"))]
+    {
+        let _ = (env, shown_idx);
+        format!("{}\n", labels.join("\n"))
+    }
 }
 
 fn pick_list(
@@ -796,19 +847,18 @@ fn pick_model(
     current: Option<&str>,
     title: &str,
 ) -> Result<String, String> {
-    let ids = pick_ids(models);
+    let (ids, labels) = picker_choice_list(models);
     if ids.is_empty() {
         return Err("No models in catalog.".into());
     }
     let current_id = current.map(catalog_model_id);
-    let labels: Vec<String> = ids.iter().map(|id| model_pick_label(id, models)).collect();
     let shown_idx = current_id.and_then(|id| {
         ids.iter()
             .position(|s| s == &id || (is_auto_model(&id) && is_auto_model(s)))
     });
     let idx = pick_list(
         title,
-        &["type to search, enter to pin · x in config clears to auto".into()],
+        &["type to search · anyrouter/auto is pinned · enter to select".into()],
         &labels,
         shown_idx,
     )?;
@@ -1033,7 +1083,6 @@ fn run_models(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32
     }
     let key = resolve_api_key(&parsed.flags, env, profile);
     let base = resolve_base_url(&parsed.flags, profile);
-    let models = fetch_models(&base, key.as_deref())?;
     let flag_slots = [
         ("haiku", get_string_flag(&parsed.flags, "haiku")),
         ("sonnet", get_string_flag(&parsed.flags, "sonnet")),
@@ -1041,9 +1090,48 @@ fn run_models(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32
         ("fable", get_string_flag(&parsed.flags, "fable")),
     ];
     let has_alias_flags = flag_slots.iter().any(|(_, v)| v.is_some());
-    if sub == Some("use") || has_alias_flags {
+    if tui_wants_dump(parsed, env) {
+        let models = models_for_picker(&base, key.as_deref(), env);
+        let current = profile.map(|p| slot_current(p, "default").to_string());
+        print!(
+            "{}",
+            render_model_picker_dump(&models, current.as_deref(), env)
+        );
+        return Ok(0);
+    }
+    // `anyrouter/auto` is a first-class preset — persist it without a catalog fetch.
+    if sub == Some("use") && !has_alias_flags {
+        let positional = parsed.passthrough.get(1).cloned().filter(|s| !s.is_empty());
+        if let Some(id) = positional {
+            if is_auto_model(&id) {
+                return save_model_slot(existing, &path, "default", &display_model_id(&id));
+            }
+        }
+    }
+    if parsed.flag_true("pick") && term::is_interactive() {
+        let models = models_for_picker(&base, key.as_deref(), env);
+        if let Some(agent) = agent.as_deref() {
+            let current = existing
+                .as_ref()
+                .and_then(|c| c.agent_binding(agent))
+                .and_then(|b| b.default_model.clone())
+                .or_else(|| profile.map(|p| p.default_model().to_string()));
+            let id = pick_model(&models, current.as_deref(), &format!("{agent} model"))?;
+            return save_agent_model(&path, agent, &id);
+        }
+        let slot = profile
+            .map(pick_claude_slot)
+            .transpose()?
+            .unwrap_or("default");
+        let current = profile.map(|p| slot_current(p, slot).to_string());
+        let id = pick_model(&models, current.as_deref(), slot_title(slot))?;
+        return save_model_slot(existing, &path, slot, &catalog_model_id(&id));
+    }
+    // `models use --agent` with no id: same picker as `--pick`, no catalog required.
+    if sub == Some("use") && !has_alias_flags {
         if let Some(agent) = agent.as_deref() {
             if term::is_interactive() {
+                let models = models_for_picker(&base, key.as_deref(), env);
                 let current = existing
                     .as_ref()
                     .and_then(|c| c.agent_binding(agent))
@@ -1052,6 +1140,11 @@ fn run_models(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32
                 let id = pick_model(&models, current.as_deref(), &format!("{agent} model"))?;
                 return save_agent_model(&path, agent, &id);
             }
+        }
+    }
+    let models = fetch_models(&base, key.as_deref())?;
+    if sub == Some("use") || has_alias_flags {
+        if agent.is_some() {
             return Err(hint(
                 "Usage: {bin} models use <id> --agent <claude|codex|grok|opencode|pi|pool>",
             ));
@@ -1111,24 +1204,6 @@ fn run_models(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32
             id.0,
             &catalog_model_id(&id.1),
         );
-    }
-    if parsed.flag_true("pick") && term::is_interactive() {
-        if let Some(agent) = agent.as_deref() {
-            let current = existing
-                .as_ref()
-                .and_then(|c| c.agent_binding(agent))
-                .and_then(|b| b.default_model.clone())
-                .or_else(|| profile.map(|p| p.default_model().to_string()));
-            let id = pick_model(&models, current.as_deref(), &format!("{agent} model"))?;
-            return save_agent_model(&path, agent, &id);
-        }
-        let slot = profile
-            .map(pick_claude_slot)
-            .transpose()?
-            .unwrap_or("default");
-        let current = profile.map(|p| slot_current(p, slot).to_string());
-        let id = pick_model(&models, current.as_deref(), slot_title(slot))?;
-        return save_model_slot(existing, &path, slot, &catalog_model_id(&id));
     }
     let pinned = profile
         .map(|p| display_model_id(p.default_model()))
@@ -1882,7 +1957,7 @@ fn config_edit_row(
                 .and_then(|c| c.profiles.get(&c.active_profile));
             let key = resolve_api_key(&parsed.flags, env, profile);
             let base = resolve_base_url(&parsed.flags, profile);
-            let models = fetch_models(&base, key.as_deref())?;
+            let models = models_for_picker(&base, key.as_deref(), env);
             let current = profile.map(|p| slot_current(p, slot).to_string());
             let id = pick_model(&models, current.as_deref(), slot_title(slot))?;
             save_model_slot(existing, path, slot, &id)
@@ -2182,7 +2257,7 @@ fn config_reset_row(path: &std::path::Path, kind: SettingKind) -> Result<i32, St
             write_config(&cfg, path)?;
             if label == "default model" {
                 println!(
-                    "{}  default model reset to auto (most used)",
+                    "{}  default model reset to anyrouter/auto",
                     term::ok("Saved")
                 );
             } else {
@@ -3698,5 +3773,106 @@ profiles:
             p.extra.get("future_field").and_then(|v| v.as_str()),
             Some("keep-me")
         );
+    }
+}
+
+#[cfg(test)]
+mod picker_catalog_tests {
+    use super::*;
+    use crate::http::CatalogModel;
+
+    fn cm(id: &str, context_length: Option<i64>) -> CatalogModel {
+        CatalogModel {
+            id: id.into(),
+            name: None,
+            owned_by: None,
+            context_length,
+        }
+    }
+
+    #[test]
+    fn pick_ids_pins_anyrouter_auto_and_does_not_dump_usage_order() {
+        // Input order is a usage ranking (most-used first).
+        let models = vec![
+            cm("stealth/ox-alpha", Some(1_000_000)),
+            cm("openai/gpt-5.4-mini", Some(128_000)),
+            cm("anthropic/claude-sonnet-4.6", Some(200_000)),
+            cm("auto", None),
+        ];
+        let ids = pick_ids(&models);
+        assert_eq!(ids[0], "anyrouter/auto");
+        assert_eq!(
+            ids,
+            vec![
+                "anyrouter/auto",
+                "anthropic/claude-sonnet-4.6",
+                "openai/gpt-5.4-mini",
+                "stealth/ox-alpha",
+            ]
+        );
+        assert_ne!(ids[1], "stealth/ox-alpha", "must not lead with most-used");
+    }
+
+    #[test]
+    fn pick_ids_empty_catalog_still_has_preset() {
+        assert_eq!(pick_ids(&[]), vec!["anyrouter/auto"]);
+    }
+
+    #[test]
+    fn model_pick_label_shows_preset_id_not_most_used() {
+        let models = vec![cm("stealth/ox-alpha", Some(1_000_000))];
+        let label = model_pick_label("anyrouter/auto", &models);
+        assert_eq!(label, "anyrouter/auto");
+        assert!(!label.contains("most used"), "{label}");
+        assert!(!label.contains("stealth/ox-alpha"), "{label}");
+        assert_eq!(
+            model_pick_label("stealth/ox-alpha", &models),
+            "stealth/ox-alpha  ·  1M"
+        );
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn picker_typeahead_selects_anyrouter_auto() {
+        use crate::tui::{drive_picker, Action, Outcome, PickerState};
+        let models = vec![
+            cm("stealth/ox-alpha", Some(1_000_000)),
+            cm("openai/gpt-5.4-mini", None),
+        ];
+        let (ids, labels) = picker_choice_list(&models);
+        assert_eq!(ids[0], "anyrouter/auto");
+        assert_eq!(labels[0], "anyrouter/auto");
+        assert!(
+            labels.iter().all(|l| !l.contains("most used")),
+            "{labels:?}"
+        );
+        let mut state = PickerState::new("Default model", labels, Some(0));
+        let typed: Vec<Action> = "anyrouter/auto".chars().map(Action::Char).collect();
+        let out = drive_picker(&mut state, &typed);
+        assert_eq!(out, Outcome::Continue);
+        assert_eq!(state.filtered()[0].1, "anyrouter/auto");
+        assert_eq!(state.apply(Action::Enter), Outcome::Selected(0));
+        assert_eq!(ids[0], "anyrouter/auto");
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn picker_dump_leads_with_preset_not_usage_ranking() {
+        let models = vec![
+            cm("stealth/ox-alpha", Some(1_000_000)),
+            cm("openai/gpt-5.4-mini", None),
+        ];
+        let env = BTreeMap::new();
+        let frame = render_model_picker_dump(&models, Some("auto"), &env);
+        assert!(frame.contains("anyrouter/auto"), "{frame}");
+        assert!(!frame.contains("most used"), "{frame}");
+        let auto_at = frame.find("anyrouter/auto").expect("preset");
+        let usage_at = frame.find("stealth/ox-alpha");
+        if let Some(usage_at) = usage_at {
+            assert!(
+                auto_at < usage_at,
+                "preset must appear before catalog dump:\n{frame}"
+            );
+        }
     }
 }

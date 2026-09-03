@@ -470,13 +470,9 @@ pub fn display_model_id(model: &str) -> String {
     }
 }
 
-/// Launcher / settings label: auto means "pick most used", not a stored id.
+/// Launcher / settings label. Auto is the selectable preset `anyrouter/auto`.
 pub fn session_model_label(model: &str) -> String {
-    if is_auto_model(model) {
-        "auto  ·  most used".into()
-    } else {
-        catalog_model_id(model)
-    }
+    display_model_id(model)
 }
 
 pub fn claude_wants_1m(context_window: Option<i64>) -> bool {
@@ -821,6 +817,18 @@ mod tests {
             "stealth/ox-alpha"
         );
         assert_eq!(model_id_for_tool("claude", "auto", None), "anyrouter/auto");
+    }
+
+    #[test]
+    fn session_model_label_is_anyrouter_auto_preset() {
+        assert_eq!(session_model_label("auto"), "anyrouter/auto");
+        assert_eq!(session_model_label("anyrouter/auto"), "anyrouter/auto");
+        assert_eq!(session_model_label(""), "anyrouter/auto");
+        assert_eq!(
+            session_model_label("stealth/ox-alpha[1m]"),
+            "stealth/ox-alpha"
+        );
+        assert_ne!(session_model_label("auto"), "auto  ·  most used");
     }
 
     #[test]
