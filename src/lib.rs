@@ -15,6 +15,7 @@ pub mod parse;
 #[cfg(feature = "native")]
 pub mod relay;
 pub mod spawn;
+pub mod spinner;
 pub mod term;
 #[cfg(feature = "native")]
 pub mod tui;

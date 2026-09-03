@@ -420,6 +420,13 @@ Channels:
 Downloads:
   https://github.com/anyrouter-dev/cli/releases/download/<tag>/anyr-<os>-<arch>
 
+While installing, a spinner ticks with the from → to versions and channel:
+
+  ⠋ Updating v0.1.11 -> v0.1.99 (stable channel)
+  ✔ Updated to v0.1.99
+
+  Run anyr to start using the new version.
+
 --check reports current vs latest without installing.
 --fixture <path> / ANYR_RELEASES_JSON skips the network (tests / dry-run).
 --channel stable|beta overrides the config file for this run only.
