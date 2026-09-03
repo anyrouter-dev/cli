@@ -151,6 +151,18 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: generate checksums
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          gh release download "${RELEASE_TAG}" --dir dist --pattern 'anyr-*'
+          ( cd dist && sha256sum anyr-* > checksums.txt )
+          ls -la dist/checksums.txt
+
       - name: write changelog + bench to release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -165,4 +177,4 @@ jobs:
             --out notes.md
           gh release edit "${RELEASE_TAG}" --notes-file notes.md
           gh release upload "${RELEASE_TAG}" \
-            bench-report.md bench-report.json --clobber
+            bench-report.md bench-report.json dist/checksums.txt --clobber

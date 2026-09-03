@@ -270,7 +270,9 @@ jobs:
           TAG="v${VER}"
           mkdir -p dist
           find artifacts -type f \( -name 'anyr-*' -o -name 'anyr.exe' \) ! -name '*.json' -exec cp -v {} dist/ \;
+          ( cd dist && sha256sum anyr-* > checksums.txt )
           ls -la dist
+          ls -la dist/checksums.txt
           test -n "$(ls -A dist)" || { echo "no binaries in artifacts"; exit 1; }
           SHORT="$(echo "${GITHUB_SHA}" | cut -c1-7)"
           printf 'Beta from main (%s).\n\ncurl -fsSL https://anyrouter.dev/setup.sh | bash -s -- --channel beta\nchannel: beta\n' "$SHORT" > notes.md
