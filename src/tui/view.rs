@@ -69,7 +69,7 @@ pub fn render_picker(frame: &mut Frame, state: &PickerState) {
             ListItem::new(Line::from(vec![
                 Span::styled(if i == state.cursor { "❯ " } else { "  " }, theme::accent()),
                 Span::styled(item_icon(label), item_icon_style(label)),
-                Span::styled(format!("{label}"), style),
+                Span::styled(label.to_string(), style),
             ]))
         })
         .collect();

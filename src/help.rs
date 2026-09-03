@@ -4,7 +4,7 @@ use std::path::Path;
 use crate::VERSION;
 
 thread_local! {
-    static INVOKED_BIN: RefCell<String> = RefCell::new(String::new());
+    static INVOKED_BIN: RefCell<String> = const { RefCell::new(String::new()) };
 }
 
 const LAUNCH_HELP_BODY: &str = "\
