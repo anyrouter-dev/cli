@@ -1,0 +1,26 @@
+      ╭ ▲ Config ────────────────────────────────────────────────────────╮
+      │account  default                                                  │
+      │credits  -                                                        │
+      │file     /tmp/anyr-verify-20260903-060828-7216/home/config.yaml   │
+      │                                                                  │
+      │[general]  claude  codex  grok  opencode  pi  pool                │
+      │                                                                  │
+      ├──────────────────────────────────────────────────────────────────┤
+      │                                                                  │
+      │  ACCOUNT                                                         │
+      │◆ account                                                default  │
+      │  api key                                    sk-ar-v1-verif…-key  │
+      │                                                                  │
+      │  MODEL                                                           │
+      │  default                                     auto  ·  most used  │
+      │                                                                  │
+      │  AGENT                                                           │
+      │  coding agent                                            claude  │
+      │  on PATH                                          claude, codex  │
+      │                                                                  │
+      │  GENERAL                                                         │
+      │  auto-update                                           disabled  │
+      │  update channel                                          stable  │
+      ├──────────────────────────────────────────────────────────────────┤
+      │tab  agent    ↑↓  move    ↵  edit    x  reset    q  close         │
+      ╰──────────────────────────────────────────────────────────────────╯
