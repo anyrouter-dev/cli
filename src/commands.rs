@@ -1038,29 +1038,7 @@ fn save_agent_key(path: &PathBuf, agent: &str, key: &str) -> Result<i32, String>
 }
 
 fn palette_bind_detail(agent: &str) -> String {
-    format!("per agent · {agent}")
-}
-
-fn launch_detail_for(
-    cfg: &crate::config::Config,
-    id: &str,
-    product_label: &str,
-    session_model: &str,
-    is_last: bool,
-) -> String {
-    if let Some(m) = cfg
-        .agent_binding(id)
-        .and_then(|b| b.default_model.as_deref())
-        .map(str::trim)
-        .filter(|s| !s.is_empty() && !is_auto_model(s))
-    {
-        return session_model_label(m);
-    }
-    if is_last {
-        session_model.to_string()
-    } else {
-        product_label.to_string()
-    }
+    format!("for {agent}")
 }
 
 fn run_models(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, String> {
@@ -3008,8 +2986,38 @@ fn stored_api_key(
     resolve_api_key(&parsed.flags, env, profile)
 }
 
-/// Palette entries mirroring the launcher's action set: launch rows first
-/// (with the pinned model / agent list as detail), then configure rows.
+fn agent_binding_detail(cfg: &crate::config::Config, id: &str, signed_in: bool) -> String {
+    let profile = cfg.profiles.get(&cfg.active_profile);
+    let binding = cfg.agent_binding(id);
+    let model = binding
+        .and_then(|b| b.default_model.as_deref())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(session_model_label)
+        .unwrap_or_else(|| session_model_label(profile.map(|p| p.default_model()).unwrap_or("auto")));
+    let account = binding
+        .and_then(|b| b.profile.as_deref())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(cfg.active_profile.as_str());
+    let key = if signed_in {
+        if let Some(k) = binding
+            .and_then(|b| b.api_key.as_deref())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            mask_api_key(Some(k))
+        } else {
+            mask_api_key(profile.and_then(|p| p.api_key.as_deref()))
+        }
+    } else {
+        "(not signed in)".into()
+    };
+    format!("{model}  ·  {account}  ·  {key}")
+}
+
+/// Palette entries: launch rows first (bindings visible per agent), then
+/// model/account/key for the highlighted agent on the same screen, then more.
 /// `signed_in` gates the launch group exactly like the old dialog did.
 #[cfg(feature = "native")]
 fn launcher_palette(
@@ -3034,11 +3042,8 @@ fn launcher_palette(
         .or_else(|| get_string_flag(&parsed.flags, "tool"))
         .or_else(|| present.first().map(|(id, _)| (*id).to_string()))
         .unwrap_or_else(|| "claude".into());
-    let model_line = session_model_label(profile.map(|p| p.default_model()).unwrap_or("auto"));
 
-    // Status header — local data only. Credits/identity fill in from the
-    // background fetch via the palette idle tick (do not block first paint).
-    let key = resolve_api_key(&parsed.flags, env, profile);
+    // Compact status: bindings live on each agent row, not a 5-line header.
     let dump_or_pipe = tui_wants_dump(parsed, env) || !term::is_interactive();
     let credits_line = format!("credits  {}", credits.peek_credits());
     let account_line = if dump_or_pipe {
@@ -3048,27 +3053,15 @@ fn launcher_palette(
     } else {
         format!("account  {}", cfg.active_profile)
     };
-    let key_line = format!(
-        "key      {}",
-        if signed_in {
-            mask_api_key(key.as_deref())
-        } else {
-            "(not signed in)".into()
-        }
-    );
-    let header = vec![
-        account_line,
-        key_line,
-        format!("model    {model_line}"),
-        format!("agent    {last}"),
-        credits_line,
-    ];
+    let header = vec![account_line, credits_line];
 
     #[cfg(feature = "native")]
     use crate::tui::PaletteEntry;
     let mut entries = Vec::new();
     if signed_in {
-        push_launch_entries(&mut entries, &cfg, &present, &last, &model_line);
+        push_launch_entries(&mut entries, &present, &last, |id| {
+            agent_binding_detail(&cfg, id, signed_in)
+        });
     } else {
         entries.push(PaletteEntry::new(
             "login",
@@ -3077,44 +3070,28 @@ fn launcher_palette(
             "Login / sign in",
         ));
     }
-    let bind = palette_bind_detail(&last);
-    entries.push(PaletteEntry::new(
-        "model…",
-        bind.clone(),
-        "configure",
-        "Switch model",
-    ));
-    entries.push(PaletteEntry::new(
-        "agent…",
-        "switch default agent",
-        "configure",
-        "Switch agent",
-    ));
-    entries.push(PaletteEntry::new(
-        "account…",
-        bind.clone(),
-        "configure",
-        "Switch account",
-    ));
-    entries.push(PaletteEntry::new("key…", bind, "configure", "Switch key"));
+    let hub = if present.iter().any(|(id, _)| *id == last.as_str()) {
+        last.clone()
+    } else {
+        present
+            .first()
+            .map(|(id, _)| (*id).to_string())
+            .unwrap_or(last.clone())
+    };
+    push_agent_configure_entries(&mut entries, &hub);
     entries.push(PaletteEntry::new(
         "install…",
         "install a coding agent",
-        "configure",
+        "more",
         "Install agent",
     ));
     entries.push(PaletteEntry::new(
         "config…",
         "accounts · keys · agent",
-        "configure",
+        "more",
         "Config",
     ));
-    entries.push(PaletteEntry::new(
-        "quit",
-        "esc works too",
-        "configure",
-        "Quit",
-    ));
+    entries.push(PaletteEntry::new("quit", "esc works too", "more", "Quit"));
     (header, entries)
 }
 
@@ -3130,24 +3107,13 @@ fn launcher_palette(
     let profile = cfg.profiles.get(&cfg.active_profile);
     let signed_in = launcher_signed_in(path, parsed, env);
     let last = launcher_last_tool(path, parsed, env);
-    let model_line = session_model_label(profile.map(|p| p.default_model()).unwrap_or("auto"));
     let header = vec![
         format!("account  {}", cfg.active_profile),
-        format!(
-            "key      {}",
-            if signed_in {
-                mask_api_key(profile.and_then(|p| p.api_key.as_deref()))
-            } else {
-                "(not signed in)".into()
-            }
-        ),
-        format!("model    {model_line}"),
-        format!("agent    {last}"),
         "credits  -".to_string(),
     ];
     let mut entries = Vec::new();
+    let present = available_agents(env, |id| tool_command_for(path, id));
     if signed_in {
-        let present = available_agents(env, |id| tool_command_for(path, id));
         if present.is_empty() {
             entries.push(InlineEntry::new(
                 "install an agent…",
@@ -3161,20 +3127,26 @@ fn launcher_palette(
             } else {
                 present[0].0.to_string()
             };
+            let detail = agent_binding_detail(&cfg, &last, signed_in);
             entries.push(InlineEntry::new(
                 last.clone(),
-                launch_detail_for(&cfg, &last, last.as_str(), &model_line, true),
+                detail,
                 "launch",
                 format!("Launch {last}"),
             ));
-            for (id, label) in present.into_iter().filter(|(id, _)| *id != last.as_str()) {
+            for (id, _) in present
+                .iter()
+                .copied()
+                .filter(|(id, _)| *id != last.as_str())
+            {
                 entries.push(InlineEntry::new(
                     id,
-                    launch_detail_for(&cfg, id, label, &model_line, false),
+                    agent_binding_detail(&cfg, id, signed_in),
                     "launch",
                     format!("Launch {id}"),
                 ));
             }
+            push_inline_configure(&mut entries, &last);
         }
     } else {
         entries.push(InlineEntry::new(
@@ -3183,46 +3155,44 @@ fn launcher_palette(
             "account",
             "Login / sign in",
         ));
+        push_inline_configure(&mut entries, &last);
     }
-    let bind = palette_bind_detail(&last);
-    entries.push(InlineEntry::new(
-        "model…",
-        bind.clone(),
-        "configure",
-        "Switch model",
-    ));
-    entries.push(InlineEntry::new(
-        "agent…",
-        "switch default agent",
-        "configure",
-        "Switch agent",
-    ));
-    entries.push(InlineEntry::new(
-        "account…",
-        bind.clone(),
-        "configure",
-        "Switch account",
-    ));
-    entries.push(InlineEntry::new("key…", bind, "configure", "Switch key"));
     entries.push(InlineEntry::new(
         "install…",
         "install a coding agent",
-        "configure",
+        "more",
         "Install agent",
     ));
     entries.push(InlineEntry::new(
         "config…",
         "accounts · keys · agent",
-        "configure",
+        "more",
         "Config",
     ));
-    entries.push(InlineEntry::new(
-        "quit",
-        "esc works too",
-        "configure",
-        "Quit",
-    ));
+    entries.push(InlineEntry::new("quit", "esc works too", "more", "Quit"));
     (header, entries)
+}
+
+#[cfg(not(feature = "native"))]
+fn push_inline_configure(entries: &mut Vec<InlineEntry>, agent: &str) {
+    entries.push(InlineEntry::new(
+        "model…",
+        palette_bind_detail(agent),
+        format!("configure · {agent}"),
+        format!("Switch model {agent}"),
+    ));
+    entries.push(InlineEntry::new(
+        "account…",
+        palette_bind_detail(agent),
+        format!("configure · {agent}"),
+        format!("Switch account {agent}"),
+    ));
+    entries.push(InlineEntry::new(
+        "key…",
+        palette_bind_detail(agent),
+        format!("configure · {agent}"),
+        format!("Switch key {agent}"),
+    ));
 }
 
 fn run_menu(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, String> {
@@ -3305,10 +3275,9 @@ enum LauncherNext {
 #[cfg(feature = "native")]
 fn push_launch_entries(
     entries: &mut Vec<crate::tui::PaletteEntry>,
-    cfg: &crate::config::Config,
     present: &[(&'static str, &'static str)],
     last: &str,
-    model_line: &str,
+    detail_for: impl Fn(&str) -> String,
 ) {
     use crate::tui::PaletteEntry;
     if present.is_empty() {
@@ -3327,22 +3296,46 @@ fn push_launch_entries(
     };
     entries.push(PaletteEntry::new(
         last.clone(),
-        launch_detail_for(cfg, &last, last.as_str(), model_line, true),
+        detail_for(&last),
         "launch",
         format!("Launch {last}"),
     ));
-    for (id, label) in present
+    for (id, _) in present
         .iter()
         .copied()
         .filter(|(id, _)| *id != last.as_str())
     {
         entries.push(PaletteEntry::new(
             id,
-            launch_detail_for(cfg, id, label, model_line, false),
+            detail_for(id),
             "launch",
             format!("Launch {id}"),
         ));
     }
+}
+
+#[cfg(feature = "native")]
+fn push_agent_configure_entries(entries: &mut Vec<crate::tui::PaletteEntry>, agent: &str) {
+    use crate::tui::PaletteEntry;
+    let group = format!("configure · {agent}");
+    entries.push(PaletteEntry::new(
+        "model…",
+        palette_bind_detail(agent),
+        group.clone(),
+        format!("Switch model {agent}"),
+    ));
+    entries.push(PaletteEntry::new(
+        "account…",
+        palette_bind_detail(agent),
+        group.clone(),
+        format!("Switch account {agent}"),
+    ));
+    entries.push(PaletteEntry::new(
+        "key…",
+        palette_bind_detail(agent),
+        group,
+        format!("Switch key {agent}"),
+    ));
 }
 
 fn install_agent_dialog(path: &PathBuf, env: &BTreeMap<String, String>) -> Result<i32, String> {
@@ -3571,6 +3564,9 @@ fn launcher_dispatch(
         }
         return Ok(LauncherNext::Continue);
     }
+    if let Some(agent) = action.strip_prefix("Switch model ") {
+        return switch_agent_model(parsed, env, path, agent.trim());
+    }
     if action == "Switch agent" {
         match config_edit_row(parsed, env, path, SettingKind::Agent) {
             Ok(_) => {}
@@ -3590,6 +3586,9 @@ fn launcher_dispatch(
         }
         return Ok(LauncherNext::Continue);
     }
+    if let Some(agent) = action.strip_prefix("Switch account ") {
+        return switch_agent_account(parsed, env, path, agent.trim());
+    }
     if action == "Switch key" {
         if !launcher_signed_in(path, parsed, env) {
             eprintln!("{}", term::err("Sign in first (Login / sign in)."));
@@ -3606,6 +3605,9 @@ fn launcher_dispatch(
             Err(err) => eprintln!("{}", term::err(&err)),
         }
         return Ok(LauncherNext::Continue);
+    }
+    if let Some(agent) = action.strip_prefix("Switch key ") {
+        return switch_agent_key(parsed, env, path, agent.trim());
     }
     if action == "Credits" {
         if let Err(err) = run_usage(parsed, env) {
@@ -3626,6 +3628,162 @@ fn launcher_dispatch(
         return Ok(LauncherNext::Continue);
     }
     Ok(LauncherNext::Continue)
+}
+
+fn switch_agent_model(
+    parsed: &ParsedArgs,
+    env: &BTreeMap<String, String>,
+    path: &PathBuf,
+    agent: &str,
+) -> Result<LauncherNext, String> {
+    if agent.is_empty() {
+        return Ok(LauncherNext::Continue);
+    }
+    if !launcher_signed_in(path, parsed, env) {
+        eprintln!("{}", term::err("Sign in first (Login / sign in)."));
+        return Ok(LauncherNext::Continue);
+    }
+    match bind_agent_model(parsed, env, path, agent) {
+        Ok(_) => {}
+        Err(err) if err == "Cancelled." => {}
+        Err(err) => eprintln!("{}", term::err(&err)),
+    }
+    Ok(LauncherNext::Continue)
+}
+
+fn bind_agent_model(
+    parsed: &ParsedArgs,
+    env: &BTreeMap<String, String>,
+    path: &PathBuf,
+    agent: &str,
+) -> Result<i32, String> {
+    let existing = load_config_if_present(path);
+    let profile = existing
+        .as_ref()
+        .and_then(|c| c.profiles.get(&c.active_profile));
+    let key = resolve_api_key(&parsed.flags, env, profile);
+    let base = resolve_base_url(&parsed.flags, profile);
+    let models = fetch_models(&base, key.as_deref())?;
+    let current = existing
+        .as_ref()
+        .and_then(|c| c.agent_binding(agent))
+        .and_then(|b| b.default_model.clone())
+        .or_else(|| profile.map(|p| p.default_model().to_string()));
+    let id = pick_model(&models, current.as_deref(), &format!("{agent} model"))?;
+    save_agent_model(path, agent, &id)
+}
+
+fn switch_agent_account(
+    _parsed: &ParsedArgs,
+    _env: &BTreeMap<String, String>,
+    path: &PathBuf,
+    agent: &str,
+) -> Result<LauncherNext, String> {
+    if agent.is_empty() {
+        return Ok(LauncherNext::Continue);
+    }
+    match bind_agent_account(path, agent) {
+        Ok(_) => {}
+        Err(err) if err == "Cancelled." => {}
+        Err(err) => eprintln!("{}", term::err(&err)),
+    }
+    Ok(LauncherNext::Continue)
+}
+
+fn bind_agent_account(path: &PathBuf, agent: &str) -> Result<i32, String> {
+    let cfg = load_config_if_present(path).unwrap_or_default();
+    let mut names: Vec<String> = cfg.profiles.keys().cloned().collect();
+    names.sort();
+    if names.is_empty() {
+        return Err(no_key_error());
+    }
+    let current_name = cfg
+        .agent_binding(agent)
+        .and_then(|b| b.profile.clone())
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| cfg.active_profile.clone());
+    let labels: Vec<String> = names
+        .iter()
+        .map(|n| {
+            let p = cfg.profiles.get(n);
+            let key = mask_api_key(p.and_then(|p| p.api_key.as_deref()));
+            let mark = if n == &current_name { "  ●" } else { "" };
+            format!("{n}  ·  {key}{mark}")
+        })
+        .collect();
+    let current = names.iter().position(|n| n == &current_name);
+    let idx = pick_list(
+        &format!("Account for {agent}"),
+        &["applies only to this agent · launch list stays put".into()],
+        &labels,
+        current,
+    )?;
+    let chosen = names[idx].clone();
+    save_agent_account(path, agent, &chosen)
+}
+
+fn switch_agent_key(
+    parsed: &ParsedArgs,
+    env: &BTreeMap<String, String>,
+    path: &PathBuf,
+    agent: &str,
+) -> Result<LauncherNext, String> {
+    if agent.is_empty() {
+        return Ok(LauncherNext::Continue);
+    }
+    if !launcher_signed_in(path, parsed, env) {
+        eprintln!("{}", term::err("Sign in first (Login / sign in)."));
+        return Ok(LauncherNext::Continue);
+    }
+    match bind_agent_key(parsed, env, path, agent) {
+        Ok(_) => {}
+        Err(err) if err == "Cancelled." => {}
+        Err(err) => eprintln!("{}", term::err(&err)),
+    }
+    Ok(LauncherNext::Continue)
+}
+
+fn bind_agent_key(
+    parsed: &ParsedArgs,
+    env: &BTreeMap<String, String>,
+    path: &PathBuf,
+    agent: &str,
+) -> Result<i32, String> {
+    let (_keys_path, cfg, base, api_key) = keys_credential(parsed, env)?;
+    let rows = crate::http::keys_newest_first(
+        fetch_keys(&base, &api_key)?
+            .into_iter()
+            .filter(|r| r.active)
+            .collect(),
+    );
+    if rows.is_empty() {
+        return Err(hint("No active keys. Create one: {bin} keys create"));
+    }
+    let current_key = cfg
+        .agent_binding(agent)
+        .and_then(|b| b.api_key.as_deref())
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let current = rows
+        .iter()
+        .position(|r| is_active_key_row(&r.masked, current_key))
+        .or(Some(0));
+    let labels: Vec<String> = rows
+        .iter()
+        .enumerate()
+        .map(|(i, r)| key_pick_label(r, current == Some(i)))
+        .collect();
+    let idx = pick_list(
+        &format!("API key for {agent}"),
+        &[
+            "applies only to this agent · newest first".into(),
+            format!("current  {}", mask_api_key(current_key)),
+        ],
+        &labels,
+        current,
+    )?;
+    let revealed = reveal_key(&base, &api_key, &rows[idx].hash)?;
+    save_agent_key(path, agent, &revealed)
 }
 
 fn launch_agent_picker(

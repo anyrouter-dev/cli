@@ -707,7 +707,7 @@ pub fn item_icon(label: &str) -> &'static str {
 }
 
 fn mark_line_width() -> usize {
-    crate::term::MARK_LINES
+    crate::term::TUI_MARK_LINES
         .iter()
         .map(|s| s.chars().count())
         .max()
@@ -719,13 +719,13 @@ fn palette_shows_mark(inner_w: usize) -> bool {
 }
 
 fn padded_mark_line(i: usize) -> String {
-    let raw = crate::term::MARK_LINES.get(i).copied().unwrap_or("");
+    let raw = crate::term::TUI_MARK_LINES.get(i).copied().unwrap_or("");
     let w = mark_line_width();
     format!("{raw}{}", " ".repeat(w.saturating_sub(raw.chars().count())))
 }
 
 fn palette_header_height(header: &[String]) -> u16 {
-    crate::term::MARK_LINES.len().max(header.len()).max(1) as u16
+    crate::term::TUI_MARK_LINES.len().max(header.len()).max(1) as u16
 }
 
 fn status_caption_spans(line: &str) -> Vec<Span<'static>> {
@@ -742,7 +742,7 @@ fn status_caption_spans(line: &str) -> Vec<Span<'static>> {
 fn palette_header_lines(header: &[String], inner_w: usize) -> Vec<Line<'static>> {
     let with_mark = palette_shows_mark(inner_w);
     let n = if with_mark {
-        crate::term::MARK_LINES.len().max(header.len()).max(1)
+        crate::term::TUI_MARK_LINES.len().max(header.len()).max(1)
     } else {
         header.len().max(1)
     };
@@ -884,7 +884,10 @@ pub fn plain_palette_lines(state: &PaletteState, cols: usize) -> Vec<String> {
 
     let with_mark = palette_shows_mark(content_w);
     let header_n = if with_mark {
-        crate::term::MARK_LINES.len().max(state.header.len()).max(1)
+        crate::term::TUI_MARK_LINES
+            .len()
+            .max(state.header.len())
+            .max(1)
     } else {
         state.header.len().max(1)
     };
@@ -1146,7 +1149,7 @@ mod tests {
         assert!(!frame.contains('\u{1b}'), "must be ANSI-free: {frame}");
         assert!(frame.contains(" anyr "), "{frame}");
         assert!(
-            frame.contains(crate::term::MARK_LINES[0].trim()),
+            frame.contains(crate::term::TUI_MARK_LINES[0].trim()),
             "AR mark missing:\n{frame}"
         );
         for line in [

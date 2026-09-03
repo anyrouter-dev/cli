@@ -352,6 +352,10 @@ impl PaletteEntry {
 
 /// Command palette state: one input, fuzzy filter over every entry,
 /// groups rendered only where they change. Same Outcome contract as Menu.
+///
+/// `focused_agent` is the hub for inline model/account/key rows: moving onto
+/// a launch row selects that agent; moving onto configure rows keeps it so
+/// LAUNCH stays visible while settings apply to the highlighted agent.
 #[derive(Debug, Clone)]
 pub struct PaletteState {
     pub header: Vec<String>,
@@ -359,16 +363,21 @@ pub struct PaletteState {
     pub query: String,
     /// Index into the filtered list.
     pub cursor: usize,
+    /// Coding-agent id whose model/account/key configure rows target.
+    pub focused_agent: Option<String>,
 }
 
 impl PaletteState {
     pub fn new(header: Vec<String>, entries: Vec<PaletteEntry>) -> Self {
-        Self {
+        let mut state = Self {
             header,
             entries,
             query: String::new(),
             cursor: 0,
-        }
+            focused_agent: None,
+        };
+        state.sync_focus();
+        state
     }
 
     pub fn surface(&self) -> Surface {
@@ -392,10 +401,54 @@ impl PaletteState {
             .collect()
     }
 
+    /// Launch-row agent under the cursor, if any.
+    pub fn cursor_launch_agent(&self) -> Option<String> {
+        let filtered = self.filtered();
+        if filtered.is_empty() {
+            return None;
+        }
+        let idx = filtered[self.cursor.min(filtered.len() - 1)];
+        launch_id_from_action(&self.entries[idx].action)
+    }
+
+    pub fn set_cursor(&mut self, cursor: usize) {
+        self.cursor = cursor;
+        self.sync_focus();
+    }
+
+    /// Follow the cursor onto a launch row; retarget configure rows in place
+    /// so model/account/key never replace the launch list.
+    pub fn sync_focus(&mut self) {
+        if let Some(agent) = self.cursor_launch_agent() {
+            self.focused_agent = Some(agent);
+        } else if self.focused_agent.is_none() {
+            self.focused_agent = self
+                .entries
+                .iter()
+                .find_map(|e| launch_id_from_action(&e.action));
+        }
+        self.retarget_configure();
+    }
+
+    fn retarget_configure(&mut self) {
+        let Some(agent) = self.focused_agent.clone() else {
+            return;
+        };
+        let group = format!("configure · {agent}");
+        for entry in &mut self.entries {
+            let kind = configure_kind(&entry.action, &entry.label);
+            let Some(kind) = kind else {
+                continue;
+            };
+            entry.group = group.clone();
+            entry.action = format!("Switch {kind} {agent}");
+            entry.detail = format!("for {agent}");
+        }
+    }
+
     pub fn apply(&mut self, action: Action) -> Outcome {
         match action {
-            Action::Quit => Outcome::Quit,
-            Action::Esc => Outcome::Quit,
+            Action::Quit | Action::Esc => Outcome::Quit,
             Action::Resize => Outcome::Continue,
             Action::Enter => {
                 let filtered = self.filtered();
@@ -413,6 +466,7 @@ impl PaletteState {
                     } else {
                         self.cursor - 1
                     };
+                    self.sync_focus();
                 }
                 Outcome::Continue
             }
@@ -420,12 +474,14 @@ impl PaletteState {
                 let n = self.filtered().len();
                 if n > 0 {
                     self.cursor = (self.cursor + 1) % n;
+                    self.sync_focus();
                 }
                 Outcome::Continue
             }
             Action::Backspace => {
                 self.query.pop();
                 self.cursor = 0;
+                self.sync_focus();
                 Outcome::Continue
             }
             Action::Char(c) => {
@@ -434,6 +490,7 @@ impl PaletteState {
                 }
                 self.query.push(c);
                 self.cursor = 0;
+                self.sync_focus();
                 Outcome::Continue
             }
             Action::Unset | Action::NextTab | Action::PrevTab => Outcome::Continue,
@@ -442,6 +499,29 @@ impl PaletteState {
 
     pub fn hint(&self) -> &'static str {
         hint_line(Surface::Palette)
+    }
+}
+
+fn launch_id_from_action(action: &str) -> Option<String> {
+    let rest = action.strip_prefix("Launch ")?.trim();
+    if rest.is_empty() || rest == "coding agent…" {
+        return None;
+    }
+    Some(rest.to_string())
+}
+
+/// model / account / key — the inline home-TUI switches (not install/config/quit).
+fn configure_kind(action: &str, label: &str) -> Option<&'static str> {
+    let a = action.to_ascii_lowercase();
+    let l = label.to_ascii_lowercase();
+    if a.starts_with("switch model") || l.starts_with("model") {
+        Some("model")
+    } else if a.starts_with("switch account") || l.starts_with("account") {
+        Some("account")
+    } else if a.starts_with("switch key") || l.starts_with("key") {
+        Some("key")
+    } else {
+        None
     }
 }
 
@@ -624,18 +704,20 @@ mod tests {
         for c in "cod".chars() {
             s.apply(Action::Char(c));
         }
-        assert_eq!(s.filtered(), vec![1]);
+        // Codex ranks first. model… may also match once focus retargets
+        // its detail to "for codex".
+        assert_eq!(s.filtered()[0], 1);
         assert_eq!(s.apply(Action::Enter), Outcome::Selected(1));
     }
 
     #[test]
     fn palette_query_matches_detail_column_too() {
         let mut s = sample_palette();
-        for c in "sonnet".chars() {
+        for c in "ox-alpha".chars() {
             s.apply(Action::Char(c));
         }
-        // "sonnet" appears only in model…'s detail line — still findable.
-        assert_eq!(s.filtered(), vec![2]);
+        // Model id lives on the launch row detail — still findable.
+        assert_eq!(s.filtered(), vec![0]);
     }
 
     #[test]
@@ -654,7 +736,7 @@ mod tests {
         for c in "cod".chars() {
             s.apply(Action::Char(c));
         }
-        assert_eq!(s.filtered(), vec![1]);
+        assert_eq!(s.filtered()[0], 1);
         s.apply(Action::Backspace);
         assert_eq!(s.query, "co");
         assert_eq!(s.cursor, 0);
@@ -673,5 +755,38 @@ mod tests {
             ],
         );
         assert_eq!(out, Outcome::Selected(1));
+    }
+
+    #[test]
+    fn palette_focus_starts_on_first_launch_agent() {
+        let s = sample_palette();
+        assert_eq!(s.focused_agent.as_deref(), Some("claude"));
+        assert_eq!(s.entries[2].action, "Switch model claude");
+        assert_eq!(s.entries[2].group, "configure · claude");
+        assert_eq!(s.entries[2].detail, "for claude");
+        // Launch list is still present — configure does not replace it.
+        assert_eq!(s.entries[0].group, "launch");
+        assert_eq!(s.entries[1].group, "launch");
+    }
+
+    #[test]
+    fn palette_moving_to_grok_retargets_model_without_dropping_launch() {
+        let mut s = sample_palette();
+        s.apply(Action::Down);
+        assert_eq!(s.focused_agent.as_deref(), Some("codex"));
+        assert_eq!(s.entries[2].action, "Switch model codex");
+        assert!(s.entries.iter().any(|e| e.action == "Launch claude"));
+        assert!(s.entries.iter().any(|e| e.action == "Launch codex"));
+        assert_eq!(s.entries[0].group, "launch");
+    }
+
+    #[test]
+    fn palette_configure_row_keeps_highlighted_agent() {
+        let mut s = sample_palette();
+        s.apply(Action::Down); // codex
+        s.apply(Action::Down); // model…
+        assert_eq!(s.focused_agent.as_deref(), Some("codex"));
+        assert_eq!(s.apply(Action::Enter), Outcome::Selected(2));
+        assert_eq!(s.entries[2].action, "Switch model codex");
     }
 }

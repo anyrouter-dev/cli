@@ -10,3 +10,8 @@ profiles:
   work:
     api_key: sk-ar-v1-verify-work-fixture-not-a-real-key
     default_model: anthropic/claude-sonnet-4.6
+agents:
+  claude:
+    default_model: stealth/ox-alpha
+  codex:
+    default_model: auto

@@ -256,7 +256,7 @@ pub fn run_palette_live_with(
                                 return Ok(outcome);
                             }
                         } else {
-                            state.cursor = i;
+                            state.set_cursor(i);
                         }
                     }
                 }
