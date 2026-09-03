@@ -71,6 +71,10 @@ pub const MARK_LINES: [&str; 5] = [
     "▄███▀          ▀██▄▀███▄",
 ];
 
+/// Compact 3-row AR mark for TUI chrome. Recovered from the original
+/// half-block logo (`b7a313b`); not the later 5-line ligature.
+pub const TUI_MARK_LINES: [&str; 3] = ["    ▄▄ ▄▄▄ ", "  ▄█▀▀█▄▄█▀", " ▀▀    ▀▀▀▀"];
+
 const MARK_PNG: &[u8] = include_bytes!("../assets/mark.png");
 
 const B64: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";

@@ -888,4 +888,31 @@ agents:
         assert_eq!(entries, vec!["config.yaml".to_string()], "{entries:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn agent_binding_mut_does_not_clobber_sibling() {
+        let mut cfg = parse_config(
+            "\
+active_profile: default
+profiles:
+  default:
+    api_key: sk-ar-v1-test
+    default_model: auto
+",
+        );
+        cfg.agent_binding_mut("claude").default_model = Some("stealth/ox-alpha".into());
+        cfg.agent_binding_mut("grok").default_model = Some("grok-4".into());
+        cfg.agent_binding_mut("claude").default_model =
+            Some("anthropic/claude-sonnet-4.6".into());
+        assert_eq!(
+            cfg.agent_binding("claude")
+                .and_then(|b| b.default_model.as_deref()),
+            Some("anthropic/claude-sonnet-4.6")
+        );
+        assert_eq!(
+            cfg.agent_binding("grok")
+                .and_then(|b| b.default_model.as_deref()),
+            Some("grok-4")
+        );
+    }
 }

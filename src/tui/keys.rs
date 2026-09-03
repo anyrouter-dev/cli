@@ -86,7 +86,7 @@ pub fn hint_line(surface: Surface) -> &'static str {
         Surface::Launcher => "↑↓  move    ↵  select    q/esc  quit",
         Surface::Settings => "tab  agent    ↑↓  move    ↵  edit    x  reset    q  close",
         Surface::Picker => "type to search    ↑↓  move    ↵  select    esc  cancel",
-        Surface::Palette => "type to filter    ↑↓  move    ↵  run    esc  quit",
+        Surface::Palette => "type to filter    ↑↓  pick agent    ↵  launch / switch    esc  quit",
     }
 }
 

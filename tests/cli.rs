@@ -1306,6 +1306,11 @@ profiles:
   default:
     api_key: sk-ar-v1-menu-dump-secret-value-abcdef
     default_model: auto
+agents:
+  claude:
+    default_model: stealth/ox-alpha
+  codex:
+    default_model: auto
 ",
     )
     .unwrap();
@@ -1324,8 +1329,8 @@ profiles:
     // Palette frame: AR mark, auth/defaults, input, grouped rows.
     assert!(stdout.contains("anyr"), "{stdout}");
     assert!(
-        stdout.contains("▄█▄") || stdout.contains("████"),
-        "AR mark missing:\n{stdout}"
+        stdout.contains("▄▄") || stdout.contains("▄█▀") || stdout.contains("████"),
+        "small AR mark missing:\n{stdout}"
     );
     assert!(stdout.contains("account"), "{stdout}");
     assert!(stdout.contains("key"), "{stdout}");
@@ -1335,13 +1340,21 @@ profiles:
     assert!(stdout.contains("LAUNCH"), "{stdout}");
     assert!(stdout.contains("claude"), "{stdout}");
     assert!(stdout.contains("CONFIGURE"), "{stdout}");
+    assert!(stdout.contains("MORE"), "{stdout}");
     assert!(stdout.contains("config…"), "{stdout}");
     assert!(stdout.contains("account…"), "{stdout}");
     assert!(stdout.contains("key…"), "{stdout}");
     assert!(stdout.contains("model…"), "{stdout}");
-    assert!(stdout.contains("agent…"), "{stdout}");
     assert!(stdout.contains("install…"), "{stdout}");
     assert!(stdout.contains("quit"), "{stdout}");
+    assert!(
+        stdout.contains("for claude") || stdout.contains("for codex"),
+        "configure rows must target a highlighted agent:\n{stdout}"
+    );
+    assert!(
+        stdout.contains(" · "),
+        "agent rows must show model · account · key:\n{stdout}"
+    );
     assert!(
         stdout.contains("⚡") || stdout.contains("◆"),
         "row icons missing:\n{stdout}"
@@ -1355,10 +1368,58 @@ profiles:
         "dump should look like a dialog card: {stdout}"
     );
     assert!(
+        stdout.contains("stealth/ox-alpha"),
+        "claude's bound model should be visible:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("LAUNCH") && stdout.contains("CONFIGURE"),
+        "configure must not replace launch:\n{stdout}"
+    );
+    assert!(
         !stdout.contains("menu-dump-secret-value"),
         "dump must not leak full secret: {stdout}"
     );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn dry_run_uses_per_agent_model_not_sibling_binding() {
+    let dir = temp_home();
+    std::fs::write(
+        dir.join("config.yaml"),
+        "\
+active_profile: default
+profiles:
+  default:
+    api_key: sk-ar-v1-fixture-key-0001
+    default_model: auto
+agents:
+  claude:
+    default_model: stealth/ox-alpha
+  grok:
+    default_model: auto
+",
+    )
+    .unwrap();
+    let claude = anyr()
+        .args(["claude", "--dry-run", "--yes"])
+        .env("ANYROUTER_HOME", &dir)
+        .env_remove("ANYROUTER_API_KEY")
+        .output()
+        .expect("claude dry-run");
+    let stdout = String::from_utf8_lossy(&claude.stdout);
+    let stderr = String::from_utf8_lossy(&claude.stderr);
+    assert_eq!(claude.status.code().unwrap_or(1), 0, "{stdout}{stderr}");
+    assert!(
+        stdout.contains("ANTHROPIC_MODEL=stealth/ox-alpha"),
+        "claude should use its own binding:\n{stdout}"
+    );
+    let cfg = std::fs::read_to_string(dir.join("config.yaml")).expect("config");
+    assert!(cfg.contains("stealth/ox-alpha"), "{cfg}");
+    assert!(
+        cfg.contains("grok:") && cfg.contains("default_model: auto"),
+        "grok binding must stay auto:\n{cfg}"
+    );
 }
 
 #[test]
@@ -1739,7 +1800,7 @@ agents:
     assert_eq!(out.status.code().unwrap_or(1), 0, "{stdout}{stderr}");
     assert!(stdout.contains("LAUNCH"), "{stdout}");
     assert!(stdout.contains("CONFIGURE"), "{stdout}");
-    assert!(stdout.contains("per agent · claude"), "{stdout}");
+    assert!(stdout.contains("for claude") || stdout.contains("configure · claude"), "{stdout}");
     assert!(stdout.contains("stealth/ox-alpha"), "{stdout}");
     assert!(stdout.contains("grok-4"), "{stdout}");
     assert!(
