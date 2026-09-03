@@ -1,0 +1,26 @@
+    ╭ anyr ────────────────────────────────────────────────────────────────╮
+    │    ▄▄ ▄▄▄   account  default                                         │
+    │  ▄█▀▀█▄▄█▀  credits  -                                               │
+    │ ▀▀    ▀▀▀▀                                                           │
+    ├──────────────────────────────────────────────────────────────────────┤
+    │❯ █                                                                   │
+    ├──────────────────────────────────────────────────────────────────────┤
+    │  LAUNCH                                                              │
+    │◆ ⚡ claude       stealth/ox-alpha  ·  default  ·  sk-ar-v1-verif…-key │
+    │  ⚡ codex          anyrouter/auto  ·  default  ·  sk-ar-v1-verif…-key │
+    │                                                                      │
+    │  CONFIGURE · CLAUDE                                                  │
+    │  ◆  model…                                                for claude │
+    │  ⇄  account…                                              for claude │
+    │  🔑 key…                                                   for claude │
+    │  ◇  exacto                                          off · for claude │
+    │  ◇  tools                                           off · for claude │
+    │  ◇  1M ctx                                          off · for claude │
+    │                                                                      │
+    │  MORE                                                                │
+    │  ⬇  install…                                  install a coding agent │
+    │  ⚙  config…                                  accounts · keys · agent │
+    │  ✕  quit                                               esc works too │
+    ├──────────────────────────────────────────────────────────────────────┤
+    │type to filter    ↑↓  pick agent    ↵  launch / switch    esc  quit   │
+    ╰──────────────────────────────────────────────────────────────────────╯

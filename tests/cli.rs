@@ -2041,7 +2041,10 @@ agents:
     assert_eq!(out.status.code().unwrap_or(1), 0, "{stdout}{stderr}");
     assert!(stdout.contains("LAUNCH"), "{stdout}");
     assert!(stdout.contains("CONFIGURE"), "{stdout}");
-    assert!(stdout.contains("for claude") || stdout.contains("configure · claude"), "{stdout}");
+    assert!(
+        stdout.contains("for claude") || stdout.contains("configure · claude"),
+        "{stdout}"
+    );
     assert!(stdout.contains("stealth/ox-alpha"), "{stdout}");
     assert!(stdout.contains("grok-4"), "{stdout}");
     assert!(
@@ -2074,6 +2077,137 @@ fn claude_model_1m_flag_still_launches() {
     );
     assert!(
         stdout.contains("--dangerously-skip-permissions"),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn menu_dump_shows_routing_toggles_under_configure() {
+    let dir = std::env::temp_dir().join(format!("anyr-cli-routing-dump-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("config.yaml");
+    std::fs::write(
+        &path,
+        "\
+active_profile: default
+last_tool: claude
+profiles:
+  default:
+    api_key: sk-ar-v1-routing-secret-abcdef
+    default_model: auto
+agents:
+  claude:
+    default_model: anyrouter/auto
+    provider:
+      sort: exacto
+    require_params: tools
+    min_context: 1000000
+  grok:
+    default_model: anyrouter/free
+",
+    )
+    .unwrap();
+    let out = anyr()
+        .args(["menu", "--dump-tui", "--config", path.to_str().unwrap()])
+        .env("ANYR_AGENTS", "claude,grok")
+        .output()
+        .expect("menu dump routing");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code().unwrap_or(1), 0, "{stdout}{stderr}");
+    assert!(stdout.contains("LAUNCH"), "{stdout}");
+    assert!(stdout.contains("CONFIGURE"), "{stdout}");
+    let launch_at = stdout.find("LAUNCH").expect("LAUNCH");
+    let configure_at = stdout.find("CONFIGURE").expect("CONFIGURE");
+    assert!(
+        launch_at < configure_at,
+        "CONFIGURE must not flash over LAUNCH:\n{stdout}"
+    );
+    assert!(stdout.contains("exacto"), "{stdout}");
+    assert!(stdout.contains("tools"), "{stdout}");
+    assert!(
+        stdout.contains("1M ctx") || stdout.contains("1M"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("anyrouter/auto"), "{stdout}");
+    assert!(stdout.contains("anyrouter/free"), "{stdout}");
+    assert!(
+        !stdout.to_ascii_lowercase().contains("most used"),
+        "picker/catalog must not dump most-used:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("routing-secret"),
+        "dump must not leak full secret: {stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn claude_dry_run_sends_routing_extra_body_for_auto_and_free() {
+    let dir = std::env::temp_dir().join(format!("anyr-cli-routing-launch-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("config.yaml");
+    std::fs::write(
+        &path,
+        "\
+active_profile: default
+profiles:
+  default:
+    api_key: sk-ar-v1-fixture-key-0001
+    default_model: auto
+agents:
+  claude:
+    default_model: anyrouter/auto
+    provider:
+      sort: exacto
+    require_params: tools
+    min_context: 1000000
+",
+    )
+    .unwrap();
+    for model in ["anyrouter/auto", "anyrouter/free"] {
+        let out = anyr()
+            .args([
+                "claude",
+                "--dry-run",
+                "--yes",
+                "--config",
+                path.to_str().unwrap(),
+                "--model",
+                model,
+            ])
+            .output()
+            .expect("claude dry-run routing");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code().unwrap_or(1), 0, "{stdout}{stderr}");
+        assert!(stdout.contains("command:"), "{stdout}");
+        assert!(
+            stdout.contains(&format!("ANTHROPIC_MODEL={model}")),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("CLAUDE_CODE_EXTRA_BODY="),
+            "must send extra body:\n{stdout}"
+        );
+        assert!(stdout.contains("\"sort\":\"exacto\""), "{stdout}");
+        assert!(
+            stdout.contains("\"require_params\":[\"tools\"]"),
+            "{stdout}"
+        );
+        assert!(stdout.contains("\"min_context\":1000000"), "{stdout}");
+        assert!(!stdout.contains("sk-ar-v1-fixture-key-0001"), "{stdout}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn models_dump_tui_pins_anyrouter_auto_without_most_used() {
+    let (code, stdout, stderr) = run(&["models", "--dump-tui"]);
+    assert_eq!(code, 0, "{stdout}{stderr}");
+    assert!(stdout.contains("anyrouter/auto"), "{stdout}");
+    assert!(
+        !stdout.to_ascii_lowercase().contains("most used"),
         "{stdout}"
     );
 }

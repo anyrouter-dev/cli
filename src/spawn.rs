@@ -445,6 +445,22 @@ pub fn build_tool_env(input: BuildToolEnvInput<'_>) -> BTreeMap<String, String> 
     env
 }
 
+/// Merge AnyRouter preset routing fields into the child env so launch
+/// actually sends them. Claude Code reads `CLAUDE_CODE_EXTRA_BODY`.
+pub fn apply_routing_env(
+    env: &mut BTreeMap<String, String>,
+    routing: &crate::config::RoutingConstraints,
+    tool_name: &str,
+) {
+    let Some(body) = routing.extra_body_json() else {
+        return;
+    };
+    env.insert("ANYROUTER_EXTRA_BODY".into(), body.clone());
+    if tool_name == "claude" {
+        env.insert("CLAUDE_CODE_EXTRA_BODY".into(), body);
+    }
+}
+
 pub fn effort_args_for(tool_name: &str, effort: Option<&str>) -> Vec<String> {
     let Some(mapped) = harness_effort(tool_name, effort) else {
         return vec![];
@@ -488,8 +504,12 @@ pub fn claude_wants_1m(context_window: Option<i64>) -> bool {
 /// get the catalog id — the suffix 404s on the OpenAI-compatible API.
 pub fn model_id_for_tool(tool_name: &str, model: &str, context_window: Option<i64>) -> String {
     let id = catalog_model_id(model);
-    if is_auto_model(&id) {
-        return display_model_id(&id);
+    if is_auto_model(&id) || id.starts_with("anyrouter/") {
+        return if is_auto_model(&id) {
+            display_model_id(&id)
+        } else {
+            id
+        };
     }
     if tool_name == "claude" && claude_wants_1m(context_window) {
         if id.ends_with(CLAUDE_1M_SUFFIX) {
@@ -817,6 +837,14 @@ mod tests {
             "stealth/ox-alpha"
         );
         assert_eq!(model_id_for_tool("claude", "auto", None), "anyrouter/auto");
+        assert_eq!(
+            model_id_for_tool("claude", "anyrouter/auto", None),
+            "anyrouter/auto"
+        );
+        assert_eq!(
+            model_id_for_tool("claude", "anyrouter/free", None),
+            "anyrouter/free"
+        );
     }
 
     #[test]
@@ -1142,5 +1170,22 @@ mod tests {
             env.get("MAX_THINKING_TOKENS").map(String::as_str),
             Some("2048")
         );
+    }
+
+    #[test]
+    fn apply_routing_env_sets_claude_extra_body() {
+        let mut env = BTreeMap::new();
+        let mut routing = crate::config::RoutingConstraints::default();
+        apply_routing_env(&mut env, &routing, "claude");
+        assert!(env.get("CLAUDE_CODE_EXTRA_BODY").is_none());
+        routing.set_exacto(true);
+        routing.set_require_tools(true);
+        routing.set_require_1m(true);
+        apply_routing_env(&mut env, &routing, "claude");
+        let body = env.get("CLAUDE_CODE_EXTRA_BODY").expect("extra body");
+        assert!(body.contains("\"sort\":\"exacto\""), "{body}");
+        assert!(body.contains("\"require_params\":[\"tools\"]"), "{body}");
+        assert!(body.contains("\"min_context\":1000000"), "{body}");
+        assert_eq!(env.get("ANYROUTER_EXTRA_BODY"), Some(body));
     }
 }

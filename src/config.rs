@@ -114,6 +114,9 @@ pub struct AgentBinding {
     pub profile: Option<String>,
     pub api_key: Option<String>,
     pub default_model: Option<String>,
+    /// Request-level routing controls. Field names match AnyRouter presets
+    /// (`provider.sort`, `require_params`, `min_context`).
+    pub routing: RoutingConstraints,
 }
 
 impl AgentBinding {
@@ -135,6 +138,100 @@ impl AgentBinding {
                 .map(str::trim)
                 .unwrap_or("")
                 .is_empty()
+            && self.routing.is_empty()
+    }
+}
+
+/// Routing filters forwarded on launch. Same names as AnyRouter preset /
+/// chat-completion request fields (API issue sibling).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct RoutingConstraints {
+    /// `provider.sort` — `"exacto"` when the user wants Exacto quality routing.
+    pub sort: Option<String>,
+    /// `require_params` — e.g. `["tools"]` to require tool-calling backends.
+    pub require_params: Vec<String>,
+    /// `min_context` — e.g. `1_000_000` to require a ≥1M context window.
+    pub min_context: Option<i64>,
+}
+
+pub const ROUTING_SORT_EXACTO: &str = "exacto";
+pub const ROUTING_PARAM_TOOLS: &str = "tools";
+pub const ROUTING_MIN_1M_CONTEXT: i64 = 1_000_000;
+
+impl RoutingConstraints {
+    pub fn is_empty(&self) -> bool {
+        self.sort.as_deref().map(str::trim).unwrap_or("").is_empty()
+            && self.require_params.is_empty()
+            && self.min_context.is_none()
+    }
+
+    pub fn wants_exacto(&self) -> bool {
+        self.sort
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|s| s.eq_ignore_ascii_case(ROUTING_SORT_EXACTO))
+    }
+
+    pub fn requires_tools(&self) -> bool {
+        self.require_params
+            .iter()
+            .any(|p| p.trim().eq_ignore_ascii_case(ROUTING_PARAM_TOOLS))
+    }
+
+    pub fn requires_1m_context(&self) -> bool {
+        self.min_context
+            .is_some_and(|n| n >= ROUTING_MIN_1M_CONTEXT)
+    }
+
+    pub fn set_exacto(&mut self, on: bool) {
+        self.sort = on.then(|| ROUTING_SORT_EXACTO.to_string());
+    }
+
+    pub fn set_require_tools(&mut self, on: bool) {
+        self.require_params
+            .retain(|p| !p.trim().eq_ignore_ascii_case(ROUTING_PARAM_TOOLS));
+        if on {
+            self.require_params.push(ROUTING_PARAM_TOOLS.to_string());
+        }
+    }
+
+    pub fn set_require_1m(&mut self, on: bool) {
+        self.min_context = on.then_some(ROUTING_MIN_1M_CONTEXT);
+    }
+
+    /// JSON object merged into the inference request body (Claude
+    /// `CLAUDE_CODE_EXTRA_BODY`, printed on dry-run for every agent).
+    pub fn extra_body_json(&self) -> Option<String> {
+        if self.is_empty() {
+            return None;
+        }
+        let mut body = serde_json::Map::new();
+        if let Some(sort) = self
+            .sort
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            body.insert("provider".into(), serde_json::json!({ "sort": sort }));
+        }
+        if !self.require_params.is_empty() {
+            let params: Vec<&str> = self
+                .require_params
+                .iter()
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .collect();
+            if !params.is_empty() {
+                body.insert("require_params".into(), serde_json::json!(params));
+            }
+        }
+        if let Some(n) = self.min_context {
+            body.insert("min_context".into(), serde_json::json!(n));
+        }
+        if body.is_empty() {
+            return None;
+        }
+        Some(serde_json::Value::Object(body).to_string())
     }
 }
 
@@ -442,10 +539,54 @@ fn agent_binding_from_map(map: &BTreeMap<String, YamlValue>) -> AgentBinding {
             "default_model" => {
                 b.default_model = Some(v.as_string_lossy()).filter(|s| !s.is_empty())
             }
+            "provider" => {
+                if let Some(pm) = v.as_map() {
+                    if let Some(sort) = pm
+                        .get("sort")
+                        .map(|s| s.as_string_lossy())
+                        .filter(|s| !s.trim().is_empty())
+                    {
+                        b.routing.sort = Some(sort);
+                    }
+                }
+            }
+            "sort" => {
+                let s = v.as_string_lossy();
+                if !s.trim().is_empty() {
+                    b.routing.sort = Some(s);
+                }
+            }
+            "require_params" => b.routing.require_params = parse_require_params(v),
+            "min_context" => {
+                b.routing.min_context = match v {
+                    YamlValue::Int(n) => Some(*n),
+                    YamlValue::Bool(true) => Some(ROUTING_MIN_1M_CONTEXT),
+                    _ => v.as_string_lossy().parse().ok(),
+                }
+            }
             _ => {}
         }
     }
     b
+}
+
+fn parse_require_params(value: &YamlValue) -> Vec<String> {
+    match value {
+        YamlValue::Bool(true) => vec![ROUTING_PARAM_TOOLS.to_string()],
+        YamlValue::Bool(false) | YamlValue::Null => Vec::new(),
+        YamlValue::Map(map) => map
+            .values()
+            .map(|v| v.as_string_lossy())
+            .filter(|s| !s.trim().is_empty())
+            .collect(),
+        YamlValue::Int(_) | YamlValue::String(_) => value
+            .as_string_lossy()
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect(),
+    }
 }
 
 pub fn parse_config(source: &str) -> Config {
@@ -590,6 +731,25 @@ pub fn serialize_config(config: &Config) -> String {
             }
             if let Some(m) = &binding.default_model {
                 lines.push(format!("    default_model: {}", yaml_scalar(m)));
+            }
+            if let Some(sort) = binding
+                .routing
+                .sort
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                lines.push("    provider:".into());
+                lines.push(format!("      sort: {}", yaml_scalar(sort)));
+            }
+            if !binding.routing.require_params.is_empty() {
+                lines.push(format!(
+                    "    require_params: {}",
+                    yaml_scalar(&binding.routing.require_params.join(","))
+                ));
+            }
+            if let Some(n) = binding.routing.min_context {
+                lines.push(format!("    min_context: {n}"));
             }
         }
     }
@@ -788,6 +948,46 @@ agents:
     }
 
     #[test]
+    fn agents_section_roundtrips_routing_constraints() {
+        let src = "\
+active_profile: default
+profiles:
+  default:
+    api_key: sk-ar-v1-test
+    default_model: auto
+agents:
+  claude:
+    default_model: anyrouter/auto
+    provider:
+      sort: exacto
+    require_params: tools
+    min_context: 1000000
+  grok:
+    default_model: anyrouter/free
+";
+        let cfg = parse_config(src);
+        let claude = cfg.agent_binding("claude").expect("claude binding");
+        assert!(claude.routing.wants_exacto());
+        assert!(claude.routing.requires_tools());
+        assert!(claude.routing.requires_1m_context());
+        let body = claude.routing.extra_body_json().expect("body");
+        assert!(body.contains("\"sort\":\"exacto\""), "{body}");
+        assert!(body.contains("\"require_params\":[\"tools\"]"), "{body}");
+        assert!(body.contains("\"min_context\":1000000"), "{body}");
+        let grok = cfg.agent_binding("grok").expect("grok binding");
+        assert!(grok.routing.is_empty());
+        let yaml = serialize_config(&cfg);
+        assert!(yaml.contains("      sort: exacto"), "{yaml}");
+        assert!(yaml.contains("    require_params: tools"), "{yaml}");
+        assert!(yaml.contains("    min_context: 1000000"), "{yaml}");
+        let again = parse_config(&yaml);
+        let claude2 = again.agent_binding("claude").expect("claude");
+        assert!(claude2.routing.wants_exacto());
+        assert!(claude2.routing.requires_tools());
+        assert_eq!(claude2.routing.min_context, Some(1_000_000));
+    }
+
+    #[test]
     fn set_active_profile_rejects_unknown() {
         let cfg = parse_config("active_profile: default\nprofiles:\n  default:\n    api_key: x\n");
         assert!(set_active_profile(cfg, "missing").is_err());
@@ -902,8 +1102,7 @@ profiles:
         );
         cfg.agent_binding_mut("claude").default_model = Some("stealth/ox-alpha".into());
         cfg.agent_binding_mut("grok").default_model = Some("grok-4".into());
-        cfg.agent_binding_mut("claude").default_model =
-            Some("anthropic/claude-sonnet-4.6".into());
+        cfg.agent_binding_mut("claude").default_model = Some("anthropic/claude-sonnet-4.6".into());
         assert_eq!(
             cfg.agent_binding("claude")
                 .and_then(|b| b.default_model.as_deref()),

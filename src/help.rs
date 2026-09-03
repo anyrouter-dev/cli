@@ -365,8 +365,9 @@ USAGE
 On a TTY, `{bin} config` opens a grouped settings screen — Account, Model,
 Agent, General — each row showing its current value. ↑↓ / j k navigate,
 ↵ edits the focused row (switch / add / re-auth / log out accounts, pick a
-key or model slot, choose the coding agent, toggle auto-update, switch
-channel), x resets a row to its default, q / esc closes.
+key or model slot, choose the coding agent, toggle exacto / tools / 1M ctx
+routing, toggle auto-update, switch channel), x resets a row to its default,
+q / esc closes.
 Also reachable from the launcher via Config.
 `--dump-tui` prints one plain frame and exits.
 ";

@@ -701,6 +701,8 @@ pub fn item_icon(label: &str) -> &'static str {
         "⬇  "
     } else if l.contains("model") {
         "◆  "
+    } else if l.contains("exacto") || l.contains("1m") || stem == "tools" {
+        "◇  "
     } else {
         "·  "
     }
@@ -1117,6 +1119,9 @@ mod tests {
             ("pi", "⚡"),
             ("model…", "◆"),
             ("key…", "🔑"),
+            ("exacto", "◇"),
+            ("tools", "◇"),
+            ("1M ctx", "◇"),
             ("install…", "⬇"),
             ("agent…", "⚡"),
         ] {

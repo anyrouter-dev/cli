@@ -1,0 +1,24 @@
+    ┌ anyr ────────────────────────────────────────────────────────────────┐
+    │                                                                      │
+    │     ▄▄ ▄▄▄   account  default                                        │
+    │   ▄█▀▀█▄▄█▀  credits  -                                              │
+    │  ▀▀    ▀▀▀▀                                                          │
+    │ ──────────────────────────────────────────────────────────────────── │
+    │ ❯ █                                                                  │
+    │                                                                      │
+    │   LAUNCH                                                             │
+    │   ⚡ claude anyrouter/auto  ·  default  ·  sk-ar-v1-verif…-key  ·  e │
+    │ ❯ ⚡ codex         anyrouter/auto  ·  default  ·  sk-ar-v1-verif…-ke │
+    │                                                                      │
+    │   CONFIGURE · CODEX                                                  │
+    │   ◆  model…                                                for codex │
+    │   ⇄  account…                                              for codex │
+    │   🔑 key…                                                   for code │
+    │   ◇  exacto                                          off · for codex │
+    │   ◇  tools                                           off · for codex │
+    │   ◇  1M ctx                                          off · for codex │
+    │                                                                      │
+    │                                                                      │
+    │ type to filter    ↑↓  pick agent    ↵  launch / switch    esc  quit  │
+    │                                                                      │
+    └──────────────────────────────────────────────────────────────────────┘
