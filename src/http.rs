@@ -722,6 +722,7 @@ mod tests {
     }
 
     /// Helper mirroring the server's getKeyPrefix() shape for tests.
+    #[allow(non_snake_case)]
     fn getKeyPrefixStyleMask(head: &str, tail: &str) -> String {
         format!("{head}...{tail}")
     }

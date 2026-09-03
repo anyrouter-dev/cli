@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, HashMap};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use crate::auth::acquire_api_key;
@@ -946,7 +946,7 @@ fn known_model_id(models: &[CatalogModel], id: &str) -> bool {
 
 fn save_model_slot(
     existing: Option<crate::config::Config>,
-    path: &PathBuf,
+    path: &Path,
     slot: &str,
     id: &str,
 ) -> Result<i32, String> {
@@ -988,7 +988,7 @@ fn known_agent(name: &str) -> Result<String, String> {
     }
 }
 
-fn save_agent_model(path: &PathBuf, agent: &str, id: &str) -> Result<i32, String> {
+fn save_agent_model(path: &Path, agent: &str, id: &str) -> Result<i32, String> {
     let agent = known_agent(agent)?;
     let mut cfg = load_config_if_present(path).ok_or_else(no_key_error)?;
     let id = catalog_model_id(id);
@@ -1008,7 +1008,7 @@ fn save_agent_model(path: &PathBuf, agent: &str, id: &str) -> Result<i32, String
     Ok(0)
 }
 
-fn save_agent_account(path: &PathBuf, agent: &str, profile: &str) -> Result<i32, String> {
+fn save_agent_account(path: &Path, agent: &str, profile: &str) -> Result<i32, String> {
     let agent = known_agent(agent)?;
     let mut cfg = load_config_if_present(path).ok_or_else(no_key_error)?;
     if !cfg.profiles.contains_key(profile) {
@@ -1024,7 +1024,7 @@ fn save_agent_account(path: &PathBuf, agent: &str, profile: &str) -> Result<i32,
     Ok(0)
 }
 
-fn save_agent_key(path: &PathBuf, agent: &str, key: &str) -> Result<i32, String> {
+fn save_agent_key(path: &Path, agent: &str, key: &str) -> Result<i32, String> {
     let agent = known_agent(agent)?;
     let mut cfg = load_config_if_present(path).ok_or_else(no_key_error)?;
     cfg.agent_binding_mut(&agent).api_key = Some(key.to_string());
@@ -1323,7 +1323,7 @@ fn run_whoami(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32
 fn print_config_status(
     parsed: &ParsedArgs,
     env: &BTreeMap<String, String>,
-    path: &PathBuf,
+    path: &Path,
 ) -> Result<(), String> {
     let cfg = load_config_if_present(path).unwrap_or_default();
     let profile = cfg.profiles.get(&cfg.active_profile);
@@ -1469,7 +1469,7 @@ fn settings_tab_names() -> Vec<String> {
     tabs
 }
 
-fn tool_command_for(path: &PathBuf, id: &str) -> String {
+fn tool_command_for(path: &Path, id: &str) -> String {
     let cfg = load_config_if_present(path);
     resolve_tool(cfg.as_ref(), id)
         .map(|t| t.command)
@@ -1480,7 +1480,7 @@ fn tool_command_for(path: &PathBuf, id: &str) -> String {
 fn config_settings_frame(
     parsed: &ParsedArgs,
     env: &BTreeMap<String, String>,
-    path: &PathBuf,
+    path: &Path,
     online: bool,
     cache: &mut CreditsCache,
     tab: usize,
@@ -1553,7 +1553,7 @@ fn config_settings_frame(
 fn fill_general_settings(
     rows: &mut Vec<crate::tui::SettingRow>,
     kinds: &mut Vec<Option<SettingKind>>,
-    path: &PathBuf,
+    path: &Path,
     parsed: &ParsedArgs,
     env: &BTreeMap<String, String>,
     profile: Option<&Profile>,
@@ -1689,7 +1689,7 @@ fn fill_general_settings(
 fn fill_agent_settings(
     rows: &mut Vec<crate::tui::SettingRow>,
     kinds: &mut Vec<Option<SettingKind>>,
-    path: &PathBuf,
+    path: &Path,
     env: &BTreeMap<String, String>,
     profile: Option<&Profile>,
     id: &'static str,
@@ -1982,7 +1982,7 @@ fn slot_current_opt(profile: Option<&Profile>, slot: &str) -> String {
 fn config_settings_loop(
     parsed: &ParsedArgs,
     env: &BTreeMap<String, String>,
-    path: &PathBuf,
+    path: &Path,
 ) -> Result<i32, String> {
     let mut cache = CreditsCache::fresh();
     let mut tab = 0usize;
@@ -2029,7 +2029,7 @@ fn config_settings_loop(
 fn config_edit_row(
     parsed: &ParsedArgs,
     env: &BTreeMap<String, String>,
-    path: &PathBuf,
+    path: &Path,
     kind: SettingKind,
 ) -> Result<i32, String> {
     match kind {
@@ -2406,7 +2406,7 @@ fn config_reset_row(path: &std::path::Path, kind: SettingKind) -> Result<i32, St
 fn config_menu_loop_legacy(
     parsed: &ParsedArgs,
     env: &BTreeMap<String, String>,
-    path: &PathBuf,
+    path: &Path,
 ) -> Result<i32, String> {
     let items = vec![
         "Switch key".into(),
@@ -2535,10 +2535,10 @@ fn run_config(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32
 }
 
 fn catalog_lookup_enabled(env: &BTreeMap<String, String>) -> bool {
-    match env.get("ANYR_NO_CATALOG").map(|s| s.as_str()) {
-        Some("1" | "true" | "TRUE" | "yes") => false,
-        _ => true,
-    }
+    !matches!(
+        env.get("ANYR_NO_CATALOG").map(|s| s.as_str()),
+        Some("1" | "true" | "TRUE" | "yes")
+    )
 }
 
 struct ResolvedModel {
@@ -3138,7 +3138,7 @@ fn key_pick_label(row: &crate::http::RemoteKey, current: bool) -> String {
 fn stored_api_key(
     parsed: &ParsedArgs,
     env: &BTreeMap<String, String>,
-    path: &PathBuf,
+    path: &Path,
 ) -> Option<String> {
     let existing = load_config_if_present(path);
     let profile = existing
@@ -3196,7 +3196,7 @@ fn agent_binding_detail(cfg: &crate::config::Config, id: &str, signed_in: bool) 
 /// `signed_in` gates the launch group exactly like the old dialog did.
 #[cfg(feature = "native")]
 fn launcher_palette(
-    path: &PathBuf,
+    path: &Path,
     parsed: &ParsedArgs,
     env: &BTreeMap<String, String>,
     credits: &mut CreditsCache,
@@ -3273,7 +3273,7 @@ fn launcher_palette(
 /// Non-native twin of `launcher_palette` — same rows, plain inline entries.
 #[cfg(not(feature = "native"))]
 fn launcher_palette(
-    path: &PathBuf,
+    path: &Path,
     parsed: &ParsedArgs,
     env: &BTreeMap<String, String>,
     _credits: &mut CreditsCache,
@@ -3561,7 +3561,7 @@ fn push_agent_configure_entries(
     ));
 }
 
-fn install_agent_dialog(path: &PathBuf, env: &BTreeMap<String, String>) -> Result<i32, String> {
+fn install_agent_dialog(path: &Path, env: &BTreeMap<String, String>) -> Result<i32, String> {
     let missing = missing_agents(env, |id| tool_command_for(path, id));
     if missing.is_empty() {
         println!(
@@ -3593,7 +3593,7 @@ fn install_agent_dialog(path: &PathBuf, env: &BTreeMap<String, String>) -> Resul
     Ok(0)
 }
 
-fn persist_tool_command(path: &PathBuf, id: &str, command: &str) -> Result<(), String> {
+fn persist_tool_command(path: &Path, id: &str, command: &str) -> Result<(), String> {
     let mut cfg = load_config_if_present(path).unwrap_or_default();
     let mut tool = resolve_tool(Some(&cfg), id)?;
     tool.command = command.to_string();
@@ -3601,11 +3601,7 @@ fn persist_tool_command(path: &PathBuf, id: &str, command: &str) -> Result<(), S
     write_config(&cfg, path)
 }
 
-fn launcher_last_tool(
-    path: &PathBuf,
-    parsed: &ParsedArgs,
-    env: &BTreeMap<String, String>,
-) -> String {
+fn launcher_last_tool(path: &Path, parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> String {
     let cfg = load_config_if_present(path).unwrap_or_default();
     let profile = cfg.profiles.get(&cfg.active_profile);
     cfg.last_tool
@@ -3620,7 +3616,7 @@ fn launcher_last_tool(
         })
 }
 
-fn launcher_signed_in(path: &PathBuf, parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> bool {
+fn launcher_signed_in(path: &Path, parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> bool {
     stored_api_key(parsed, env, path).is_some()
 }
 
@@ -3741,7 +3737,7 @@ fn launcher_dispatch(
     action: &str,
     parsed: &ParsedArgs,
     env: &BTreeMap<String, String>,
-    path: &PathBuf,
+    path: &Path,
 ) -> Result<LauncherNext, String> {
     if action == "Quit" || action.starts_with("Quit") {
         return Ok(LauncherNext::Exit(0));
@@ -3868,7 +3864,7 @@ fn launcher_dispatch(
 fn switch_agent_model(
     parsed: &ParsedArgs,
     env: &BTreeMap<String, String>,
-    path: &PathBuf,
+    path: &Path,
     agent: &str,
 ) -> Result<LauncherNext, String> {
     if agent.is_empty() {
@@ -3889,7 +3885,7 @@ fn switch_agent_model(
 fn bind_agent_model(
     parsed: &ParsedArgs,
     env: &BTreeMap<String, String>,
-    path: &PathBuf,
+    path: &Path,
     agent: &str,
 ) -> Result<i32, String> {
     let existing = load_config_if_present(path);
@@ -3911,7 +3907,7 @@ fn bind_agent_model(
 fn switch_agent_account(
     _parsed: &ParsedArgs,
     _env: &BTreeMap<String, String>,
-    path: &PathBuf,
+    path: &Path,
     agent: &str,
 ) -> Result<LauncherNext, String> {
     if agent.is_empty() {
@@ -3925,7 +3921,7 @@ fn switch_agent_account(
     Ok(LauncherNext::Continue)
 }
 
-fn bind_agent_account(path: &PathBuf, agent: &str) -> Result<i32, String> {
+fn bind_agent_account(path: &Path, agent: &str) -> Result<i32, String> {
     let cfg = load_config_if_present(path).unwrap_or_default();
     let mut names: Vec<String> = cfg.profiles.keys().cloned().collect();
     names.sort();
@@ -3960,7 +3956,7 @@ fn bind_agent_account(path: &PathBuf, agent: &str) -> Result<i32, String> {
 fn switch_agent_key(
     parsed: &ParsedArgs,
     env: &BTreeMap<String, String>,
-    path: &PathBuf,
+    path: &Path,
     agent: &str,
 ) -> Result<LauncherNext, String> {
     if agent.is_empty() {
@@ -3981,7 +3977,7 @@ fn switch_agent_key(
 fn bind_agent_key(
     parsed: &ParsedArgs,
     env: &BTreeMap<String, String>,
-    path: &PathBuf,
+    path: &Path,
     agent: &str,
 ) -> Result<i32, String> {
     let (_keys_path, cfg, base, api_key) = keys_credential(parsed, env)?;
@@ -4024,7 +4020,7 @@ fn bind_agent_key(
 fn launch_agent_picker(
     parsed: &ParsedArgs,
     env: &BTreeMap<String, String>,
-    path: &PathBuf,
+    path: &Path,
 ) -> Result<LauncherNext, String> {
     if !launcher_signed_in(path, parsed, env) {
         eprintln!(

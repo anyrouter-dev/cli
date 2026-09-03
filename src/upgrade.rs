@@ -15,7 +15,7 @@ use crate::channel::{
     parse_releases_html, release_asset_url, releases_http_error, select_latest_release_with_asset,
     Channel, Release, GITHUB_EXPANDED_ASSETS_PREFIX, GITHUB_RELEASES_API, GITHUB_RELEASES_HTML,
 };
-use crate::config::{resolve_config_path, write_config, Config};
+use crate::config::{resolve_config_path, write_config};
 use crate::http::{http_get_github, http_get_web};
 use crate::key::load_config_if_present;
 use crate::parse::{get_string_flag, ParsedArgs};
@@ -180,7 +180,7 @@ fn resolve_channel(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Resul
 /// Persist `channel:` so future auto-updates follow the switched track.
 fn persist_channel(channel: Channel, env: &BTreeMap<String, String>) -> Result<bool, String> {
     let path = resolve_config_path(None, env);
-    let mut cfg = load_config_if_present(&path).unwrap_or_else(Config::default);
+    let mut cfg = load_config_if_present(&path).unwrap_or_default();
     let next = channel.as_str().to_string();
     let changed = cfg.channel.as_deref() != Some(next.as_str());
     if !changed && cfg.channel.is_some() {
