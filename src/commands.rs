@@ -22,10 +22,10 @@ use crate::key::{
 };
 use crate::parse::{get_string_flag, parse_cli_args, FlagValue, ParsedArgs};
 use crate::spawn::{
-    build_tool_env, canonical_tool, catalog_model_id, default_profile_for_env, display_model_id,
-    effort_args_for, env_command_path, is_auto_model, model_args_for, normalize_effort,
-    prepare_pi_wrapper, provider_args_for, render_dry_run, resolve_tool, session_model_label,
-    spawn_child, BuildToolEnvInput,
+    apply_routing_env, build_tool_env, canonical_tool, catalog_model_id, default_profile_for_env,
+    display_model_id, effort_args_for, env_command_path, is_auto_model, model_args_for,
+    normalize_effort, prepare_pi_wrapper, provider_args_for, render_dry_run, resolve_tool,
+    session_model_label, spawn_child, BuildToolEnvInput,
 };
 use crate::term;
 use crate::VERSION;
@@ -1041,6 +1041,43 @@ fn palette_bind_detail(agent: &str) -> String {
     format!("for {agent}")
 }
 
+fn routing_toggle_detail(on: bool, agent: &str) -> String {
+    format!("{} · for {agent}", if on { "on" } else { "off" })
+}
+
+fn toggle_agent_routing_field(
+    path: &std::path::Path,
+    agent: &str,
+    field: RoutingField,
+) -> Result<i32, String> {
+    let agent = known_agent(agent)?;
+    let mut cfg = load_config_if_present(path).unwrap_or_default();
+    let routing = &mut cfg.agent_binding_mut(&agent).routing;
+    let on = match field {
+        RoutingField::Exacto => {
+            routing.set_exacto(!routing.wants_exacto());
+            routing.wants_exacto()
+        }
+        RoutingField::Tools => {
+            routing.set_require_tools(!routing.requires_tools());
+            routing.requires_tools()
+        }
+        RoutingField::MinContext => {
+            routing.set_require_1m(!routing.requires_1m_context());
+            routing.requires_1m_context()
+        }
+    };
+    cfg.prune_empty_agents();
+    write_config(&cfg, path)?;
+    println!(
+        "{}  {agent} {} {}",
+        term::ok("Saved"),
+        field.label(),
+        if on { "on" } else { "off" }
+    );
+    Ok(0)
+}
+
 fn run_models(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, String> {
     let path = config_path(parsed, env);
     let existing = load_config_if_present(&path);
@@ -1369,6 +1406,33 @@ enum SettingKind {
     AgentAccount(&'static str),
     AgentKey(&'static str),
     AgentModel(&'static str),
+    AgentRouting(&'static str, RoutingField),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RoutingField {
+    Exacto,
+    Tools,
+    MinContext,
+}
+
+impl RoutingField {
+    fn label(self) -> &'static str {
+        match self {
+            RoutingField::Exacto => "exacto",
+            RoutingField::Tools => "tools",
+            RoutingField::MinContext => "1M ctx",
+        }
+    }
+
+    #[allow(dead_code)]
+    fn action_kind(self) -> &'static str {
+        match self {
+            RoutingField::Exacto => "exacto",
+            RoutingField::Tools => "tools",
+            RoutingField::MinContext => "1m",
+        }
+    }
 }
 
 fn run_config_tui(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, String> {
@@ -1752,6 +1816,57 @@ fn fill_agent_settings(
         SettingKind::AgentModel(id),
     );
 
+    section(rows, kinds, "Routing");
+    let routing = binding.map(|b| b.routing.clone()).unwrap_or_default();
+    entry(
+        rows,
+        kinds,
+        "exacto",
+        if routing.wants_exacto() {
+            "on".into()
+        } else {
+            "off".into()
+        },
+        if routing.wants_exacto() {
+            Tone::Good
+        } else {
+            Tone::Muted
+        },
+        SettingKind::AgentRouting(id, RoutingField::Exacto),
+    );
+    entry(
+        rows,
+        kinds,
+        "tools",
+        if routing.requires_tools() {
+            "on".into()
+        } else {
+            "off".into()
+        },
+        if routing.requires_tools() {
+            Tone::Good
+        } else {
+            Tone::Muted
+        },
+        SettingKind::AgentRouting(id, RoutingField::Tools),
+    );
+    entry(
+        rows,
+        kinds,
+        "1M ctx",
+        if routing.requires_1m_context() {
+            "on".into()
+        } else {
+            "off".into()
+        },
+        if routing.requires_1m_context() {
+            Tone::Good
+        } else {
+            Tone::Muted
+        },
+        SettingKind::AgentRouting(id, RoutingField::MinContext),
+    );
+
     section(rows, kinds, "Mapping");
     entry(
         rows,
@@ -2050,6 +2165,7 @@ fn config_edit_row(
                 other => other,
             }
         }
+        SettingKind::AgentRouting(id, field) => toggle_agent_routing_field(path, id, field),
         SettingKind::Channel => {
             let choices = ["stable", "beta"];
             let current = choices.iter().position(|c| *c == cfg_channel(path));
@@ -2204,6 +2320,45 @@ fn config_reset_row(path: &std::path::Path, kind: SettingKind) -> Result<i32, St
                 "{}  {id} {label} reset to session default",
                 term::ok("Saved")
             );
+            Ok(0)
+        }
+        SettingKind::AgentRouting(id, field) => {
+            let was_set = {
+                let Some(b) = cfg.agents.get_mut(id) else {
+                    println!(
+                        "{}",
+                        term::dim(&format!("{id} {} already off", field.label()))
+                    );
+                    return Ok(0);
+                };
+                match field {
+                    RoutingField::Exacto => {
+                        let on = b.routing.wants_exacto();
+                        b.routing.set_exacto(false);
+                        on
+                    }
+                    RoutingField::Tools => {
+                        let on = b.routing.requires_tools();
+                        b.routing.set_require_tools(false);
+                        on
+                    }
+                    RoutingField::MinContext => {
+                        let on = b.routing.requires_1m_context();
+                        b.routing.set_require_1m(false);
+                        on
+                    }
+                }
+            };
+            cfg.prune_empty_agents();
+            if !was_set {
+                println!(
+                    "{}",
+                    term::dim(&format!("{id} {} already off", field.label()))
+                );
+                return Ok(0);
+            }
+            write_config(&cfg, path)?;
+            println!("{}  {id} {} off", term::ok("Saved"), field.label());
             Ok(0)
         }
         SettingKind::GatewayDiscovery => {
@@ -2479,6 +2634,12 @@ fn run_launch(
         context_window: resolved.context_window,
         model_map: None,
     });
+    let routing = existing
+        .as_ref()
+        .and_then(|c| c.agent_binding(tool_name))
+        .map(|b| b.routing.clone())
+        .unwrap_or_default();
+    apply_routing_env(&mut env_map, &routing, tool_name);
     if tool_name == "pi" {
         prepare_pi_wrapper(&mut env_map, &path, &profile, &tool, &model)?;
     }
@@ -2994,7 +3155,9 @@ fn agent_binding_detail(cfg: &crate::config::Config, id: &str, signed_in: bool) 
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(session_model_label)
-        .unwrap_or_else(|| session_model_label(profile.map(|p| p.default_model()).unwrap_or("auto")));
+        .unwrap_or_else(|| {
+            session_model_label(profile.map(|p| p.default_model()).unwrap_or("auto"))
+        });
     let account = binding
         .and_then(|b| b.profile.as_deref())
         .map(str::trim)
@@ -3013,7 +3176,19 @@ fn agent_binding_detail(cfg: &crate::config::Config, id: &str, signed_in: bool) 
     } else {
         "(not signed in)".into()
     };
-    format!("{model}  ·  {account}  ·  {key}")
+    let mut parts = vec![model, account.to_string(), key];
+    if let Some(r) = binding.map(|b| &b.routing) {
+        if r.wants_exacto() {
+            parts.push("exacto".into());
+        }
+        if r.requires_tools() {
+            parts.push("tools".into());
+        }
+        if r.requires_1m_context() {
+            parts.push("1M".into());
+        }
+    }
+    parts.join("  ·  ")
 }
 
 /// Palette entries: launch rows first (bindings visible per agent), then
@@ -3078,7 +3253,7 @@ fn launcher_palette(
             .map(|(id, _)| (*id).to_string())
             .unwrap_or(last.clone())
     };
-    push_agent_configure_entries(&mut entries, &hub);
+    push_agent_configure_entries(&mut entries, &hub, &cfg);
     entries.push(PaletteEntry::new(
         "install…",
         "install a coding agent",
@@ -3146,7 +3321,7 @@ fn launcher_palette(
                     format!("Launch {id}"),
                 ));
             }
-            push_inline_configure(&mut entries, &last);
+            push_inline_configure(&mut entries, &last, &cfg);
         }
     } else {
         entries.push(InlineEntry::new(
@@ -3155,7 +3330,7 @@ fn launcher_palette(
             "account",
             "Login / sign in",
         ));
-        push_inline_configure(&mut entries, &last);
+        push_inline_configure(&mut entries, &last, &cfg);
     }
     entries.push(InlineEntry::new(
         "install…",
@@ -3174,7 +3349,11 @@ fn launcher_palette(
 }
 
 #[cfg(not(feature = "native"))]
-fn push_inline_configure(entries: &mut Vec<InlineEntry>, agent: &str) {
+fn push_inline_configure(entries: &mut Vec<InlineEntry>, agent: &str, cfg: &crate::config::Config) {
+    let routing = cfg
+        .agent_binding(agent)
+        .map(|b| b.routing.clone())
+        .unwrap_or_default();
     entries.push(InlineEntry::new(
         "model…",
         palette_bind_detail(agent),
@@ -3192,6 +3371,24 @@ fn push_inline_configure(entries: &mut Vec<InlineEntry>, agent: &str) {
         palette_bind_detail(agent),
         format!("configure · {agent}"),
         format!("Switch key {agent}"),
+    ));
+    entries.push(InlineEntry::new(
+        "exacto",
+        routing_toggle_detail(routing.wants_exacto(), agent),
+        format!("configure · {agent}"),
+        format!("Toggle exacto {agent}"),
+    ));
+    entries.push(InlineEntry::new(
+        "tools",
+        routing_toggle_detail(routing.requires_tools(), agent),
+        format!("configure · {agent}"),
+        format!("Toggle tools {agent}"),
+    ));
+    entries.push(InlineEntry::new(
+        "1M ctx",
+        routing_toggle_detail(routing.requires_1m_context(), agent),
+        format!("configure · {agent}"),
+        format!("Toggle 1m {agent}"),
     ));
 }
 
@@ -3315,9 +3512,17 @@ fn push_launch_entries(
 }
 
 #[cfg(feature = "native")]
-fn push_agent_configure_entries(entries: &mut Vec<crate::tui::PaletteEntry>, agent: &str) {
+fn push_agent_configure_entries(
+    entries: &mut Vec<crate::tui::PaletteEntry>,
+    agent: &str,
+    cfg: &crate::config::Config,
+) {
     use crate::tui::PaletteEntry;
     let group = format!("configure · {agent}");
+    let routing = cfg
+        .agent_binding(agent)
+        .map(|b| b.routing.clone())
+        .unwrap_or_default();
     entries.push(PaletteEntry::new(
         "model…",
         palette_bind_detail(agent),
@@ -3333,8 +3538,26 @@ fn push_agent_configure_entries(entries: &mut Vec<crate::tui::PaletteEntry>, age
     entries.push(PaletteEntry::new(
         "key…",
         palette_bind_detail(agent),
-        group,
+        group.clone(),
         format!("Switch key {agent}"),
+    ));
+    entries.push(PaletteEntry::new(
+        "exacto",
+        routing_toggle_detail(routing.wants_exacto(), agent),
+        group.clone(),
+        format!("Toggle exacto {agent}"),
+    ));
+    entries.push(PaletteEntry::new(
+        "tools",
+        routing_toggle_detail(routing.requires_tools(), agent),
+        group.clone(),
+        format!("Toggle tools {agent}"),
+    ));
+    entries.push(PaletteEntry::new(
+        "1M ctx",
+        routing_toggle_detail(routing.requires_1m_context(), agent),
+        group,
+        format!("Toggle 1m {agent}"),
     ));
 }
 
@@ -3608,6 +3831,18 @@ fn launcher_dispatch(
     }
     if let Some(agent) = action.strip_prefix("Switch key ") {
         return switch_agent_key(parsed, env, path, agent.trim());
+    }
+    if let Some(agent) = action.strip_prefix("Toggle exacto ") {
+        toggle_agent_routing_field(path, agent.trim(), RoutingField::Exacto)?;
+        return Ok(LauncherNext::Continue);
+    }
+    if let Some(agent) = action.strip_prefix("Toggle tools ") {
+        toggle_agent_routing_field(path, agent.trim(), RoutingField::Tools)?;
+        return Ok(LauncherNext::Continue);
+    }
+    if let Some(agent) = action.strip_prefix("Toggle 1m ") {
+        toggle_agent_routing_field(path, agent.trim(), RoutingField::MinContext)?;
+        return Ok(LauncherNext::Continue);
     }
     if action == "Credits" {
         if let Err(err) = run_usage(parsed, env) {

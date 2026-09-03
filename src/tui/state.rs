@@ -434,15 +434,51 @@ impl PaletteState {
         let Some(agent) = self.focused_agent.clone() else {
             return;
         };
+        // Launch-row detail already carries per-agent routing flags
+        // (`exacto` / `tools` / `1M`). Read those so toggles do not copy
+        // the previous agent's on/off when focus moves.
+        let launch_detail = self
+            .entries
+            .iter()
+            .find(|e| e.group == "launch" && e.label == agent)
+            .map(|e| e.detail.clone())
+            .unwrap_or_default();
+        let exacto_on = launch_flag(&launch_detail, "exacto");
+        let tools_on = launch_flag(&launch_detail, "tools");
+        let ctx_on = launch_flag(&launch_detail, "1M");
         let group = format!("configure · {agent}");
         for entry in &mut self.entries {
-            let kind = configure_kind(&entry.action, &entry.label);
-            let Some(kind) = kind else {
+            let Some(kind) = configure_kind(&entry.action, &entry.label) else {
                 continue;
             };
             entry.group = group.clone();
-            entry.action = format!("Switch {kind} {agent}");
-            entry.detail = format!("for {agent}");
+            match kind {
+                ConfigureKind::Model => {
+                    entry.action = format!("Switch model {agent}");
+                    entry.detail = format!("for {agent}");
+                }
+                ConfigureKind::Account => {
+                    entry.action = format!("Switch account {agent}");
+                    entry.detail = format!("for {agent}");
+                }
+                ConfigureKind::Key => {
+                    entry.action = format!("Switch key {agent}");
+                    entry.detail = format!("for {agent}");
+                }
+                ConfigureKind::Exacto => {
+                    entry.action = format!("Toggle exacto {agent}");
+                    entry.detail =
+                        format!("{} · for {agent}", if exacto_on { "on" } else { "off" });
+                }
+                ConfigureKind::Tools => {
+                    entry.action = format!("Toggle tools {agent}");
+                    entry.detail = format!("{} · for {agent}", if tools_on { "on" } else { "off" });
+                }
+                ConfigureKind::MinContext => {
+                    entry.action = format!("Toggle 1m {agent}");
+                    entry.detail = format!("{} · for {agent}", if ctx_on { "on" } else { "off" });
+                }
+            }
         }
     }
 
@@ -502,6 +538,10 @@ impl PaletteState {
     }
 }
 
+fn launch_flag(detail: &str, flag: &str) -> bool {
+    detail.split('·').any(|part| part.trim() == flag)
+}
+
 fn launch_id_from_action(action: &str) -> Option<String> {
     let rest = action.strip_prefix("Launch ")?.trim();
     if rest.is_empty() || rest == "coding agent…" {
@@ -510,16 +550,32 @@ fn launch_id_from_action(action: &str) -> Option<String> {
     Some(rest.to_string())
 }
 
-/// model / account / key — the inline home-TUI switches (not install/config/quit).
-fn configure_kind(action: &str, label: &str) -> Option<&'static str> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConfigureKind {
+    Model,
+    Account,
+    Key,
+    Exacto,
+    Tools,
+    MinContext,
+}
+
+/// model / account / key / routing toggles — inline home-TUI switches.
+fn configure_kind(action: &str, label: &str) -> Option<ConfigureKind> {
     let a = action.to_ascii_lowercase();
     let l = label.to_ascii_lowercase();
     if a.starts_with("switch model") || l.starts_with("model") {
-        Some("model")
+        Some(ConfigureKind::Model)
     } else if a.starts_with("switch account") || l.starts_with("account") {
-        Some("account")
+        Some(ConfigureKind::Account)
     } else if a.starts_with("switch key") || l.starts_with("key") {
-        Some("key")
+        Some(ConfigureKind::Key)
+    } else if a.starts_with("toggle exacto") || l.starts_with("exacto") {
+        Some(ConfigureKind::Exacto)
+    } else if a.starts_with("toggle tools") || l.starts_with("tools") {
+        Some(ConfigureKind::Tools)
+    } else if a.starts_with("toggle 1m") || l.starts_with("1m") {
+        Some(ConfigureKind::MinContext)
     } else {
         None
     }
@@ -767,6 +823,61 @@ mod tests {
         // Launch list is still present — configure does not replace it.
         assert_eq!(s.entries[0].group, "launch");
         assert_eq!(s.entries[1].group, "launch");
+    }
+
+    #[test]
+    fn palette_retargets_routing_toggles_without_dropping_launch() {
+        let mut s = PaletteState::new(
+            vec!["account  duyet".into()],
+            vec![
+                PaletteEntry::new(
+                    "claude",
+                    "anyrouter/auto  ·  exacto  ·  tools  ·  1M",
+                    "launch",
+                    "Launch claude",
+                ),
+                PaletteEntry::new("codex", "anyrouter/free", "launch", "Launch codex"),
+                PaletteEntry::new(
+                    "model…",
+                    "for claude",
+                    "configure · claude",
+                    "Switch model claude",
+                ),
+                PaletteEntry::new(
+                    "exacto",
+                    "on · for claude",
+                    "configure · claude",
+                    "Toggle exacto claude",
+                ),
+                PaletteEntry::new(
+                    "tools",
+                    "on · for claude",
+                    "configure · claude",
+                    "Toggle tools claude",
+                ),
+                PaletteEntry::new(
+                    "1M ctx",
+                    "on · for claude",
+                    "configure · claude",
+                    "Toggle 1m claude",
+                ),
+            ],
+        );
+        assert!(s.entries.iter().any(|e| e.group == "launch"));
+        assert!(s.entries.iter().any(|e| e.group.starts_with("configure")));
+        let exacto = s.entries.iter().find(|e| e.label == "exacto").unwrap();
+        assert_eq!(exacto.detail, "on · for claude");
+        s.apply(Action::Down); // codex — flags come from that agent's launch row
+        assert_eq!(s.focused_agent.as_deref(), Some("codex"));
+        let exacto = s.entries.iter().find(|e| e.label == "exacto").unwrap();
+        assert_eq!(exacto.action, "Toggle exacto codex");
+        assert_eq!(exacto.detail, "off · for codex");
+        let tools = s.entries.iter().find(|e| e.label == "tools").unwrap();
+        assert_eq!(tools.detail, "off · for codex");
+        let ctx = s.entries.iter().find(|e| e.label == "1M ctx").unwrap();
+        assert_eq!(ctx.detail, "off · for codex");
+        assert!(s.entries.iter().any(|e| e.action == "Launch claude"));
+        assert!(s.entries.iter().any(|e| e.action == "Launch codex"));
     }
 
     #[test]
