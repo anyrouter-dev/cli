@@ -226,8 +226,9 @@ pub fn render_palette(frame: &mut Frame, state: &PaletteState) {
 /// Number of distinct groups among the first `visible` filtered entries —
 /// each renders one header line inside the result area.
 fn palette_groups(state: &PaletteState, filtered: &[usize], visible: usize) -> usize {
+    let (start, vis) = palette_window(state.cursor, filtered.len(), visible.max(1));
     let mut groups: Vec<&str> = Vec::new();
-    for &entry_i in filtered.iter().take(visible) {
+    for &entry_i in filtered.iter().skip(start).take(vis) {
         let g = state.entries[entry_i].group.as_str();
         if g.is_empty() {
             continue;
@@ -247,10 +248,10 @@ fn palette_rows(
     visible: usize,
     inner_w: usize,
 ) -> Vec<Line<'static>> {
-    let cursor_row = state.cursor.min(visible.saturating_sub(1));
+    let (start, vis) = palette_window(state.cursor, filtered.len(), visible.max(1));
     let mut rows: Vec<Line> = Vec::new();
     let mut last_group: Option<&str> = None;
-    for (row_i, &entry_i) in filtered.iter().take(visible).enumerate() {
+    for (row_i, &entry_i) in filtered.iter().skip(start).take(vis).enumerate() {
         let entry: &PaletteEntry = &state.entries[entry_i];
         if last_group != Some(entry.group.as_str()) {
             if last_group.is_some() {
@@ -264,7 +265,7 @@ fn palette_rows(
             }
             last_group = Some(&entry.group);
         }
-        let selected = row_i == cursor_row;
+        let selected = start + row_i == state.cursor;
         let marker_style = if selected {
             theme::accent()
         } else {
@@ -459,10 +460,28 @@ fn in_rect(r: Rect, col: u16, row: u16) -> bool {
         && row < r.y.saturating_add(r.height)
 }
 
+/// Live palette shows at most this many filtered rows; the window follows
+/// the cursor so Enter never selects a row that is off-screen.
+const PALETTE_LIVE_ROWS: usize = 10;
+
+fn palette_window(cursor: usize, n: usize, max: usize) -> (usize, usize) {
+    if n == 0 {
+        return (0, 0);
+    }
+    let vis = n.min(max.max(1));
+    let cursor = cursor.min(n - 1);
+    let start = if n <= vis {
+        0
+    } else {
+        cursor.saturating_sub(vis - 1).min(n - vis)
+    };
+    (start, vis)
+}
+
 fn palette_card(area: Rect, state: &PaletteState) -> (Rect, Vec<Rect>, usize) {
     let filtered = state.filtered();
     let header_h = palette_header_height(&state.header);
-    let visible = filtered.len().min(10);
+    let (_, visible) = palette_window(state.cursor, filtered.len(), PALETTE_LIVE_ROWS);
     let groups = palette_groups(state, &filtered, visible);
     let between = groups.saturating_sub(1);
     let height = 2
@@ -506,9 +525,10 @@ pub fn hit_palette(area: Rect, state: &PaletteState, col: u16, row: u16) -> Opti
 
 fn palette_hit_map(state: &PaletteState, visible: usize) -> Vec<Option<usize>> {
     let filtered = state.filtered();
+    let (start, vis) = palette_window(state.cursor, filtered.len(), visible.max(1));
     let mut map = Vec::new();
     let mut last_group: Option<&str> = None;
-    for (row_i, &entry_i) in filtered.iter().take(visible).enumerate() {
+    for (row_i, &entry_i) in filtered.iter().skip(start).take(vis).enumerate() {
         let entry = &state.entries[entry_i];
         if last_group != Some(entry.group.as_str()) {
             if last_group.is_some() {
@@ -519,7 +539,7 @@ fn palette_hit_map(state: &PaletteState, visible: usize) -> Vec<Option<usize>> {
             }
             last_group = Some(entry.group.as_str());
         }
-        map.push(Some(row_i));
+        map.push(Some(start + row_i));
     }
     map
 }
@@ -883,10 +903,10 @@ pub fn plain_palette_lines(state: &PaletteState, cols: usize) -> Vec<String> {
     if filtered.is_empty() {
         lines.push(truncate("  (no matches)", width));
     } else {
-        let visible = filtered.len().min(12);
-        let cursor_row = state.cursor.min(visible.saturating_sub(1));
+        // Dump is a full snapshot, not a viewport — CI must see every row.
+        let cursor_row = state.cursor.min(filtered.len().saturating_sub(1));
         let mut last_group: Option<&str> = None;
-        for (row_i, &entry_i) in filtered.iter().take(visible).enumerate() {
+        for (row_i, &entry_i) in filtered.iter().enumerate() {
             let entry = &state.entries[entry_i];
             if last_group != Some(entry.group.as_str()) {
                 if !entry.group.is_empty() {
@@ -910,7 +930,7 @@ pub fn plain_palette_lines(state: &PaletteState, cols: usize) -> Vec<String> {
         }
     }
 
-    lines.push(truncate("❯  ↵ launch  ·  q quit", width));
+    lines.push(truncate("❯  ↵ launch  ·  esc quit", width));
     lines
 }
 
@@ -1007,6 +1027,16 @@ fn truncate(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn palette_window_keeps_cursor_visible() {
+        // WHY: Enter must select the highlighted row, not a row below the fold.
+        assert_eq!(palette_window(0, 20, 10), (0, 10));
+        assert_eq!(palette_window(15, 20, 10), (6, 10));
+        assert_eq!(palette_window(19, 20, 10), (10, 10));
+        assert_eq!(palette_window(0, 3, 10), (0, 3));
+        assert_eq!(palette_window(0, 0, 10), (0, 0));
+    }
 
     #[test]
     fn dump_menu_is_ansi_free() {

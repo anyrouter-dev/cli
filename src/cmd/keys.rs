@@ -108,7 +108,7 @@ pub(crate) fn run_keys(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> R
                 .unwrap_or_else(default_key_name);
             let key = create_key(&base, &cred, &name)?;
             println!("Created \"{name}\":\n\n  {key}\n\nShown once — store it now.");
-            let save = parsed.flag_true("yes")
+            let save = parsed.skip_confirm()
                 || (term::is_interactive()
                     && term::confirm("Use this key for the current profile?"));
             if save {
@@ -218,7 +218,7 @@ pub(crate) fn run_keys(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> R
                     ))
                 }
             };
-            if !parsed.flag_true("yes") {
+            if !parsed.skip_confirm() {
                 if !term::is_interactive() {
                     return Err(
                         "Revoking a key is destructive; pass --yes to run non-interactively."
