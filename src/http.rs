@@ -313,9 +313,14 @@ pub fn format_models_list(
         } else {
             ""
         };
+        let id = if pinned_ids.iter().any(|id| id == &model.id) {
+            crate::term::model_id(&model.id)
+        } else {
+            model.id.clone()
+        };
         out_lines.push(format!(
             "{:<id_w$}  {:<12}  {:<6}  {pin}",
-            model.id,
+            id,
             owner,
             ctx,
             id_w = id_w
