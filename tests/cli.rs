@@ -67,51 +67,35 @@ fn exit_zero_stub() -> std::path::PathBuf {
 fn help_lists_login_claude_account_and_spawn_targets() {
     let (code, stdout, stderr) = run(&["--help"]);
     assert_eq!(code, 0, "stderr={stderr}");
-    for word in ["auth", "claude", "keys", "usage", "models", "onboard"] {
-        assert!(stdout.contains(word), "missing {word} in:\n{stdout}");
-    }
-    for target in [
-        "claude", "cc", "codex", "grok", "opencode", "pi", "pool", "poolside",
-    ] {
-        assert!(
-            stdout.lines().any(|l| l.trim_start().starts_with(target)),
-            "missing spawn target {target} in:\n{stdout}"
-        );
-    }
+    assert!(stdout.contains("point any coding agent"), "{stdout}");
+    assert!(stdout.contains("auth login"), "{stdout}");
+    assert!(stdout.contains("anyr claude"), "{stdout}");
+    assert!(stdout.contains("anyr help commands"), "{stdout}");
     assert!(
-        !stdout.contains("setup.sh") && !stdout.contains("Install:"),
-        "help must not tell an already-installed binary how to install, got:\n{stdout}"
+        !stdout.contains("Install:"),
+        "help must not dump an Install: heading, got:\n{stdout}"
     );
     assert!(
         !stdout.contains("anyrouter.dev/docs/cli"),
         "help must not end with a docs URL, got:\n{stdout}"
     );
     assert!(
-        stdout.contains("anyr claude") || stdout.contains("anyr <command>"),
-        "binary --help should name itself anyr, got:\n{stdout}"
-    );
-    assert!(
         !stdout.contains("npx @anyr/cli"),
         "native anyr --help must not tell people to type npx, got:\n{stdout}"
     );
-    for heading in ["EXAMPLES", "CORE COMMANDS", "LAUNCH"] {
-        assert!(
-            stdout.contains(heading),
-            "help should group commands under {heading}, got:\n{stdout}"
-        );
+    assert!(
+        !stdout.contains("CORE COMMANDS"),
+        "examples-first --help must not dump the catalog:\n{stdout}"
+    );
+    let (code, map, map_err) = run(&["help", "commands"]);
+    assert_eq!(code, 0, "{map}{map_err}");
+    for heading in ["CORE COMMANDS", "LAUNCH"] {
+        assert!(map.contains(heading), "missing {heading} in:\n{map}");
     }
-    assert!(
-        stdout.contains("Sign in if needed") && stdout.contains("auth login"),
-        "bare-command help should describe login-then-launcher, got:\n{stdout}"
-    );
-    assert!(
-        stdout.contains("Open the interactive TUI") && stdout.contains("menu:"),
-        "help should present the TUI as the default entry, got:\n{stdout}"
-    );
-    assert!(
-        stdout.contains("▀█████████▄"),
-        "help should render the official AR half-block mark, got:\n{stdout}"
-    );
+    for target in ["claude", "codex", "grok", "opencode", "pi", "pool"] {
+        assert!(map.contains(target), "missing {target} in:\n{map}");
+    }
+    assert!(map.contains("▀█████████▄"), "{map}");
 }
 
 #[test]
@@ -119,8 +103,8 @@ fn no_args_non_tty_prints_grouped_help() {
     let (code, stdout, stderr) = run(&[]);
     assert_eq!(code, 0, "stderr={stderr}");
     assert!(
-        stdout.contains("Sign in if needed") && stdout.contains("CORE COMMANDS"),
-        "no-args should print grouped help when not a TTY, got:\n{stdout}"
+        stdout.contains("point any coding agent") && stdout.contains("auth login"),
+        "no-args should print examples-first help when not a TTY, got:\n{stdout}"
     );
 }
 
@@ -143,8 +127,8 @@ fn help_follows_anyr_display_bin() {
             "ANYR_DISPLAY_BIN={name} missing {needle:?} in:\n{stdout}"
         );
         assert!(
-            stdout.contains(&format!("{name} <command>"))
-                || stdout.contains(&format!("{name}                  Open the interactive TUI")),
+            stdout.contains(&format!("{name} help commands"))
+                || stdout.contains(&format!("{name} auth login")),
             "ANYR_DISPLAY_BIN={name} missing usage line in:\n{stdout}"
         );
     }
@@ -1041,11 +1025,17 @@ fn config_help_describes_tui() {
     assert_eq!(code, 0, "{stdout}{stderr}");
     let combined = format!("{stdout}{stderr}");
     assert!(
-        combined.contains("TUI") || combined.contains("Interactive"),
+        combined.contains("--pick") || combined.contains("Interactive"),
         "{combined}"
     );
-    assert!(combined.contains("key"), "{combined}");
-    assert!(combined.contains("credits"), "{combined}");
+    assert!(
+        combined.contains("credits") || combined.contains("account"),
+        "{combined}"
+    );
+    assert!(
+        combined.contains("models --pick") || combined.contains("json"),
+        "{combined}"
+    );
 }
 
 #[test]
@@ -1079,7 +1069,8 @@ profiles:
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(out.status.code().unwrap_or(1), 0, "{stdout}{stderr}");
     assert!(stdout.contains("default"), "{stdout}");
-    assert!(stdout.contains("api_key"), "{stdout}");
+    assert!(stdout.contains("key"), "{stdout}");
+    assert!(stdout.contains("account"), "{stdout}");
     assert!(
         !stdout.contains("sk-ar-v1-config-secret-value"),
         "full key leaked:\n{stdout}"
@@ -1089,7 +1080,7 @@ profiles:
         "non-TTY must not open picker:\n{stderr}"
     );
     assert!(
-        stdout.contains("terminal") || stdout.contains("config"),
+        stdout.contains("config get --json") || stdout.contains("models --pick"),
         "{stdout}"
     );
     let path_out = anyr()
@@ -1567,54 +1558,21 @@ agents:
         !stdout.contains('\u{1b}'),
         "dump must be ANSI-free: {stdout}"
     );
-    // Quiet dump: chip header, numbered groups, no dialog card.
     assert!(stdout.contains("anyr"), "{stdout}");
+    assert!(stdout.contains("What do you want to do?"), "{stdout}");
+    assert!(stdout.contains("Launch claude"), "{stdout}");
+    assert!(stdout.contains("Launch codex"), "{stdout}");
+    assert!(stdout.contains("Config"), "{stdout}");
+    assert!(stdout.contains("Models"), "{stdout}");
+    assert!(stdout.contains("Quit"), "{stdout}");
+    assert!(stdout.contains("1."), "{stdout}");
     assert!(
-        stdout.contains("▄▄") || stdout.contains("▄█▀") || stdout.contains("████"),
-        "AR mark chip missing:\n{stdout}"
-    );
-    assert!(stdout.contains("account"), "{stdout}");
-    assert!(stdout.contains("key"), "{stdout}");
-    assert!(stdout.contains("model"), "{stdout}");
-    assert!(stdout.contains("agent"), "{stdout}");
-    assert!(stdout.contains("credits"), "{stdout}");
-    assert!(stdout.contains("LAUNCH"), "{stdout}");
-    assert!(stdout.contains("claude"), "{stdout}");
-    assert!(stdout.contains("CONFIGURE"), "{stdout}");
-    assert!(stdout.contains("MORE"), "{stdout}");
-    assert!(stdout.contains("config…"), "{stdout}");
-    assert!(stdout.contains("account…"), "{stdout}");
-    assert!(stdout.contains("key…"), "{stdout}");
-    assert!(stdout.contains("model…"), "{stdout}");
-    assert!(stdout.contains("install…"), "{stdout}");
-    assert!(stdout.contains("quit"), "{stdout}");
-    assert!(
-        stdout.contains("for claude") || stdout.contains("for codex"),
-        "configure rows must target a highlighted agent:\n{stdout}"
-    );
-    assert!(
-        stdout.contains(" · "),
-        "agent rows must show model · account · key:\n{stdout}"
-    );
-    assert!(
-        stdout.contains('◆') || stdout.contains('❯'),
-        "selection marker missing:\n{stdout}"
-    );
-    assert!(
-        stdout.contains('❯'),
-        "HUD dump must show the prompt: {stdout}"
-    );
-    assert!(
-        stdout.contains("↵ launch") || stdout.contains("q quit"),
+        stdout.contains("no fullscreen"),
         "HUD footer missing:\n{stdout}"
     );
     assert!(
-        stdout.contains("stealth/ox-alpha"),
-        "claude's bound model should be visible:\n{stdout}"
-    );
-    assert!(
-        stdout.contains("LAUNCH") && stdout.contains("CONFIGURE"),
-        "configure must not replace launch:\n{stdout}"
+        !stdout.contains("type a number"),
+        "dump must not ask to type a number:\n{stdout}"
     );
     assert!(
         !stdout.contains("menu-dump-secret-value"),
@@ -1687,9 +1645,12 @@ profiles:
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(out.status.code().unwrap_or(1), 0, "{stdout}{stderr}");
-    assert!(stdout.contains("install an agent…"), "{stdout}");
-    assert!(stdout.contains("none detected"), "{stdout}");
-    assert!(!stdout.contains("◆ claude"), "{stdout}");
+    assert!(
+        stdout.contains("Install an agent…") || stdout.contains("install an agent"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("Launch claude"), "{stdout}");
+    assert!(stdout.contains("Config"), "{stdout}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -2039,18 +2000,9 @@ agents:
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(out.status.code().unwrap_or(1), 0, "{stdout}{stderr}");
-    assert!(stdout.contains("LAUNCH"), "{stdout}");
-    assert!(stdout.contains("CONFIGURE"), "{stdout}");
-    assert!(
-        stdout.contains("for claude") || stdout.contains("configure · claude"),
-        "{stdout}"
-    );
-    assert!(stdout.contains("stealth/ox-alpha"), "{stdout}");
-    assert!(stdout.contains("grok-4"), "{stdout}");
-    assert!(
-        !stdout.contains("switch session default"),
-        "CONFIGURE must not describe a session-only switch:\n{stdout}"
-    );
+    assert!(stdout.contains("Launch claude"), "{stdout}");
+    assert!(stdout.contains("Launch grok"), "{stdout}");
+    assert!(stdout.contains("What do you want to do?"), "{stdout}");
     assert!(
         !stdout.contains("menu-agent-secret"),
         "dump must not leak full secret: {stdout}"
@@ -2115,22 +2067,9 @@ agents:
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(out.status.code().unwrap_or(1), 0, "{stdout}{stderr}");
-    assert!(stdout.contains("LAUNCH"), "{stdout}");
-    assert!(stdout.contains("CONFIGURE"), "{stdout}");
-    let launch_at = stdout.find("LAUNCH").expect("LAUNCH");
-    let configure_at = stdout.find("CONFIGURE").expect("CONFIGURE");
-    assert!(
-        launch_at < configure_at,
-        "CONFIGURE must not flash over LAUNCH:\n{stdout}"
-    );
-    assert!(stdout.contains("exacto"), "{stdout}");
-    assert!(stdout.contains("tools"), "{stdout}");
-    assert!(
-        stdout.contains("1M ctx") || stdout.contains("1M"),
-        "{stdout}"
-    );
-    assert!(stdout.contains("anyrouter/auto"), "{stdout}");
-    assert!(stdout.contains("anyrouter/free"), "{stdout}");
+    assert!(stdout.contains("Launch claude"), "{stdout}");
+    assert!(stdout.contains("Launch grok"), "{stdout}");
+    assert!(stdout.contains("What do you want to do?"), "{stdout}");
     assert!(
         !stdout.to_ascii_lowercase().contains("most used"),
         "picker/catalog must not dump most-used:\n{stdout}"

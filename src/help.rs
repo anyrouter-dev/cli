@@ -79,6 +79,34 @@ pub fn resolve_bin(argv0: Option<&str>, display_env: Option<&str>) -> String {
 
 pub fn root_help() -> String {
     let bin = invoked_bin();
+    format!(
+        "\
+{} – point any coding agent at AnyRouter
+
+Start
+  $ curl -fsSL https://anyrouter.dev/setup.sh | bash
+  $ {bin} auth login
+  $ {bin} claude
+
+Swap the model, keep the agent
+  $ {bin} claude --model z-ai/glm-4.7-flash
+  $ {bin} claude --model auto --effort high
+
+Same key, other agents
+  $ {bin} codex --model anthropic/claude-sonnet-4.6
+  $ {bin} grok --effort high
+
+Preflight: bare {bin} confirms account / model / agent, then launches.
+{bin} help commands for the full map.
+",
+        crate::term::accent(&bin),
+        bin = bin
+    )
+}
+
+/// Full command map. `--help` stays examples-first; this is the catalog.
+pub fn commands_help() -> String {
+    let bin = invoked_bin();
     let header = crate::term::brand_chip(&[
         &format!(
             "{}  {}",
@@ -90,24 +118,17 @@ pub fn root_help() -> String {
     format!(
         "\
 {header}
-EXAMPLES
-  {bin}                         HUD launcher (TTY)
-  {bin} claude                  launch Claude Code
-  {bin} claude --model auto     preset picks the model
-  {bin} auth login              sign in
-  {bin} models use owner/model  persist default
-
 USAGE
-  {bin}                  Open the interactive TUI (TTY)
+  {bin}                  Confirm account / model / agent, then pick an action
   {bin} <command> [flags]
   {bin} <command> --help
 
 CORE COMMANDS
-  menu:       Interactive TUI launcher (default on a TTY)
+  menu:       Compact HUD launcher (default on a TTY)
   auth:       Authenticate with AnyRouter
-  config:     Interactive settings (key, credits, model)
+  config:     Print current settings (`--pick` for the TUI)
   keys:       Manage API keys
-  models:     List catalog and set the default
+  models:     List catalog and set the default (`--pick` to choose)
   usage:      Credits remaining
   onboard:    Paste-ready prompts for coding agents
   impl|plan|fix|deploy|cp
@@ -123,7 +144,7 @@ LAUNCH
   pool      Poolside
   poolside  Alias of pool
 
-  {bin}                 Sign in if needed, then open the TUI launcher
+  {bin}                 Sign in if needed, then open the HUD
   {bin} auth login      Sign in
   {bin} onboard impl    Agent paste prompt to wire AnyRouter
   {bin} claude          Launch Claude Code
@@ -202,8 +223,9 @@ pub fn command_help(command: &str) -> Option<String> {
         ),
         "menu" => fill(
             &bin,
-            "{bin} menu — compact HUD launcher (default on a TTY)\n\nUsage:\n  {bin}                 Same as `{bin} menu` on a TTY\n  {bin} menu [--dump-tui]\n\nTwo status lines (account · credits, then agent · model), then\nactions. Type a number to launch or configure. No fullscreen TUI\nunless ANYR_TUI=1 (command palette) or you open a picker\n(`models --pick`).\n\nEach agent row shows its bound model · account · key. Launch uses\nthose bindings; a per-agent key does not fall back to the default\nprofile key.\n\n`--dump-tui` / ANYR_TUI_DUMP=1 prints one plain frame (for tests and pipes).\n",
+            "{bin} menu — compact HUD launcher (default on a TTY)\n\nUsage:\n  {bin}                 Same as `{bin} menu` on a TTY\n  {bin} menu [--dump-tui]\n\nOne status line (account · model · agent · credits), then\n\"What do you want to do?\" ↑↓ / j k move, ↵ select, q/esc quit.\nNo fullscreen unless ANYR_TUI=1.\n\n`--dump-tui` / ANYR_TUI_DUMP=1 prints one plain frame and exits.\n",
         ),
+        "commands" => commands_help(),
         "prompt" => fill(
             &bin,
             "{bin} prompt — hub prompts not yet in the native CLI. Use {bin} onboard for agent paste prompts.\n",
@@ -360,22 +382,17 @@ Options:
 ";
 
 const CONFIG: &str = "\
-Interactive config: accounts, keys, models, agent, credits, updates.
+Print current settings. Interactive picker only when asked.
 
 USAGE
-  {bin} config                 Open the settings TUI (TTY)
-  {bin} config get [--json]    Print current status
+  {bin} config                 Print account / model / agent / credits
+  {bin} config --pick          Open the settings TUI (TTY)
+  {bin} config get [--json]    Same dump; `--json` for scripts
   {bin} config path            Print the config file path
   {bin} config use <account>   Switch the active account
 
-On a TTY, `{bin} config` opens a grouped settings screen — Account, Model,
-Agent, General — each row showing its current value. ↑↓ / j k navigate,
-↵ edits the focused row (switch / add / re-auth / log out accounts, pick a
-key or model slot, choose the coding agent, toggle exacto / tools / 1M ctx
-routing, toggle auto-update, switch channel), x resets a row to its default,
-q / esc closes.
-Also reachable from the launcher via Config.
-`--dump-tui` prints one plain frame and exits.
+`{bin} models --pick` chooses a model. `--dump-tui` prints one settings
+frame and exits.
 ";
 
 const KEYS: &str = "\
@@ -493,25 +510,27 @@ mod tests {
         set_invoked_bin("ar");
         let out = root_help();
         assert!(out.contains("ar claude"), "{out}");
-        assert!(out.contains("ar <command>"), "{out}");
         assert!(out.contains("ar auth login"), "{out}");
-        assert!(out.contains("Sign in if needed"), "{out}");
-        for heading in ["EXAMPLES", "CORE COMMANDS", "LAUNCH"] {
-            assert!(out.contains(heading), "missing {heading} in:\n{out}");
-        }
+        assert!(out.contains("point any coding agent"), "{out}");
+        assert!(out.contains("ar help commands"), "{out}");
         assert!(!out.contains("npx @anyr/cli"), "{out}");
-        assert!(!out.contains("setup.sh"), "{out}");
         assert!(!out.contains("Install:"), "{out}");
         assert!(!out.contains("anyrouter.dev/docs/cli"), "{out}");
         assert!(
-            out.contains("▀█████████▄"),
-            "help should include the official AR half-block mark, got:\n{out}"
+            !out.contains("CORE COMMANDS"),
+            "examples-first help must not dump the catalog:\n{out}"
         );
+
+        let map = commands_help();
+        assert!(map.contains("CORE COMMANDS"), "{map}");
+        assert!(map.contains("LAUNCH"), "{map}");
+        assert!(map.contains("▀█████████▄"), "{map}");
+        assert!(map.contains("ar claude"), "{map}");
 
         set_invoked_bin("npx @anyr/cli");
         let npx = root_help();
         assert!(npx.contains("npx @anyr/cli claude"), "{npx}");
-        assert!(npx.contains("npx @anyr/cli <command>"), "{npx}");
+        assert!(npx.contains("npx @anyr/cli auth login"), "{npx}");
         set_invoked_bin("anyr");
     }
 

@@ -7,9 +7,9 @@ use crate::config::{
     create_default_profile, resolve_config_path, set_active_profile, upsert_profile,
     valid_account_name, write_config, DefaultProfileInput, Profile, DEFAULT_PROFILE,
 };
-use crate::help::{command_help, resolve_bin, root_help, set_invoked_bin};
+use crate::help::{command_help, commands_help, resolve_bin, root_help, set_invoked_bin};
 use crate::http::{
-    create_key, delete_key, fetch_credits, fetch_keys, fetch_models, format_models_list,
+    create_key, delete_key, fetch_credits, fetch_keys, fetch_me, fetch_models, format_models_list,
     format_usage_report, is_active_key_row, most_used_model_id, reveal_key, validate_key,
     CatalogModel,
 };
@@ -240,7 +240,7 @@ fn cmd_kind(command: &str) -> Option<CmdKind> {
         "setup" | "login" | "auth" | "menu" | "models" | "config" | "keys" | "whoami"
         | "status" | "logout" | "account" | "usage" | "claude" | "codex" | "grok" | "opencode"
         | "pool" | "pi" | "upgrade" | "onboard" | "impl" | "plan" | "fix" | "deploy" | "cp"
-        | "relay" => CmdKind::Implemented,
+        | "relay" | "commands" => CmdKind::Implemented,
         "cursor" | "cline" | "windsurf" => CmdKind::HelpOnly,
         "chat" | "task" | "delegate" | "audit" | "logs" | "transactions" | "skills" | "prompt"
         | "byok" => CmdKind::Stub,
@@ -282,7 +282,9 @@ fn allowed_flags(command: &str) -> Option<&'static [&'static str]> {
         ],
         "usage" => &["profile", "base-url", "config", "json", "key", "no-detail"],
         "whoami" => &["profile", "config", "json"],
-        "config" => &["config", "json", "key", "base-url", "profile", "dump-tui"],
+        "config" => &[
+            "config", "json", "key", "base-url", "profile", "dump-tui", "pick",
+        ],
         "account" => &[
             "yes",
             "config",
@@ -555,7 +557,12 @@ pub fn run(argv: Vec<String>, env: HashMap<String, String>) -> i32 {
     crate::upgrade::on_startup(command, &parsed, &env);
 
     if raw.is_empty() || command == "help" || command == "--help" || command == "-h" {
-        print!("{}", root_help());
+        let topic = parsed.passthrough.first().map(String::as_str);
+        if topic == Some("commands") || topic == Some("help") {
+            print!("{}", commands_help());
+        } else {
+            print!("{}", root_help());
+        }
         return 0;
     }
     if !known_command(command) {
@@ -609,6 +616,10 @@ fn dispatch(
         "account" => run_account(parsed, env),
         "keys" => run_keys(parsed, env),
         "menu" => run_menu(parsed, env),
+        "commands" => {
+            print!("{}", commands_help());
+            Ok(0)
+        }
         "claude" | "codex" | "grok" | "opencode" | "pool" | "pi" => {
             run_launch(command, parsed, env)
         }
@@ -1234,7 +1245,49 @@ fn run_models(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32
         parsed.flag_true("json"),
     );
     print!("{stdout}");
+    if !parsed.flag_true("json") {
+        let bin = crate::help::invoked_bin();
+        if let Some(id) = pinned.first() {
+            println!("{}  {id}", term::dim(&format!("$ {bin} models use")));
+        }
+        if let Some(key) = key.as_deref() {
+            if let Ok(credits) = fetch_credits(&base, key) {
+                print!("{}", format_usage_compact(&credits, &bin));
+            }
+        }
+    }
     Ok(0)
+}
+
+fn format_usage_compact(credits: &serde_json::Value, bin: &str) -> String {
+    let remaining = credits
+        .get("balance")
+        .and_then(|v| v.as_f64())
+        .map(crate::http::format_usd)
+        .unwrap_or_else(|| "-".into());
+    let day = credits
+        .pointer("/last_24h")
+        .or_else(|| credits.pointer("/usage/day"))
+        .or_else(|| credits.get("today"))
+        .and_then(|v| v.as_f64())
+        .map(crate::http::format_usd);
+    let top = credits
+        .pointer("/most_used_model")
+        .or_else(|| credits.pointer("/top_model"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let mut line = format!(
+        "  {}    remaining  {}",
+        term::dim(&format!("$ {bin} usage")),
+        term::ok(&remaining)
+    );
+    if let Some(day) = day {
+        line.push_str(&format!("    24h  {day}"));
+    }
+    if let Some(top) = top {
+        line.push_str(&format!("    top  {}", term::model_id(&top)));
+    }
+    format!("{line}\n")
 }
 
 fn run_usage(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, String> {
@@ -1331,61 +1384,87 @@ fn print_config_status(
     let profile = cfg.profiles.get(&cfg.active_profile);
     let key = resolve_api_key(&parsed.flags, env, profile);
     let base = resolve_base_url(&parsed.flags, profile);
-    term::print_brand_header(&[
-        &term::bold("AnyRouter config"),
-        &format!(
-            "{}  {}",
-            term::dim("account"),
-            term::accent(&cfg.active_profile)
-        ),
-        &format!(
-            "{}  {}",
-            term::dim("api_key "),
-            mask_api_key(key.as_deref())
-        ),
-    ]);
+    let me = key.as_deref().and_then(|k| fetch_me(&base, k).ok());
+    let credits = key.as_deref().and_then(|k| fetch_credits(&base, k).ok());
+    let account = me
+        .as_ref()
+        .map(|m| m.display_label())
+        .unwrap_or_else(|| cfg.active_profile.clone());
+    let extra_email = me
+        .as_ref()
+        .and_then(|m| m.email.as_deref())
+        .filter(|e| !account.contains(e))
+        .unwrap_or("");
+    let account_value = if extra_email.is_empty() {
+        account
+    } else {
+        format!("{account}  {extra_email}")
+    };
+    let model = session_model_label(profile.map(|p| p.default_model()).unwrap_or("auto"));
+    let agent = profile
+        .and_then(|p| p.default_tool.clone())
+        .or_else(|| cfg.last_tool.clone())
+        .unwrap_or_else(|| "claude".into());
+    let credits_value = credits
+        .as_ref()
+        .and_then(|c| c.get("balance").and_then(|v| v.as_f64()))
+        .map(crate::http::format_usd)
+        .unwrap_or_else(|| "-".into());
+    let bin = crate::help::invoked_bin();
+    fn row(label: &str, value: &str) {
+        println!("  {}  {value}", term::dim(&format!("{label:<12}")));
+    }
+    println!();
+    row("account", &account_value);
+    row("key", &mask_api_key(key.as_deref()));
     println!(
-        "{}  {}",
-        term::dim("model   "),
-        term::model_id(&session_model_label(
-            profile.map(|p| p.default_model()).unwrap_or("auto"),
-        ))
+        "  {}  {}",
+        term::dim(&format!("{:<12}", "model")),
+        term::model_id(&model)
     );
-    if let Some(p) = profile {
-        println!(
-            "{}  {}",
-            term::dim("haiku   "),
-            term::model_id(p.claude_haiku())
-        );
-        println!(
-            "{}  {}",
-            term::dim("sonnet  "),
-            term::model_id(p.claude_sonnet())
-        );
-        println!(
-            "{}  {}",
-            term::dim("opus    "),
-            term::model_id(p.claude_opus())
-        );
-        println!(
-            "{}  {}",
-            term::dim("fable   "),
-            term::model_id(p.claude_fable())
-        );
-    }
-    if let Some(tool) = profile.and_then(|p| p.default_tool.as_deref()) {
-        println!(
-            "{}  {}",
-            term::dim("agent   "),
-            term::paint(term::tool_color(tool), tool)
-        );
-    }
-    println!("{}  {}", term::dim("file    "), path.display());
-    if let Some(key) = key.as_deref() {
-        if let Ok(credits) = fetch_credits(&base, key) {
-            print!("{}", format_usage_report(&credits, false));
+    row(
+        "auto",
+        profile
+            .map(|p| p.pinned_preset())
+            .unwrap_or(crate::config::DEFAULT_PRESET),
+    );
+    row("agent", &agent);
+    println!(
+        "  {}  {}",
+        term::dim(&format!("{:<12}", "credits")),
+        if credits_value == "-" {
+            term::dim("-")
+        } else {
+            term::ok(&credits_value)
         }
-    }
+    );
+    row("channel", cfg.channel());
+    println!(
+        "  {}  {}",
+        term::dim(&format!("{:<12}", "auto_update")),
+        if cfg.auto_update() {
+            term::ok("on")
+        } else {
+            "off".into()
+        }
+    );
+    println!();
+    println!(
+        "  {}    {}",
+        term::dim(&format!("$ {bin} config get --json")),
+        term::dim("for scripts")
+    );
+    println!(
+        "  {}      {}",
+        term::dim(&format!("$ {bin} config use work")),
+        term::dim("switch account")
+    );
+    println!(
+        "  {}        {}",
+        term::dim(&format!("$ {bin} models --pick")),
+        term::dim("interactive picker only when asked")
+    );
+    println!();
     Ok(())
 }
 
@@ -2519,15 +2598,11 @@ fn run_config(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32
             next.passthrough = vec!["get".into()];
             run_config(&next, env)
         }
-        None if tui_wants_dump(parsed, env) || term::is_interactive() => {
+        None if tui_wants_dump(parsed, env) || parsed.flag_true("pick") => {
             run_config_tui(parsed, env)
         }
         None => {
             print_config_status(parsed, env, &path)?;
-            println!(
-                "{}",
-                term::dim(&hint("Run `{bin} config` in a terminal to pick key, model, and account."))
-            );
             Ok(0)
         }
         Some(other) => Err(hint(&format!(
@@ -3394,31 +3469,42 @@ fn push_inline_configure(entries: &mut Vec<InlineEntry>, agent: &str, cfg: &crat
     ));
 }
 
+const HUD_FOOTER: &str = "# no fullscreen. works over SSH, scriptable with --ok";
+
 fn run_menu(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, String> {
     let path = config_path(parsed, env);
     let dumping = tui_wants_dump(parsed, env);
 
     if dumping {
-        let (header, entries) = launcher_palette(&path, parsed, env, &mut CreditsCache::fresh());
-        print!("{}", tui_dump_palette(entries, header, env));
+        if launcher_uses_palette() {
+            let (header, entries) =
+                launcher_palette(&path, parsed, env, &mut CreditsCache::fresh());
+            print!("{}", tui_dump_palette(entries, header, env));
+            return Ok(0);
+        }
+        let (status, actions) = launcher_hud(&path, parsed, env, &mut CreditsCache::fresh());
+        let labels: Vec<String> = actions.iter().map(|(l, _)| l.clone()).collect();
+        println!(
+            "{}",
+            term::render_inline_menu(&[status], "What do you want to do?", &labels, 0, HUD_FOOTER,)
+        );
         return Ok(0);
     }
 
     if !term::is_interactive() {
-        let (_, entries) = launcher_palette(&path, parsed, env, &mut CreditsCache::fresh());
+        let (_, actions) = launcher_hud(&path, parsed, env, &mut CreditsCache::fresh());
         println!(
             "{}",
-            entries
+            actions
                 .iter()
-                .map(|e| e.label.clone())
+                .map(|(l, _)| l.clone())
                 .collect::<Vec<_>>()
                 .join("\n")
         );
         return Ok(0);
     }
 
-    // Loop until Quit or a coding-agent launch takes over the process.
-    // Compact HUD by default. ANYR_TUI=1 restores the palette.
+    // Compact HUD by default. ANYR_TUI=1 restores the fullscreen palette.
     let cache = Arc::new(Mutex::new(CreditsCache::fresh()));
     #[cfg(feature = "native")]
     if term::is_interactive() {
@@ -3430,34 +3516,38 @@ fn run_menu(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, 
     }
     let inline = !launcher_uses_palette();
     loop {
+        if inline {
+            let (status, actions) = {
+                let mut credits = cache.lock().unwrap_or_else(|p| p.into_inner());
+                launcher_hud(&path, parsed, env, &mut credits)
+            };
+            let labels: Vec<String> = actions.iter().map(|(l, _)| l.clone()).collect();
+            let idx = match term::pick_inline(
+                &[status],
+                "What do you want to do?",
+                &labels,
+                HUD_FOOTER,
+                Some(0),
+            ) {
+                Ok(i) => i,
+                Err(err) if err == "Cancelled." => return Ok(0),
+                Err(err) => return Err(err),
+            };
+            let action = actions[idx].1.clone();
+            match launcher_dispatch(&action, parsed, env, &path)? {
+                LauncherNext::Continue => {}
+                LauncherNext::Exit(code) => return Ok(code),
+            }
+            continue;
+        }
         let (header, entries) = {
             let mut credits = cache.lock().unwrap_or_else(|p| p.into_inner());
             launcher_palette(&path, parsed, env, &mut credits)
         };
-        let idx = if inline {
-            let labels: Vec<String> = entries
-                .iter()
-                .map(|e| {
-                    if e.detail.is_empty() {
-                        e.label.clone()
-                    } else {
-                        format!("{}  —  {}", e.label, e.detail)
-                    }
-                })
-                .collect();
-            for h in &header {
-                eprintln!("{}", term::dim(h));
-            }
-            match term::pick_numbered("anyr", &labels, Some(0)) {
-                Ok(i) => Some(i),
-                Err(err) if err == "Cancelled." => None,
-                Err(err) => return Err(err),
-            }
-        } else {
-            pick_palette_action(header, entries.clone(), &cache)?
-        };
-        let Some(idx) = idx else {
-            return Ok(0);
+        let idx = match pick_palette_action(header, entries.clone(), &cache) {
+            Ok(Some(i)) => i,
+            Ok(None) => return Ok(0),
+            Err(err) => return Err(err),
         };
         let action = entries[idx].action.clone();
         match launcher_dispatch(&action, parsed, env, &path)? {
@@ -3465,6 +3555,68 @@ fn run_menu(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, 
             LauncherNext::Exit(code) => return Ok(code),
         }
     }
+}
+
+fn launcher_hud(
+    path: &PathBuf,
+    parsed: &ParsedArgs,
+    env: &BTreeMap<String, String>,
+    credits: &mut CreditsCache,
+) -> (String, Vec<(String, String)>) {
+    let cfg = load_config_if_present(path).unwrap_or_default();
+    let profile = cfg.profiles.get(&cfg.active_profile);
+    let signed_in = resolve_api_key(&parsed.flags, env, profile).is_some();
+    let present = available_agents(env, |id| tool_command_for(path, id));
+    let last = launcher_last_tool(path, parsed, env);
+    let account = credits
+        .peek_identity()
+        .map(|me| me.display_label())
+        .unwrap_or_else(|| cfg.active_profile.clone());
+    let model = session_model_label(profile.map(|p| p.default_model()).unwrap_or("auto"));
+    let credits_s = credits.peek_credits();
+    let dot = if signed_in {
+        term::ok("●")
+    } else {
+        term::warn("○")
+    };
+    let credits_shown = if credits_s == "-" {
+        term::dim("-")
+    } else {
+        term::ok(&credits_s)
+    };
+    let status = format!(
+        "{}  {dot} {account}  ·  {}  ·  {last}  ·  {credits_shown}",
+        term::accent("anyr"),
+        term::model_id(&model),
+    );
+    let mut actions = Vec::new();
+    if signed_in {
+        if present.is_empty() {
+            actions.push(("Install an agent…".into(), "Install agent".into()));
+        } else {
+            let ordered = {
+                let mut v = Vec::new();
+                if present.iter().any(|(id, _)| *id == last.as_str()) {
+                    v.push(last.clone());
+                }
+                for (id, _) in &present {
+                    if *id != last.as_str() {
+                        v.push((*id).to_string());
+                    }
+                }
+                v
+            };
+            for id in ordered {
+                actions.push((format!("Launch {id}"), format!("Launch {id}")));
+            }
+        }
+    } else {
+        actions.push(("Login".into(), "Login / sign in".into()));
+    }
+    actions.push(("Config".into(), "Config".into()));
+    actions.push(("Models".into(), "Models".into()));
+    actions.push(("Quit".into(), "Quit".into()));
+    (status, actions)
 }
 
 #[derive(Debug)]
@@ -3762,9 +3914,13 @@ fn launcher_dispatch(
         return launch_agent_picker(parsed, env, path);
     }
     if action == "Config" {
-        let code = run_config_tui(parsed, env)?;
-        if code != 0 {
-            return Ok(LauncherNext::Exit(code));
+        let path = config_path(parsed, env);
+        print_config_status(parsed, env, &path)?;
+        return Ok(LauncherNext::Continue);
+    }
+    if action == "Models" {
+        if let Err(err) = run_models(parsed, env) {
+            eprintln!("{}", term::err(&err));
         }
         return Ok(LauncherNext::Continue);
     }

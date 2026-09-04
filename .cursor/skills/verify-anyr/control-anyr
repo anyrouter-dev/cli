@@ -110,7 +110,7 @@ cmd_launch() {
   printf 'ANYROUTER_HOME=%s\n' "$ANYROUTER_HOME"
   printf 'CONFIG_FILE=%s\n' "$CONFIG_FILE"
   printf 'BIN=%s\n' "$BIN"
-  printf 'ready: anyr --help lists CORE COMMANDS\n'
+  printf 'ready: anyr --help is examples-first\n'
 }
 
 cmd_doctor() {
@@ -138,10 +138,10 @@ cmd_doctor() {
   local help_out
   help_out="$(run_anyr --help 2>&1 || true)"
   local help_ok=0
-  if [[ "$help_out" == *"CORE COMMANDS"* && "$help_out" == *"LAUNCH"* && "$help_out" == *"auth"* && "$help_out" == *"claude"* && "$help_out" == *"▀█████████▄"* ]]; then
+  if [[ "$help_out" == *"point any coding agent"* && "$help_out" == *"auth login"* && "$help_out" == *"claude"* && "$help_out" == *"help commands"* ]]; then
     help_ok=1
   fi
-  check help "$help_ok" "anyr --help names CORE COMMANDS / LAUNCH"
+  check help "$help_ok" "anyr --help is examples-first"
 
   check isolated "$([[ "$ANYROUTER_HOME" == *anyr-verify-* && "$ANYROUTER_HOME" != "$operator_config" && "$ANYROUTER_HOME" != "$real_home/.anyrouter" ]] && echo 1 || echo 0)" "ANYROUTER_HOME=$ANYROUTER_HOME"
 

@@ -412,6 +412,133 @@ pub fn pick(title: &str, items: &[String], current: Option<usize>) -> Result<usi
     crate::tui::pick(title, items, current)
 }
 
+/// Render a compact on-screen menu (no alt-screen). Used by the HUD dump
+/// and the arrow-key picker.
+pub fn render_inline_menu(
+    header: &[String],
+    question: &str,
+    items: &[String],
+    cursor: usize,
+    footer: &str,
+) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    for h in header {
+        if !h.is_empty() {
+            lines.push(h.clone());
+        }
+    }
+    if !header.is_empty() {
+        lines.push(String::new());
+    }
+    if !question.is_empty() {
+        lines.push(dim(question));
+    }
+    for (i, item) in items.iter().enumerate() {
+        let n = i + 1;
+        if i == cursor {
+            lines.push(format!("  {} {}", accent(&format!("{n}.")), item));
+        } else {
+            lines.push(format!("  {n}. {item}"));
+        }
+    }
+    if !footer.is_empty() {
+        lines.push(String::new());
+        lines.push(dim(footer));
+    }
+    lines.join("\n")
+}
+
+/// Arrow-key picker on the current screen. No alt-screen, no "type a number".
+pub fn pick_inline(
+    header: &[String],
+    question: &str,
+    items: &[String],
+    footer: &str,
+    current: Option<usize>,
+) -> Result<usize, String> {
+    if items.is_empty() {
+        return Err("Nothing to pick.".into());
+    }
+    #[cfg(feature = "native")]
+    if is_interactive() {
+        return pick_inline_raw(header, question, items, footer, current);
+    }
+    pick_numbered("anyr", items, current)
+}
+
+#[cfg(feature = "native")]
+fn pick_inline_raw(
+    header: &[String],
+    question: &str,
+    items: &[String],
+    footer: &str,
+    current: Option<usize>,
+) -> Result<usize, String> {
+    use std::io::{stderr, Write as _};
+
+    use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+    use crossterm::terminal::{self, Clear, ClearType};
+    use crossterm::{cursor, execute, queue};
+
+    terminal::enable_raw_mode().map_err(|e| e.to_string())?;
+    struct Restore;
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let mut out = stderr();
+            let _ = execute!(out, cursor::Show);
+            let _ = terminal::disable_raw_mode();
+        }
+    }
+    let _restore = Restore;
+    let mut out = stderr();
+    let _ = execute!(out, cursor::Hide);
+
+    let mut cursor_i = current.unwrap_or(0).min(items.len() - 1);
+    let mut last_lines: u16 = 0;
+    loop {
+        let frame = render_inline_menu(header, question, items, cursor_i, footer);
+        let n = frame.lines().count().max(1) as u16;
+        if last_lines > 0 {
+            queue!(
+                out,
+                cursor::MoveToColumn(0),
+                cursor::MoveUp(last_lines),
+                Clear(ClearType::FromCursorDown),
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        write!(out, "{frame}\n").map_err(|e| e.to_string())?;
+        out.flush().map_err(|e| e.to_string())?;
+        last_lines = n;
+
+        match event::read().map_err(|e| e.to_string())? {
+            Event::Key(ev) if ev.kind == KeyEventKind::Press => match ev.code {
+                KeyCode::Up | KeyCode::Char('k') => {
+                    cursor_i = if cursor_i == 0 {
+                        items.len() - 1
+                    } else {
+                        cursor_i - 1
+                    };
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    cursor_i = (cursor_i + 1) % items.len();
+                }
+                KeyCode::Enter => return Ok(cursor_i),
+                KeyCode::Esc => return Err("Cancelled.".into()),
+                KeyCode::Char('q') if !ev.modifiers.contains(KeyModifiers::CONTROL) => {
+                    return Err("Cancelled.".into());
+                }
+                KeyCode::Char('c') if ev.modifiers.contains(KeyModifiers::CONTROL) => {
+                    return Err("Cancelled.".into());
+                }
+                _ => {}
+            },
+            Event::Resize(_, _) => {}
+            _ => {}
+        }
+    }
+}
+
 /// Compact HUD prompt on the current screen — no alt-screen.
 pub fn pick_numbered(
     title: &str,
@@ -672,6 +799,22 @@ mod tests {
     fn rank_ids_keeps_order_on_empty_query() {
         let ids = vec!["b".into(), "a".into()];
         assert_eq!(rank_ids("", &ids), ids);
+    }
+
+    #[test]
+    fn inline_menu_highlights_cursor_and_numbers_rows() {
+        let frame = render_inline_menu(
+            &["anyr  ● duyet  ·  claude".into()],
+            "What do you want to do?",
+            &["Launch claude".into(), "Config".into(), "Quit".into()],
+            0,
+            "# no fullscreen",
+        );
+        assert!(frame.contains("1."), "{frame}");
+        assert!(frame.contains("Launch claude"), "{frame}");
+        assert!(frame.contains("What do you want to do?"), "{frame}");
+        assert!(frame.contains("# no fullscreen"), "{frame}");
+        assert!(!frame.contains("type a number"), "{frame}");
     }
 
     #[test]
