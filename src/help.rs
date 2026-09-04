@@ -79,20 +79,19 @@ pub fn resolve_bin(argv0: Option<&str>, display_env: Option<&str>) -> String {
 
 pub fn root_help() -> String {
     let bin = invoked_bin();
-    let header = crate::term::brand_header(&[
+    let header = crate::term::brand_chip(&[
         &format!(
             "{}  {}",
             crate::term::bold(&format!("AnyRouter CLI v{VERSION}")),
             crate::term::link("https://anyrouter.dev")
         ),
-        &crate::term::dim("One key. Every coding agent. Interactive TUI by default."),
-        "",
+        &crate::term::dim("One key. Every coding agent."),
     ]);
     format!(
         "\
 {header}
 EXAMPLES
-  {bin}                         command palette (TTY)
+  {bin}                         HUD launcher (TTY)
   {bin} claude                  launch Claude Code
   {bin} claude --model auto     preset picks the model
   {bin} auth login              sign in
@@ -203,7 +202,7 @@ pub fn command_help(command: &str) -> Option<String> {
         ),
         "menu" => fill(
             &bin,
-            "{bin} menu — open the command-palette launcher (default on a TTY)\n\nUsage:\n  {bin}                 Same as `{bin} menu` on a TTY\n  {bin} menu [--dump-tui]\n\nPick a coding agent first. Model / account / key on the home TUI\napply to that highlighted agent and stay on the same screen — they\ndo not replace the launch list. Each agent row shows its bound\nmodel · account · key. Launch uses those bindings; a per-agent key\ndoes not fall back to the default profile key.\n\nType to filter — \"cla\", \"codex\", \"model\". On terminals that can't\nrun the fullscreen TUI (dumb TERM, restricted hosts) the same\nentries fall back to an inline numbered prompt.\n\nKeys: type to filter · ↑↓ pick agent · ↵ launch / switch · esc quit\n\nConfig opens the grouped settings screen (account, keys, model slots,\nagent, auto-update) with current values on every row.\n`--dump-tui` / ANYR_TUI_DUMP=1 prints one plain frame (for tests and pipes).\n",
+            "{bin} menu — compact HUD launcher (default on a TTY)\n\nUsage:\n  {bin}                 Same as `{bin} menu` on a TTY\n  {bin} menu [--dump-tui]\n\nTwo status lines (account · credits, then agent · model), then\nactions. Type a number to launch or configure. No fullscreen TUI\nunless ANYR_TUI=1 (command palette) or you open a picker\n(`models --pick`).\n\nEach agent row shows its bound model · account · key. Launch uses\nthose bindings; a per-agent key does not fall back to the default\nprofile key.\n\n`--dump-tui` / ANYR_TUI_DUMP=1 prints one plain frame (for tests and pipes).\n",
         ),
         "prompt" => fill(
             &bin,
