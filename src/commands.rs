@@ -707,33 +707,9 @@ fn persist_login(
     }
     let mut cfg = upsert_profile(existing.unwrap_or_default(), &name, profile);
     cfg.active_profile = name.clone();
-    if !parsed.flag_true("yes") && term::is_interactive() {
-        let models = models_for_picker(&base, Some(&key), env);
-        if let Ok(id) = pick_model(&models, None, "Default model") {
-            if let Some(p) = cfg.profiles.get_mut(&name) {
-                set_model_slot(p, "default", id);
-            }
-        }
-        let tools = ["claude", "codex", "grok", "opencode", "pi", "pool"];
-        let labels: Vec<String> = tools
-            .iter()
-            .map(|t| {
-                format!(
-                    "{}  {}",
-                    term::paint(term::tool_color(t), t),
-                    crate::install::tool_hint(t)
-                        .map(|h| h.label.to_string())
-                        .unwrap_or_else(|| t.to_string())
-                )
-            })
-            .collect();
-        if let Ok(idx) = term::pick("Default coding agent", &labels, Some(0)) {
-            if let Some(p) = cfg.profiles.get_mut(&name) {
-                p.default_tool = Some(tools[idx].to_string());
-            }
-            cfg.last_tool = Some(tools[idx].to_string());
-        }
-    }
+    let launch_tool =
+        is_launch_command(&parsed.command).then(|| canonical_command(&parsed.command).to_string());
+    apply_first_run_defaults(&mut cfg, &name, launch_tool);
     write_config(&cfg, &path)?;
     println!(
         "{}  {}  {}",
@@ -742,7 +718,42 @@ fn persist_login(
         term::dim(&format!("key {}", mask_api_key(Some(&key))))
     );
     println!("{}  {}", term::dim("Saved"), path.display());
+    if login_next_hint(&parsed.command) {
+        println!(
+            "{}  {} claude",
+            term::dim("Next"),
+            crate::help::invoked_bin()
+        );
+    }
     Ok(0)
+}
+
+/// First-run default is Claude. A named launch (`anyr claude`) already chose
+/// the agent — never open a model/agent wizard in between.
+fn apply_first_run_defaults(
+    cfg: &mut crate::config::Config,
+    profile_name: &str,
+    launch_tool: Option<String>,
+) {
+    if let Some(p) = cfg.profiles.get_mut(profile_name) {
+        if p.default_tool.is_none() {
+            p.default_tool = launch_tool.clone().or_else(|| Some("claude".into()));
+        }
+    }
+    if cfg.last_tool.is_none() {
+        cfg.last_tool = launch_tool.or_else(|| Some("claude".into()));
+    }
+}
+
+fn is_launch_command(command: &str) -> bool {
+    matches!(
+        canonical_command(command),
+        "claude" | "codex" | "grok" | "opencode" | "pi" | "pool"
+    )
+}
+
+fn login_next_hint(command: &str) -> bool {
+    matches!(canonical_command(command), "login" | "setup" | "auth")
 }
 
 fn run_login(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, String> {
@@ -2737,7 +2748,11 @@ fn run_launch(
         println!("{}", render_dry_run(&command, &args, &env_map));
         return Ok(0);
     }
-    let resolved = ensure_tool_installed(tool_name, &command, parsed.flag_true("install"))?;
+    let resolved = ensure_tool_installed(
+        tool_name,
+        &command,
+        parsed.flag_true("install") || term::is_interactive(),
+    )?;
     // Persist on top of the existing config when there is one; a fresh setup
     // (no config yet) gets one so last_tool and the model are remembered.
     let mut cfg = existing.clone().unwrap_or_else(|| crate::config::Config {
@@ -3590,33 +3605,33 @@ fn launcher_hud(
         term::model_id(&model),
     );
     let mut actions = Vec::new();
-    if signed_in {
-        if present.is_empty() {
-            actions.push(("Install an agent…".into(), "Install agent".into()));
-        } else {
-            let ordered = {
-                let mut v = Vec::new();
-                if present.iter().any(|(id, _)| *id == last.as_str()) {
-                    v.push(last.clone());
-                }
-                for (id, _) in &present {
-                    if *id != last.as_str() {
-                        v.push((*id).to_string());
-                    }
-                }
-                v
-            };
-            for id in ordered {
-                actions.push((format!("Launch {id}"), format!("Launch {id}")));
-            }
-        }
-    } else {
-        actions.push(("Login".into(), "Login / sign in".into()));
+    for id in hud_launch_ids(&present, &last, signed_in) {
+        actions.push((format!("Launch {id}"), format!("Launch {id}")));
     }
     actions.push(("Config".into(), "Config".into()));
     actions.push(("Models".into(), "Models".into()));
     actions.push(("Quit".into(), "Quit".into()));
     (status, actions)
+}
+
+/// First-run and empty PATH still offer Launch claude. Unsigned HUD launches
+/// claude (login happens inside `run_launch`) instead of a separate Login row.
+fn hud_launch_ids(
+    present: &[(&'static str, &'static str)],
+    last: &str,
+    signed_in: bool,
+) -> Vec<String> {
+    if !signed_in {
+        return vec!["claude".into()];
+    }
+    let pin = if last.is_empty() { "claude" } else { last };
+    let mut ids = vec![pin.to_string()];
+    for (id, _) in present {
+        if *id != pin {
+            ids.push((*id).to_string());
+        }
+    }
+    ids
 }
 
 #[derive(Debug)]
@@ -3904,10 +3919,7 @@ fn launcher_dispatch(
     }
     if action.starts_with("Launch ") && action != "Launch coding agent…" {
         let tool = action.trim_start_matches("Launch ").trim();
-        if !launcher_signed_in(path, parsed, env) {
-            eprintln!("{}", term::err("Sign in first (Login / sign in)."));
-            return Ok(LauncherNext::Continue);
-        }
+        // Unsigned HUD's first row is Launch claude. run_launch signs in.
         return Ok(LauncherNext::Exit(run_launch(tool, parsed, env)?));
     }
     if action == "Launch coding agent…" {
@@ -4247,9 +4259,69 @@ mod tests {
 }
 
 #[cfg(test)]
+mod hud_tests {
+    use super::hud_launch_ids;
+
+    #[test]
+    fn first_run_always_offers_launch_claude() {
+        // WHY: after install, Enter on the HUD should launch Claude even
+        // when unsigned or when no agent is on PATH yet.
+        assert_eq!(
+            hud_launch_ids(&[], "claude", false),
+            vec!["claude".to_string()]
+        );
+        assert_eq!(hud_launch_ids(&[], "", true), vec!["claude".to_string()]);
+        let present = [("codex", "Codex"), ("grok", "Grok")];
+        assert_eq!(
+            hud_launch_ids(&present, "claude", true),
+            vec![
+                "claude".to_string(),
+                "codex".to_string(),
+                "grok".to_string()
+            ]
+        );
+    }
+}
+
+#[cfg(test)]
 mod persist_login_tests {
     use super::*;
-    use crate::config::{parse_config, serialize_config};
+    use crate::config::{parse_config, serialize_config, Config, Profile};
+
+    #[test]
+    fn first_run_defaults_to_claude_without_wizard() {
+        // WHY: install → login → claude. No model/agent picker in between.
+        let mut cfg = Config::default();
+        cfg.profiles.insert("default".into(), Profile::default());
+        apply_first_run_defaults(&mut cfg, "default", None);
+        assert_eq!(cfg.last_tool.as_deref(), Some("claude"));
+        assert_eq!(
+            cfg.profiles
+                .get("default")
+                .and_then(|p| p.default_tool.as_deref()),
+            Some("claude")
+        );
+        assert!(login_next_hint("login"));
+        assert!(login_next_hint("auth"));
+        assert!(!login_next_hint("menu"));
+        assert!(!login_next_hint("claude"));
+    }
+
+    #[test]
+    fn named_launch_pins_that_agent_and_relogin_keeps_it() {
+        let mut cfg = Config::default();
+        cfg.profiles.insert("default".into(), Profile::default());
+        apply_first_run_defaults(&mut cfg, "default", Some("codex".into()));
+        assert_eq!(cfg.last_tool.as_deref(), Some("codex"));
+        apply_first_run_defaults(&mut cfg, "default", Some("claude".into()));
+        assert_eq!(
+            cfg.profiles
+                .get("default")
+                .and_then(|p| p.default_tool.as_deref()),
+            Some("codex"),
+            "relogin must not overwrite an existing default_tool"
+        );
+    }
 
     #[test]
     fn relogin_preserves_relay_pairing_and_extra_fields() {

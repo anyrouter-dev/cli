@@ -6,7 +6,7 @@ Agent launch dry-run lets a user see the exact child command and gateway env `an
 
 - `dry-run-claude` prints `ANTHROPIC_BASE_URL` and redacts the API key.
 - `dry-run-codex` prints `OPENAI_BASE_URL` with the same redaction.
-- `dry-run-yes` skips the interactive launcher (`--yes` / `--ok`).
+- `dry-run-yes` keeps `--yes` / `--ok` accepted (named launch does not open a picker).
 - `dry-run-yolo` expands Claude `--yolo` to `--dangerously-skip-permissions` in the printed args only.
 - `dry-run-no-spawn` does not start a `claude` / `codex` process.
 

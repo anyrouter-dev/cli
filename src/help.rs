@@ -8,11 +8,11 @@ thread_local! {
 }
 
 const LAUNCH_HELP_BODY: &str = "\
-Running this with no flags opens the launcher (review settings, then start).
-Add --ok to skip the launcher and start with current settings.
+Starts this coding agent through AnyRouter. First run signs in if needed
+and, on a TTY, installs the agent if it is missing.
 
 Options:
-  --ok, --yes           Skip the launcher and start with current settings
+  --ok, --yes           Non-interactive; launch does not open a picker
   --no-check            Skip the pre-launch reachability probe
   --model auto|<id>     Session model. \"auto\" picks the most-used catalog model
   --haiku <id>          Claude /model haiku and subagents
@@ -24,7 +24,7 @@ Options:
   --hub <slug>          Load a hub: sync ~/.anyrouter/hubs + claude --plugin-dir
   --profile <name>      Use a named profile
   --command-path <path> Explicit path to the agent executable
-  --install             If the agent isn't installed, install it (skip the prompt)
+  --install             Install a missing agent without prompting (implied on a TTY)
   --config <path>       Override the config file path
   --dry-run             Print the child command and env (secrets redacted)
   --device              Force the device-code flow (headless / SSH)
@@ -223,7 +223,7 @@ pub fn command_help(command: &str) -> Option<String> {
         ),
         "menu" => fill(
             &bin,
-            "{bin} menu — compact HUD launcher (default on a TTY)\n\nUsage:\n  {bin}                 Same as `{bin} menu` on a TTY\n  {bin} menu [--dump-tui]\n\nOne status line (account · model · agent · credits), then\n\"What do you want to do?\" ↑↓ / j k move, ↵ select, q/esc quit.\nNo fullscreen unless ANYR_TUI=1.\n\n`--dump-tui` / ANYR_TUI_DUMP=1 prints one plain frame and exits.\n",
+            "{bin} menu — compact HUD launcher (default on a TTY)\n\nUsage:\n  {bin}                 Same as `{bin} menu` on a TTY\n  {bin} menu [--dump-tui]\n\nOne status line (account · model · agent · credits), then\n\"What do you want to do?\" First row is Launch claude.\n↑↓ / j k move, ↵ select (signs in and installs if needed), q/esc quit.\nNo fullscreen unless ANYR_TUI=1.\n\n`--dump-tui` / ANYR_TUI_DUMP=1 prints one plain frame and exits.\n",
         ),
         "commands" => commands_help(),
         "prompt" => fill(
@@ -275,11 +275,12 @@ Force a route with --device or --paste.
 
 Non-interactive: pass --key or set ANYROUTER_API_KEY.
 
+After login, `{bin} claude` starts Claude Code (the default agent).
+
 FLAGS
   --key sk-ar-v1-...       AnyRouter API key (skips the prompt)
   --device, --device-code  Force the device-code flow (headless / SSH)
   --paste                  Force the paste-a-key flow
-  --yes                    Skip the post-login model/agent wizard
 
 Also available as `{bin} login`.
 ";
@@ -539,6 +540,11 @@ mod tests {
         set_invoked_bin("ar");
         let login = command_help("login").unwrap();
         assert!(login.contains("ar auth login"), "{login}");
+        assert!(login.contains("ar claude"), "{login}");
+        assert!(
+            !login.to_ascii_lowercase().contains("wizard"),
+            "login must not mention a post-login wizard:\n{login}"
+        );
         assert!(!login.contains("npx @anyr/cli"), "{login}");
         let auth = command_help("auth").unwrap();
         assert!(auth.contains("ar auth <command>"), "{auth}");
