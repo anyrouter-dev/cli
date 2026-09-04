@@ -94,7 +94,7 @@ fn help_lists_login_claude_account_and_spawn_targets() {
         !stdout.contains("npx @anyr/cli"),
         "native anyr --help must not tell people to type npx, got:\n{stdout}"
     );
-    for heading in ["CORE COMMANDS", "LAUNCH"] {
+    for heading in ["EXAMPLES", "CORE COMMANDS", "LAUNCH"] {
         assert!(
             stdout.contains(heading),
             "help should group commands under {heading}, got:\n{stdout}"
@@ -1597,8 +1597,8 @@ agents:
         "agent rows must show model · account · key:\n{stdout}"
     );
     assert!(
-        stdout.contains("⚡") || stdout.contains("◆"),
-        "row icons missing:\n{stdout}"
+        stdout.contains('◆') || stdout.contains('❯'),
+        "selection marker missing:\n{stdout}"
     );
     assert!(
         stdout.contains('❯'),

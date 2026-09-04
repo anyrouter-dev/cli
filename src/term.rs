@@ -11,7 +11,9 @@ pub const MAGENTA: &str = "\x1b[38;2;187;154;247m";
 pub const BLUE: &str = "\x1b[38;2;122;162;247m";
 pub const TEAL: &str = "\x1b[38;2;58;149;171m";
 pub const SUCCESS: &str = "\x1b[38;2;158;206;106m";
-pub const ORANGE: &str = "\x1b[38;2;255;158;100m";
+/// Site orange #F6821F — brand accent (help, links, TUI).
+pub const BRAND: &str = "\x1b[38;2;246;130;31m";
+pub const ORANGE: &str = "\x1b[38;2;246;130;31m";
 pub const YELLOW: &str = "\x1b[38;2;224;175;104m";
 pub const DANGER: &str = "\x1b[38;2;247;118;142m";
 pub const WHITE: &str = "\x1b[38;2;225;225;225m";
@@ -41,7 +43,7 @@ pub fn dim(text: &str) -> String {
 }
 
 pub fn accent(text: &str) -> String {
-    paint(MAGENTA, text)
+    paint(BRAND, text)
 }
 
 pub fn ok(text: &str) -> String {
@@ -301,7 +303,7 @@ pub fn link(url: &str) -> String {
     if !color_enabled() {
         return url.to_string();
     }
-    format!("\x1b]8;;{url}\x1b\\{MAGENTA}{url}{RESET}\x1b]8;;\x1b\\")
+    format!("\x1b]8;;{url}\x1b\\{BRAND}{url}{RESET}\x1b]8;;\x1b\\")
 }
 
 pub fn tool_color(tool: &str) -> &'static str {
@@ -312,7 +314,7 @@ pub fn tool_color(tool: &str) -> &'static str {
         "opencode" => BLUE,
         "pi" => TEAL,
         "pool" | "poolside" => MAGENTA,
-        _ => MAGENTA,
+        _ => BRAND,
     }
 }
 

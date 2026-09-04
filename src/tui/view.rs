@@ -670,42 +670,9 @@ fn render_header(frame: &mut Frame, area: Rect, title: &str, header: &[String]) 
     frame.render_widget(Paragraph::new(lines), area);
 }
 
-/// Icon for a launcher/picker row, derived from its label.
-pub fn item_icon(label: &str) -> &'static str {
-    let l = label.to_ascii_lowercase();
-    let stem = l.trim_end_matches('…').trim();
-    if l.contains("onboard") {
-        "📋 "
-    } else if label.starts_with("Launch")
-        || matches!(
-            stem,
-            "claude" | "codex" | "grok" | "opencode" | "pi" | "pool" | "agent"
-        )
-        || l.contains("claude")
-        || l.contains("codex")
-    {
-        "⚡ "
-    } else if l.contains("config") || l.contains("settings") {
-        "⚙  "
-    } else if l.contains("switch") || l.contains("account") {
-        "⇄  "
-    } else if l.contains("credit") {
-        "¤  "
-    } else if l.contains("logout") || l.contains("log out") {
-        "🚪 "
-    } else if l.contains("login") || l.contains("sign in") || stem == "key" {
-        "🔑 "
-    } else if l.contains("quit") || l.contains("done") {
-        "✕  "
-    } else if l.contains("install") {
-        "⬇  "
-    } else if l.contains("model") {
-        "◆  "
-    } else if l.contains("exacto") || l.contains("1m") || stem == "tools" {
-        "◇  "
-    } else {
-        "·  "
-    }
+/// Row prefix. Spotlight chrome uses the › marker only — no emoji.
+pub fn item_icon(_label: &str) -> &'static str {
+    ""
 }
 
 fn mark_line_width() -> usize {
@@ -1103,29 +1070,29 @@ mod tests {
 
     #[test]
     fn icons_cover_launcher_actions() {
-        for (label, icon) in [
-            ("Launch claude", "⚡"),
-            ("Config", "⚙"),
-            ("Settings", "⚙"),
-            ("Switch model", "⇄"),
-            ("Credits", "¤"),
-            ("Login / sign in", "🔑"),
-            ("Log out", "🚪"),
-            ("Agent onboard prompt…", "📋"),
-            ("Quit", "✕"),
-            ("claude", "⚡"),
-            ("grok", "⚡"),
-            ("opencode", "⚡"),
-            ("pi", "⚡"),
-            ("model…", "◆"),
-            ("key…", "🔑"),
-            ("exacto", "◇"),
-            ("tools", "◇"),
-            ("1M ctx", "◇"),
-            ("install…", "⬇"),
-            ("agent…", "⚡"),
+        for label in [
+            "Launch claude",
+            "Config",
+            "Settings",
+            "Switch model",
+            "Credits",
+            "Login / sign in",
+            "Log out",
+            "Agent onboard prompt…",
+            "Quit",
+            "claude",
+            "grok",
+            "opencode",
+            "pi",
+            "model…",
+            "key…",
+            "exacto",
+            "tools",
+            "1M ctx",
+            "install…",
+            "agent…",
         ] {
-            assert_eq!(item_icon(label).trim(), icon, "icon for {label}");
+            assert_eq!(item_icon(label), "", "spotlight chrome has no emoji icons");
         }
     }
 
@@ -1166,8 +1133,8 @@ mod tests {
         ] {
             assert!(frame.contains(line), "missing {line} in:\n{frame}");
         }
-        assert!(frame.contains("⚡"), "row icons missing:\n{frame}");
-        assert!(frame.contains("◆"), "{frame}");
+        assert!(!frame.contains("⚡"), "emoji icons removed:\n{frame}");
+        assert!(frame.contains("claude"), "{frame}");
         assert!(frame.contains("LAUNCH"), "{frame}");
         assert!(frame.contains("CONFIGURE"), "{frame}");
         assert!(frame.contains('❯'), "{frame}");

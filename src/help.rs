@@ -91,6 +91,13 @@ pub fn root_help() -> String {
     format!(
         "\
 {header}
+EXAMPLES
+  {bin}                         command palette (TTY)
+  {bin} claude                  launch Claude Code
+  {bin} claude --model auto     preset picks the model
+  {bin} auth login              sign in
+  {bin} models use owner/model  persist default
+
 USAGE
   {bin}                  Open the interactive TUI (TTY)
   {bin} <command> [flags]
@@ -490,7 +497,7 @@ mod tests {
         assert!(out.contains("ar <command>"), "{out}");
         assert!(out.contains("ar auth login"), "{out}");
         assert!(out.contains("Sign in if needed"), "{out}");
-        for heading in ["CORE COMMANDS", "LAUNCH"] {
+        for heading in ["EXAMPLES", "CORE COMMANDS", "LAUNCH"] {
             assert!(out.contains(heading), "missing {heading} in:\n{out}");
         }
         assert!(!out.contains("npx @anyr/cli"), "{out}");
