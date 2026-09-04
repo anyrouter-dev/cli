@@ -1,0 +1,1125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>anyr · CLI redesign gallery</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Instrument+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --bg: #08080a;
+    --bg-2: #101014;
+    --card: #141418;
+    --line: #26262c;
+    --fg: #ececec;
+    --muted: #8a8a92;
+    --dim: #5c5c64;
+    --orange: #f6821f;
+    --orange-dim: #f6821f33;
+    --teal: #3a95ab;
+    --green: #9ece6a;
+    --magenta: #bb9af7;
+    --yellow: #e0af68;
+    --red: #f7768e;
+    --white: #e1e1e1;
+    --surface: #16161a;
+    --backdrop: #0c0c0e;
+    --sans: "Instrument Sans", ui-sans-serif, system-ui, sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--sans); }
+  body { min-height: 100vh; }
+  a { color: var(--orange); }
+  button, select, textarea, input { font-family: inherit; }
+
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 0 28px 160px; }
+
+  header.hero {
+    padding: 48px 0 28px;
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 28px;
+    align-items: end;
+    border-bottom: 1px solid var(--line);
+  }
+  header.hero img {
+    width: 88px; height: 88px;
+    image-rendering: crisp-edges;
+    filter: drop-shadow(0 0 18px #f6821f44);
+  }
+  header.hero .kicker {
+    font-family: var(--mono); font-size: 12px; letter-spacing: 0.14em;
+    text-transform: uppercase; color: var(--orange); margin: 0 0 8px;
+  }
+  header.hero h1 {
+    font-size: 42px; line-height: 1.05; letter-spacing: -0.035em; margin: 0 0 10px; font-weight: 600;
+  }
+  header.hero p { margin: 0; color: var(--muted); font-size: 17px; max-width: 62ch; line-height: 1.45; }
+
+  .brief {
+    display: grid;
+    grid-template-columns: 1.2fr 1fr;
+    gap: 20px;
+    padding: 28px 0 8px;
+  }
+  @media (max-width: 840px) {
+    header.hero, .brief, .mixer-grid { grid-template-columns: 1fr; }
+    header.hero { align-items: start; }
+  }
+  .panel {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 18px 20px;
+  }
+  .panel h2 {
+    margin: 0 0 10px; font-size: 13px; letter-spacing: 0.12em;
+    text-transform: uppercase; color: var(--orange); font-weight: 600;
+  }
+  .panel ul { margin: 0; padding: 0 0 0 18px; color: var(--muted); font-size: 14.5px; line-height: 1.55; }
+  .panel li + li { margin-top: 4px; }
+  .panel p { margin: 0; color: var(--muted); font-size: 14.5px; line-height: 1.55; }
+
+  nav.jump {
+    position: sticky; top: 0; z-index: 20;
+    display: flex; gap: 8px; flex-wrap: wrap; align-items: center;
+    padding: 12px 0; margin: 8px 0 4px;
+    background: linear-gradient(var(--bg) 70%, transparent);
+  }
+  nav.jump a {
+    color: var(--muted); text-decoration: none; font-family: var(--mono);
+    font-size: 12px; padding: 6px 10px; border: 1px solid var(--line);
+    border-radius: 999px; background: var(--bg-2);
+  }
+  nav.jump a:hover { color: var(--fg); border-color: #3a3a42; }
+  nav.jump a.pick { color: var(--orange); border-color: var(--orange); }
+
+  .dir {
+    padding: 36px 0 12px;
+    border-top: 1px solid var(--line);
+    margin-top: 20px;
+  }
+  .dir-head {
+    display: grid; grid-template-columns: 1fr auto; gap: 16px; align-items: start;
+    margin-bottom: 16px;
+  }
+  .dir-id {
+    font-family: var(--mono); font-size: 12px; color: var(--orange); letter-spacing: 0.12em;
+    text-transform: uppercase; margin: 0 0 6px;
+  }
+  .dir h3 { margin: 0 0 6px; font-size: 28px; letter-spacing: -0.03em; font-weight: 600; }
+  .dir .thesis { margin: 0; color: var(--muted); font-size: 16px; max-width: 62ch; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+  .chip {
+    font-family: var(--mono); font-size: 11px; padding: 4px 8px; border-radius: 999px;
+    border: 1px solid var(--line); color: var(--muted);
+  }
+  .chip.yes { color: var(--green); border-color: #9ece6a44; background: #9ece6a14; }
+  .chip.no { color: var(--red); border-color: #f7768e44; background: #f7768e14; }
+
+  .vote-box {
+    display: flex; flex-direction: column; gap: 8px; align-items: flex-end;
+    min-width: 220px;
+  }
+  .stars { display: flex; gap: 4px; }
+  .stars button {
+    width: 34px; height: 34px; border-radius: 8px; border: 1px solid var(--line);
+    background: var(--bg-2); color: var(--dim); cursor: pointer; font-size: 16px;
+  }
+  .stars button.on { color: var(--orange); border-color: var(--orange); background: var(--orange-dim); }
+  .fav {
+    border: 1px solid var(--line); background: transparent; color: var(--muted);
+    padding: 8px 12px; border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 500;
+  }
+  .fav.on { border-color: var(--orange); color: var(--orange); background: var(--orange-dim); }
+
+  .tabs { display: flex; gap: 4px; margin: 0 0 10px; }
+  .tabs button {
+    font-family: var(--mono); font-size: 12px; padding: 7px 12px; border-radius: 8px;
+    border: 1px solid transparent; background: transparent; color: var(--muted); cursor: pointer;
+  }
+  .tabs button.on { color: var(--fg); background: var(--card); border-color: var(--line); }
+
+  /* Terminal chrome */
+  .term {
+    --accent: var(--orange);
+    --term-bg: #0c0c0e;
+    --term-fg: #e1e1e1;
+    --term-muted: #6c6c6c;
+    --term-surface: #16161a;
+    background: var(--term-bg);
+    border: 1px solid #2a2a32;
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: 0 24px 60px #00000088;
+  }
+  .term-bar {
+    height: 38px; display: flex; align-items: center; gap: 8px;
+    padding: 0 14px; background: #121216; border-bottom: 1px solid #222228;
+    color: var(--term-muted); font-family: var(--mono); font-size: 12px;
+  }
+  .dots { display: flex; gap: 6px; margin-right: 8px; }
+  .dots i { width: 10px; height: 10px; border-radius: 50%; display: block; }
+  .dots i:nth-child(1) { background: #ff5f57; }
+  .dots i:nth-child(2) { background: #febc2e; }
+  .dots i:nth-child(3) { background: #28c840; }
+  .term-bar .ttl { flex: 1; text-align: center; color: #8a8a92; }
+  .term-body {
+    font-family: var(--mono); font-size: 12.5px; line-height: 1.48;
+    color: var(--term-fg); padding: 16px 18px 18px; min-height: 430px;
+    white-space: pre-wrap; word-break: break-word;
+  }
+  .term.compact .term-body { padding: 10px 12px 12px; font-size: 12px; line-height: 1.38; min-height: 360px; }
+  .c-or { color: var(--orange); }
+  .c-teal { color: var(--teal); }
+  .c-gn { color: var(--green); }
+  .c-mg { color: var(--magenta); }
+  .c-ye { color: var(--yellow); }
+  .c-rd { color: var(--red); }
+  .c-dim { color: var(--term-muted); }
+  .c-wh { color: var(--term-fg); }
+  .c-b { font-weight: 600; }
+  .sel { background: #2e2e33; color: #fff; font-weight: 600; }
+  .row { display: flex; gap: 0; }
+  .row .gap { flex: 1; }
+  .mark { color: #f4f4f4; line-height: 1.15; letter-spacing: 0; }
+
+  /* layout variants inside terminal */
+  .card-stage {
+    background: #0c0c0e; min-height: 390px; display: grid; place-items: center; padding: 18px;
+  }
+  .card {
+    width: min(560px, 100%);
+    background: var(--term-surface);
+    border: 1px solid var(--accent);
+    border-radius: 6px;
+    padding: 10px 12px 8px;
+  }
+  .card.wide { width: min(720px, 100%); }
+  .hud-top {
+    border-bottom: 1px solid #2a2a30; padding-bottom: 8px; margin-bottom: 10px;
+  }
+  .split { display: grid; grid-template-columns: 220px 1fr; min-height: 390px; }
+  .split .rail {
+    border-right: 1px solid #2a2a30; padding: 12px 12px 8px; background: #101014;
+  }
+  .split .main { padding: 12px 14px; }
+  .chips-inline { display: flex; flex-wrap: wrap; gap: 6px; }
+  .pill {
+    font-size: 11px; border: 1px solid #333; border-radius: 999px; padding: 2px 8px; color: var(--term-muted);
+  }
+  .pill.acc { border-color: var(--accent); color: var(--accent); }
+  .preflight {
+    min-height: 390px; display: flex; flex-direction: column; justify-content: flex-end;
+    background: linear-gradient(#0c0c0e, #101014);
+  }
+  .preflight .ghost { color: #3a3a40; padding: 18px; flex: 1; }
+  .strip {
+    border-top: 1px solid var(--accent); background: #16161a; padding: 12px 16px;
+  }
+
+  .mixer {
+    padding: 36px 0 12px; border-top: 1px solid var(--line); margin-top: 28px;
+  }
+  .mixer h3 { margin: 0 0 6px; font-size: 28px; letter-spacing: -0.03em; }
+  .mixer .thesis { color: var(--muted); margin: 0 0 18px; }
+  .mixer-grid { display: grid; grid-template-columns: 340px 1fr; gap: 20px; }
+  fieldset {
+    border: 1px solid var(--line); border-radius: 12px; margin: 0 0 12px; padding: 12px 14px;
+    background: var(--card);
+  }
+  legend {
+    font-family: var(--mono); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--orange); padding: 0 6px;
+  }
+  label.opt { display: flex; gap: 8px; align-items: center; font-size: 14px; color: var(--fg); padding: 4px 0; cursor: pointer; }
+  label.opt input { accent-color: var(--orange); }
+  textarea {
+    width: 100%; min-height: 90px; background: var(--bg-2); color: var(--fg);
+    border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; font-size: 14px; resize: vertical;
+  }
+
+  .ballot {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 40;
+    background: #101014ee; backdrop-filter: blur(12px);
+    border-top: 1px solid var(--line); padding: 10px 28px;
+    display: grid; grid-template-columns: 1fr auto auto; gap: 12px; align-items: center;
+  }
+  .ballot .sum { font-family: var(--mono); font-size: 12.5px; color: var(--muted); }
+  .ballot .sum b { color: var(--orange); font-weight: 600; }
+  .ballot button.primary, .ballot button.ghost {
+    border-radius: 9px; padding: 10px 14px; cursor: pointer; font-weight: 600; font-size: 13px;
+  }
+  .ballot button.primary { background: var(--orange); color: #1a0c00; border: 0; }
+  .ballot button.ghost { background: transparent; color: var(--fg); border: 1px solid var(--line); }
+
+  dialog {
+    background: var(--card); color: var(--fg); border: 1px solid var(--line);
+    border-radius: 14px; padding: 0; width: min(640px, 92vw);
+  }
+  dialog::backdrop { background: #00000099; }
+  dialog .dlg { padding: 18px 20px 16px; }
+  dialog h4 { margin: 0 0 8px; }
+  dialog pre {
+    background: var(--bg); border: 1px solid var(--line); border-radius: 10px;
+    padding: 12px; font-family: var(--mono); font-size: 12px; white-space: pre-wrap; max-height: 360px; overflow: auto;
+  }
+  dialog .row-btns { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
+
+  .hint { font-size: 13px; color: var(--dim); margin-top: 8px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="hero">
+    <img src="data:image/png;base64,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" alt="AnyRouter AR mark" />
+    <div>
+      <p class="kicker">anyr · native CLI · 0.1.x</p>
+      <h1>Pick the CLI you want to ship.</h1>
+      <p>Six directions for the AnyRouter CLI — help, launcher, settings, lists — plus a mixer if none of them is quite right. Vote, mark a favorite, leave notes. I’ll implement the winner.</p>
+    </div>
+  </header>
+
+  <section class="brief">
+    <div class="panel">
+      <h2>What’s weak today</h2>
+      <ul>
+        <li>Centered 56-col card wastes a wide terminal and feels cramped at 80×24.</li>
+        <li><code>--help</code> is a wall: huge mark, mixed USAGE/Usage, command dump.</li>
+        <li>Three TUI surfaces (menu, palette, settings) that don’t feel like one product.</li>
+        <li>Orange TUI vs magenta help. Emoji icons vs ▲ ◆ ›.</li>
+        <li><code>anyr models</code> is bare ids. Usage is two lines. No table, no density control.</li>
+      </ul>
+    </div>
+    <div class="panel">
+      <h2>What you’re picking</h2>
+      <p>Not a new product — the same commands (<code>anyr</code>, <code>auth</code>, <code>claude</code>, <code>config</code>, <code>models</code>, <code>usage</code>). The change is chrome: default <code>anyr</code> surface, help typography, palette, and stdout tables. Ratatui stays. Size budget stays ≤ 4.0 MiB.</p>
+      <p class="hint" style="margin-top:10px">Score each 1–5. Star a favorite. Mixer is optional. Copy ballot when done, or just tell me in chat.</p>
+    </div>
+  </section>
+
+  <nav class="jump">
+    <a href="#current">0 current</a>
+    <a href="#spotlight">A spotlight</a>
+    <a href="#twopane">B two-pane</a>
+    <a href="#quiet">C quiet</a>
+    <a href="#brand">D brand</a>
+    <a href="#hud">E hud</a>
+    <a href="#preflight">F preflight</a>
+    <a href="#custom">custom</a>
+  </nav>
+
+  <div id="gallery"></div>
+
+  <section class="mixer" id="custom">
+    <p class="dir-id">Custom</p>
+    <h3>Mix your own</h3>
+    <p class="thesis">If no direction is quite right, combine layout, accent, density, help, icons, and the default <code>anyr</code> surface. The preview on the right updates live.</p>
+    <div class="mixer-grid">
+      <form id="mixer-form">
+        <fieldset>
+          <legend>Layout</legend>
+          <label class="opt"><input type="radio" name="layout" value="spotlight" checked /> Spotlight palette</label>
+          <label class="opt"><input type="radio" name="layout" value="twopane" /> Two-pane ops</label>
+          <label class="opt"><input type="radio" name="layout" value="card" /> Centered card (today)</label>
+          <label class="opt"><input type="radio" name="layout" value="hud" /> Compact HUD</label>
+          <label class="opt"><input type="radio" name="layout" value="preflight" /> Preflight strip</label>
+          <label class="opt"><input type="radio" name="layout" value="quiet" /> Quiet / inline (no alt-screen)</label>
+        </fieldset>
+        <fieldset>
+          <legend>Accent</legend>
+          <label class="opt"><input type="radio" name="accent" value="orange" checked /> Orange #F6821F (site)</label>
+          <label class="opt"><input type="radio" name="accent" value="magenta" /> Magenta GrokNight</label>
+          <label class="opt"><input type="radio" name="accent" value="teal" /> Teal (model ids)</label>
+          <label class="opt"><input type="radio" name="accent" value="white" /> White / no chroma</label>
+        </fieldset>
+        <fieldset>
+          <legend>Density</legend>
+          <label class="opt"><input type="radio" name="density" value="airy" /> Airy</label>
+          <label class="opt"><input type="radio" name="density" value="compact" checked /> Compact (80×24 first)</label>
+        </fieldset>
+        <fieldset>
+          <legend>Help</legend>
+          <label class="opt"><input type="radio" name="help" value="examples" checked /> Examples first</label>
+          <label class="opt"><input type="radio" name="help" value="table" /> Flag tables</label>
+          <label class="opt"><input type="radio" name="help" value="twocol" /> Two-column commands</label>
+        </fieldset>
+        <fieldset>
+          <legend>Icons / mark</legend>
+          <label class="opt"><input type="radio" name="icons" value="none" checked /> No icons</label>
+          <label class="opt"><input type="radio" name="icons" value="geo" /> Geometric › ◆ ▲</label>
+          <label class="opt"><input type="radio" name="icons" value="emoji" /> Emoji (today)</label>
+          <label class="opt"><input type="radio" name="mark" value="hero" /> Mark as hero</label>
+          <label class="opt"><input type="radio" name="mark" value="chip" checked /> Mark as header chip</label>
+          <label class="opt"><input type="radio" name="mark" value="never" /> No mark</label>
+        </fieldset>
+        <fieldset>
+          <legend>Notes for implementation</legend>
+          <textarea id="notes" placeholder="e.g. Spotlight + orange + examples-first help, keep mark on --help only, drop emoji…"></textarea>
+        </fieldset>
+      </form>
+      <div>
+        <div class="tabs" id="mixer-tabs"></div>
+        <div id="mixer-preview"></div>
+      </div>
+    </div>
+  </section>
+</div>
+
+<footer class="ballot">
+  <div class="sum" id="ballot-sum">No votes yet — score the directions above.</div>
+  <button class="ghost" type="button" id="btn-reset">Reset</button>
+  <button class="primary" type="button" id="btn-copy">Copy ballot</button>
+</footer>
+
+<dialog id="dlg">
+  <div class="dlg">
+    <h4>Your ballot</h4>
+    <p class="hint">Paste this back in chat. I’ll implement that CLI.</p>
+    <pre id="ballot-text"></pre>
+    <div class="row-btns">
+      <button class="ghost" type="button" id="btn-close">Close</button>
+      <button class="primary" type="button" id="btn-copy2">Copy</button>
+    </div>
+  </div>
+</dialog>
+
+<script>
+const MARK = [
+  "        ▄█▄▀█████████▄",
+  "      ▄█████▄       ███",
+  "    ▄███▀  ▀██▄ ▄▄▄███▀",
+  "  ▄███▀      ▀██▄▀███▄",
+  "▄███▀          ▀██▄▀███▄",
+].join("\n");
+
+const or = s => `<span class="c-or">${s}</span>`;
+const teal = s => `<span class="c-teal">${s}</span>`;
+const gn = s => `<span class="c-gn">${s}</span>`;
+const dim = s => `<span class="c-dim">${s}</span>`;
+const ye = s => `<span class="c-ye">${s}</span>`;
+const b = s => `<span class="c-b">${s}</span>`;
+const sel = s => `<span class="sel">${s}</span>`;
+
+function termChrome(title, inner, extraClass="") {
+  return `<div class="term ${extraClass}">
+    <div class="term-bar">
+      <span class="dots"><i></i><i></i><i></i></span>
+      <span class="ttl">${title}</span>
+      <span>80×24</span>
+    </div>
+    <div class="term-body">${inner}</div>
+  </div>`;
+}
+
+const DIRS = [
+  {
+    id: "current",
+    letter: "0",
+    name: "Current — GrokNight card",
+    thesis: "What ships today. Centered orange dialog, command palette, ASCII mark on --help. Baseline — vote it if you mostly want polish, not a new shape.",
+    yes: ["Already implemented", "Familiar"],
+    no: ["Wasted space", "Help wall", "Mixed palettes"],
+    votable: true,
+  },
+  {
+    id: "spotlight",
+    letter: "A",
+    name: "Spotlight",
+    thesis: "Bare anyr is Raycast in the terminal. Type to filter, groups below, status as chips. One surface replaces menu + palette.",
+    yes: ["Type-first", "One surface", "Wide terminals"],
+    no: ["Weak at 40 cols", "Hides settings depth"],
+    votable: true,
+  },
+  {
+    id: "twopane",
+    letter: "B",
+    name: "Two-pane ops",
+    thesis: "Always see who you are. Left rail is live status (account, key, model, credits). Right pane is launch / settings. lazygit energy.",
+    yes: ["Status always visible", "Power-user"],
+    no: ["Too heavy for first run", "Needs ≥ 90 cols"],
+    votable: true,
+  },
+  {
+    id: "quiet",
+    letter: "C",
+    name: "Quiet CLI",
+    thesis: "gh / stripe-cli. No fullscreen TUI by default. Beautiful --help, numbered inline prompt, tables for models and usage. Alt-screen only for pickers.",
+    yes: ["SSH / tmux safe", "Script-friendly", "Help is the product"],
+    no: ["Less ‘app-like’", "Fewer animations"],
+    votable: true,
+  },
+  {
+    id: "brand",
+    letter: "D",
+    name: "Brand mark",
+    thesis: "The AR ligature is the identity. Orange/black/white only. No emoji, no magenta. Help and TUI open on the mark, then one line of status.",
+    yes: ["First impression", "Matches anyrouter.dev", "Coherent palette"],
+    no: ["Mark costs 5 rows", "Less dense"],
+    votable: true,
+  },
+  {
+    id: "hud",
+    letter: "E",
+    name: "Compact HUD",
+    thesis: "80×24 first. Two status lines, then actions. Never more than ~12 rows for the launcher. Help capped at ~20 lines; anyr help <cmd> for the rest.",
+    yes: ["Small TTYs", "Fast to scan", "SSH"],
+    no: ["Less brand", "Less grouping"],
+    votable: true,
+  },
+  {
+    id: "preflight",
+    letter: "F",
+    name: "Preflight strip",
+    thesis: "You’re launching an agent, not opening a settings app. Dim ghost of the shell, confirmation strip at the bottom: enter goes, m/a/s tweak.",
+    yes: ["Task-oriented", "Feels like Claude Code", "First-run wizard"],
+    no: ["Discoverability", "Odd for config-only"],
+    votable: true,
+  },
+];
+
+function screen(dir, which) {
+  const map = {
+    current: { help: helpCurrent, launcher: launchCurrent, settings: settingsCurrent, models: modelsCurrent },
+    spotlight: { help: helpSpotlight, launcher: launchSpotlight, settings: settingsSpotlight, models: modelsTable },
+    twopane: { help: helpTwoCol, launcher: launchTwoPane, settings: settingsTwoPane, models: modelsTable },
+    quiet: { help: helpQuiet, launcher: launchQuiet, settings: settingsQuiet, models: modelsTable },
+    brand: { help: helpBrand, launcher: launchBrand, settings: settingsBrand, models: modelsTable },
+    hud: { help: helpHud, launcher: launchHud, settings: settingsHud, models: modelsTable },
+    preflight: { help: helpExamples, launcher: launchPreflight, settings: settingsSpotlight, models: modelsTable },
+  };
+  return map[dir][which]();
+}
+
+function helpCurrent() {
+  return termChrome("anyr --help",
+`<span class="mark">${MARK}</span>
+
+${b("AnyRouter CLI v0.1.x")}  ${dim("https://anyrouter.dev")}
+${dim("One key. Every coding agent. Interactive TUI by default.")}
+
+USAGE
+  anyr                  Open the interactive TUI (TTY)
+  anyr ${dim("<command> [flags]")}
+  anyr ${dim("<command> --help")}
+
+CORE COMMANDS
+  menu:       Interactive TUI launcher (default on a TTY)
+  auth:       Authenticate with AnyRouter
+  config:     Interactive settings (key, credits, model)
+  keys:       Manage API keys
+  models:     List catalog and set the default
+  usage:      Credits remaining
+  onboard:    Paste-ready prompts for coding agents
+
+LAUNCH
+  claude    Claude Code
+  codex     Codex
+  grok      Grok Build
+  opencode  OpenCode
+
+  anyr                 Sign in if needed, then open the TUI launcher
+  anyr auth login      Sign in
+  anyr claude          Launch Claude Code`);
+}
+
+function launchCurrent() {
+  return termChrome("anyr",
+`<div class="card-stage">
+  <div class="card">
+    <div>${or(" anyr ")}<span class="c-dim">────────────────────────────────────────</span></div>
+    <div style="margin-top:8px" class="mark">${MARK.split("\n").map((l,i)=>l + "  " + [
+      dim("account  ")+ "duyet · me@duyet.net",
+      dim("key      ")+ "sk-ar-v1-ab…wxyz",
+      dim("model    ")+ teal("anthropic/claude-sonnet-4.6"),
+      dim("agent    ")+ "claude",
+      dim("credits  ")+ gn("$12.50"),
+    ][i] || "").join("\n")}</div>
+    <div class="c-dim" style="margin:8px 0">──────────────────────────────────────────</div>
+    <div>${or("❯ ")}<span class="sel"> ⚡ claude          </span>${dim("anthropic/claude-sonnet-4.6")}</div>
+    <div>  ${ye("⚡")} codex            ${dim("openai/gpt-5.4-mini")}</div>
+    <div>  ${ye("⚡")} grok             ${dim("x-ai/grok-4.5")}</div>
+    <div>  ${ye("⚙")}  config           ${dim("account, keys, model")}</div>
+    <div>  ${dim("✕")}  quit             ${dim("esc works too")}</div>
+    <div class="c-dim" style="margin-top:8px">type to filter · ↑↓ move · ↵ run · esc quit</div>
+  </div>
+</div>`);
+}
+
+function settingsCurrent() {
+  return termChrome("anyr config",
+`<div class="card-stage">
+  <div class="card wide">
+    <div>${or(" ▲ config ")}<span class="c-dim">─────────────────────────────────────</span></div>
+    <div>${dim("account  ") }duyet · me@duyet.net</div>
+    <div>${dim("credits  ") }${gn("$12.50")}</div>
+    <div style="margin:6px 0">${or("[Account]")}  ${dim("Model")}  ${dim("Agent")}  ${dim("General")}</div>
+    <div class="c-dim">──────────────────────────────────────────────</div>
+    <div>${dim("  ACCOUNT")}</div>
+    <div>${or("❯ ")}<span class="sel">Active              </span>duyet</div>
+    <div>  Key                 ${dim("sk-ar-v1-ab…wxyz")}</div>
+    <div>  Sign out            ${dim("this machine")}</div>
+    <div>${dim("  MODEL")}</div>
+    <div>  Session             ${teal("anthropic/claude-sonnet-4.6")}</div>
+    <div>  Auto                ${dim("@preset/coding-stack")}</div>
+    <div class="c-dim" style="margin-top:8px">↵ edit · x unset · tab cycle · q close</div>
+  </div>
+</div>`);
+}
+
+function modelsCurrent() {
+  return termChrome("anyr models / anyr usage",
+`${dim("auto ->")} ${teal("anthropic/claude-sonnet-4.6")} ${dim("(@preset/coding-stack)")}
+  anthropic/claude-sonnet-4.6
+  openai/gpt-5.4-mini
+  z-ai/glm-4.7-flash
+  x-ai/grok-4.5
+  google/gemini-3.1-pro
+
+${dim("Credits remaining")}  ${gn("$12.50")}
+${dim("Lifetime used     ")}  $3.20
+
+${dim("# today: no columns, no context window, no pin marker")}`);
+}
+
+function helpSpotlight() {
+  return termChrome("anyr --help",
+`${or("anyr")}  ${dim("v0.1.x")}  ${dim("one key · every agent")}
+
+${b("EXAMPLES")}
+  anyr                         ${dim("command palette")}
+  anyr claude                  ${dim("launch Claude Code")}
+  anyr claude --model auto     ${dim("preset picks the model")}
+  anyr auth login              ${dim("browser / device / paste")}
+  anyr models use owner/model  ${dim("persist default")}
+
+${b("COMMANDS")}
+  ${or("launch")}    claude  cc  codex  grok  opencode  pi  pool
+  ${or("account")}   auth login|logout|status|switch|token
+  ${or("catalog")}   models  usage  keys
+  ${or("setup")}     config  onboard  update
+
+${dim("anyr <command> --help")} for flags. ${dim("https://anyrouter.dev/cli")}`);
+}
+
+function launchSpotlight() {
+  return termChrome("anyr",
+`<div class="card-stage" style="align-items:start;padding-top:48px">
+  <div class="card wide" style="border-color:#2a2a32;box-shadow:0 18px 50px #0008">
+    <div class="chips-inline" style="margin-bottom:10px">
+      <span class="pill acc">anyr</span>
+      <span class="pill">duyet</span>
+      <span class="pill">${teal("sonnet-4.6")}</span>
+      <span class="pill">claude</span>
+      <span class="pill">${gn("$12.50")}</span>
+    </div>
+    <div>${or("❯ ")}cla█</div>
+    <div class="c-dim" style="margin:8px 0 4px">LAUNCH</div>
+    <div>${or("❯ ")}${sel("claude")}                    ${dim("Claude Code · sonnet-4.6")}</div>
+    <div>  ${dim("cc")}                         ${dim("alias of claude")}</div>
+    <div class="c-dim" style="margin:8px 0 4px">CONFIGURE</div>
+    <div>  ${dim("config")}                     ${dim("account, keys, model")}</div>
+    <div class="c-dim" style="margin-top:10px">↵ run · esc quit · tab settings</div>
+  </div>
+</div>`);
+}
+
+function settingsSpotlight() {
+  return termChrome("anyr config",
+`<div class="card-stage" style="align-items:start;padding-top:36px">
+  <div class="card wide" style="border-color:#2a2a32">
+    <div>${or("❯ ")}model█</div>
+    <div class="c-dim" style="margin:8px 0 4px">MODEL</div>
+    <div>${or("❯ ")}${sel("session")}                   ${teal("anthropic/claude-sonnet-4.6")}</div>
+    <div>  haiku                      ${dim("—")}</div>
+    <div>  sonnet                     ${teal("anthropic/claude-sonnet-4.6")}</div>
+    <div>  opus                       ${dim("—")}</div>
+    <div>  auto                       ${dim("@preset/coding-stack")}</div>
+    <div class="c-dim" style="margin-top:10px">↵ pick · x unset · esc back</div>
+  </div>
+</div>`);
+}
+
+function helpTwoCol() {
+  return termChrome("anyr --help",
+`${or("anyr")}  ${dim("v0.1.x")}
+
+${b("USAGE")}  anyr ${dim("[command] [flags]")}     ${b("TTY")}  anyr  ${dim("opens the ops board")}
+
+${b("LAUNCH")}                          ${b("ACCOUNT")}
+  claude   Claude Code              auth login     sign in
+  codex    Codex                    auth status    whoami
+  grok     Grok Build               auth switch    accounts
+  opencode OpenCode                 keys           API keys
+
+${b("CATALOG")}                         ${b("MACHINE")}
+  models   list / use / pick        config         settings
+  usage    credits                  update         upgrade CLI
+  onboard  agent paste prompts      relay          local models
+
+${dim("Flags on every launcher:")} --model --effort --ok --dry-run --install
+${dim("https://anyrouter.dev/cli")}`);
+}
+
+function launchTwoPane() {
+  return termChrome("anyr",
+`<div class="split">
+  <div class="rail">
+    <div class="c-or c-b">▲ anyr</div>
+    <div class="c-dim" style="margin:10px 0 2px">ACCOUNT</div>
+    <div>duyet</div>
+    <div class="c-dim">me@duyet.net</div>
+    <div class="c-dim" style="margin:10px 0 2px">KEY</div>
+    <div>sk-ar-v1-ab…wxyz</div>
+    <div class="c-dim" style="margin:10px 0 2px">MODEL</div>
+    <div>${teal("anthropic/")}</div>
+    <div>${teal("claude-sonnet-4.6")}</div>
+    <div class="c-dim" style="margin:10px 0 2px">AGENT</div>
+    <div>claude</div>
+    <div class="c-dim" style="margin:10px 0 2px">CREDITS</div>
+    <div>${gn("$12.50")}</div>
+    <div class="c-dim" style="margin:10px 0 2px">GATEWAY</div>
+    <div>${gn("ok")} · 122 models</div>
+  </div>
+  <div class="main">
+    <div>${or("❯ ")}<span class="c-dim">filter…</span></div>
+    <div class="c-dim" style="margin:8px 0 4px">LAUNCH</div>
+    <div>${or("❯ ")}${sel("claude")}                 ${dim("↵ start")}</div>
+    <div>  codex                   ${dim("openai/gpt-5.4-mini")}</div>
+    <div>  grok                    ${dim("x-ai/grok-4.5")}</div>
+    <div>  opencode</div>
+    <div class="c-dim" style="margin:8px 0 4px">MACHINE</div>
+    <div>  config</div>
+    <div>  models</div>
+    <div>  usage                   ${gn("$12.50")}</div>
+    <div class="c-dim" style="margin-top:16px">tab focus rail · ↵ launch · q quit</div>
+  </div>
+</div>`);
+}
+
+function settingsTwoPane() {
+  return termChrome("anyr config",
+`<div class="split">
+  <div class="rail">
+    <div class="c-or c-b">▲ config</div>
+    <div style="margin-top:12px">${or("›")} Account</div>
+    <div>  Model</div>
+    <div>  Agent</div>
+    <div>  General</div>
+  </div>
+  <div class="main">
+    <div class="c-dim">ACCOUNT</div>
+    <div>${or("❯ ")}${sel("Active")}                 duyet</div>
+    <div>  Email                   me@duyet.net</div>
+    <div>  Key                     sk-ar-v1-ab…wxyz</div>
+    <div>  Add account             ${dim("browser / paste")}</div>
+    <div>  Sign out                ${dim("this machine")}</div>
+    <div class="c-dim" style="margin-top:16px">↵ edit · x unset · [ ] section · q back</div>
+  </div>
+</div>`);
+}
+
+function helpQuiet() {
+  return termChrome("anyr --help",
+`${or("anyr")} — launch coding agents through AnyRouter
+
+${b("USAGE")}
+  ${dim("$")} anyr ${dim("[command] [options]")}
+
+${b("EXAMPLES")}
+  ${dim("$")} anyr claude --model anthropic/claude-sonnet-4.6
+  ${dim("$")} anyr auth login --device
+  ${dim("$")} anyr models use z-ai/glm-4.7-flash
+
+${b("CORE")}
+  auth          Login, logout, status, switch, token
+  models        List catalog; ${dim("use")} / ${dim("--pick")} to persist
+  usage         Credits remaining
+  config        Print or edit settings
+  keys          List / create / revoke
+  update        Install latest GitHub Release
+
+${b("LAUNCH")}
+  claude, cc, codex, grok, opencode, pi, pool
+  ${dim("--ok skip confirm   --model id|auto   --effort low..max")}
+  ${dim("--dry-run           --install          --yolo (claude)")}
+
+${dim("On a TTY, bare")} anyr ${dim("prints status and a numbered menu — no alt-screen.")}`);
+}
+
+function launchQuiet() {
+  return termChrome("anyr",
+`${or("anyr")}  ${gn("●")} duyet  ${dim("·")}  ${teal("anthropic/claude-sonnet-4.6")}  ${dim("·")}  claude  ${dim("·")}  ${gn("$12.50")}
+
+${dim("What do you want to do?")}
+  ${or("1.")} Launch claude
+  ${dim("2.")} Launch codex
+  ${dim("3.")} Launch grok
+  ${dim("4.")} Config
+  ${dim("5.")} Models
+  ${dim("6.")} Quit
+
+${or("❯")} 1█
+
+${dim("# no fullscreen. works over SSH, scriptable with --ok")}`);
+}
+
+function settingsQuiet() {
+  return termChrome("anyr config",
+`${b("account")}     duyet  ${dim("me@duyet.net")}
+${b("key")}          sk-ar-v1-ab…wxyz
+${b("model")}        ${teal("anthropic/claude-sonnet-4.6")}
+${b("auto")}         ${dim("@preset/coding-stack")}
+${b("agent")}        claude
+${b("credits")}      ${gn("$12.50")}
+${b("channel")}      stable
+${b("auto_update")}  ${gn("on")}
+
+${dim("$ anyr config get --json")}   ${dim("for scripts")}
+${dim("$ anyr config use work")}     ${dim("switch account")}
+${dim("$ anyr models --pick")}       ${dim("interactive picker only when asked")}`);
+}
+
+function helpBrand() {
+  return termChrome("anyr --help",
+`<span class="mark">${MARK}</span>
+
+${or("anyr")}  ${dim("one key. every coding agent.")}
+
+  anyr                 ${dim("open launcher")}
+  anyr claude          ${dim("Claude Code")}
+  anyr auth login      ${dim("sign in once")}
+  anyr models          ${dim("catalog")}
+  anyr --help          ${dim("this")}
+
+${dim("commands")}  launch · account · catalog · machine
+${dim("site")}      https://anyrouter.dev/cli`);
+}
+
+function launchBrand() {
+  return termChrome("anyr",
+`<div class="card-stage">
+  <div class="card" style="border-color:var(--orange)">
+    <div class="mark" style="text-align:left">${MARK}</div>
+    <div style="margin-top:10px">${or("anyr")}  ${dim("duyet · $12.50 · claude")}</div>
+    <div class="c-dim" style="margin:8px 0">──────────────────────────────</div>
+    <div>${or("› ")}${sel("claude")}</div>
+    <div>  codex</div>
+    <div>  grok</div>
+    <div>  config</div>
+    <div>  quit</div>
+    <div class="c-dim" style="margin-top:8px">↵  q</div>
+  </div>
+</div>`);
+}
+
+function settingsBrand() {
+  return termChrome("anyr config",
+`<div class="card-stage">
+  <div class="card">
+    <div>${or("▲")} config</div>
+    <div class="c-dim" style="margin:8px 0">──────────────────────────────</div>
+    <div>  account     duyet</div>
+    <div>${or("›")} model       ${teal("sonnet-4.6")}</div>
+    <div>  agent       claude</div>
+    <div>  credits     ${gn("$12.50")}</div>
+    <div>  update      ${gn("on")} / stable</div>
+    <div class="c-dim" style="margin-top:8px">↵ edit  q close</div>
+  </div>
+</div>`);
+}
+
+function helpHud() {
+  return termChrome("anyr --help",
+`${or("anyr")} ${dim("v0.1.x")}  launch · auth · models · usage · config · update
+
+  anyr                 ${dim("HUD launcher")}
+  anyr claude          ${dim("--model --effort --ok --dry-run")}
+  anyr auth login      ${dim("--device --paste --key")}
+  anyr models use ${dim("<id>")}
+  anyr help ${dim("<cmd>")}        ${dim("full flags")}
+
+${dim("TTY: two status lines + actions. Pipes: this help.")}`);
+}
+
+function launchHud() {
+  return termChrome("anyr",
+`${or("anyr")}  v0.1.x  ${dim("·")}  duyet  ${dim("·")}  ${gn("$12.50")}  ${dim("·")}  ${gn("gateway ok")}
+${dim("claude")}  ${dim("·")}  ${teal("anthropic/claude-sonnet-4.6")}  ${dim("·")}  auto-failover
+
+${or("› ")}${sel("claude")}
+  codex
+  grok
+  opencode
+  config
+  quit
+
+${dim("↵ launch  / filter  m model  a agent  q quit")}`, "compact");
+}
+
+function settingsHud() {
+  return termChrome("anyr config",
+`${or("config")}  duyet  ${dim("·")}  ${gn("$12.50")}
+
+${or("› ")}model      ${teal("anthropic/claude-sonnet-4.6")}
+  haiku      ${dim("—")}
+  sonnet     ${teal("anthropic/claude-sonnet-4.6")}
+  opus       ${dim("—")}
+  agent      claude
+  channel    stable
+  update     ${gn("on")}
+
+${dim("↵ pick  x unset  q back")}`, "compact");
+}
+
+function helpExamples() {
+  return termChrome("anyr --help",
+`${or("anyr")} — point any coding agent at AnyRouter
+
+${b("Start")}
+  ${dim("$")} curl -fsSL https://anyrouter.dev/setup.sh | bash
+  ${dim("$")} anyr auth login
+  ${dim("$")} anyr claude
+
+${b("Swap the model, keep the agent")}
+  ${dim("$")} anyr claude --model z-ai/glm-4.7-flash
+  ${dim("$")} anyr claude --model auto --effort high
+
+${b("Same key, other agents")}
+  ${dim("$")} anyr codex --model anthropic/claude-sonnet-4.6
+  ${dim("$")} anyr grok --effort high
+
+${dim("Preflight: bare")} anyr ${dim("confirms account / model / agent, then launches.")}
+${dim("anyr help commands")} for the full map.`);
+}
+
+function launchPreflight() {
+  return termChrome("anyr",
+`<div class="preflight">
+  <div class="ghost">
+${dim("duyet@dev ~/src/app")}
+${dim("$")} anyr
+  </div>
+  <div class="strip">
+    <div>${or("▶")} Launch ${b("Claude Code")}  ${dim("·")}  ${teal("anthropic/claude-sonnet-4.6")}  ${dim("·")}  ${gn("$12.50")}</div>
+    <div class="c-dim" style="margin-top:4px">${or("enter")} go   ${dim("m")} model   ${dim("a")} agent   ${dim("s")} settings   ${dim("esc")} abort</div>
+  </div>
+</div>`);
+}
+
+function modelsTable() {
+  return termChrome("anyr models",
+`${dim("PINNED")}  ${teal("anthropic/claude-sonnet-4.6")}  ${dim("← auto · @preset/coding-stack")}
+
+ID                              OWNER        CTX     PIN
+${teal("anthropic/claude-sonnet-4.6")}     anthropic    200k    ${or("●")}
+openai/gpt-5.4-mini             openai       128k
+z-ai/glm-4.7-flash              z-ai         128k
+x-ai/grok-4.5                   x-ai         128k
+google/gemini-3.1-pro           google       1m
+
+${dim("$ anyr models use anthropic/claude-sonnet-4.6")}
+${dim("$ anyr usage")}
+${dim("  remaining")}  ${gn("$12.50")}    ${dim("24h")}  $0.40    ${dim("top")}  ${teal("sonnet-4.6")}`);
+}
+
+const SCREENS = ["help", "launcher", "settings", "models"];
+const SCREEN_LABEL = { help: "--help", launcher: "anyr", settings: "config", models: "models" };
+
+function voteBox(id) {
+  return `<div class="vote-box">
+    <div class="stars" data-id="${id}">
+      ${[1,2,3,4,5].map(n => `<button type="button" data-n="${n}" aria-label="${n}">★</button>`).join("")}
+    </div>
+    <button type="button" class="fav" data-fav="${id}">This is my pick</button>
+  </div>`;
+}
+
+function renderDir(d) {
+  return `<article class="dir" id="${d.id}">
+    <div class="dir-head">
+      <div>
+        <p class="dir-id">${d.letter} · ${d.id}</p>
+        <h3>${d.name}</h3>
+        <p class="thesis">${d.thesis}</p>
+        <div class="chips">
+          ${d.yes.map(x => `<span class="chip yes">${x}</span>`).join("")}
+          ${d.no.map(x => `<span class="chip no">${x}</span>`).join("")}
+        </div>
+      </div>
+      ${d.votable ? voteBox(d.id) : ""}
+    </div>
+    <div class="tabs" data-tabs="${d.id}">
+      ${SCREENS.map((s,i) => `<button type="button" data-screen="${s}" class="${i===1?"on":""}">${SCREEN_LABEL[s]}</button>`).join("")}
+    </div>
+    <div class="preview" id="prev-${d.id}">${screen(d.id, "launcher")}</div>
+  </article>`;
+}
+
+const gallery = document.getElementById("gallery");
+gallery.innerHTML = DIRS.map(renderDir).join("");
+
+const state = JSON.parse(localStorage.getItem("anyr-cli-ballot") || "{}");
+state.scores = state.scores || {};
+state.favorite = state.favorite || null;
+state.mixer = state.mixer || {};
+state.notes = state.notes || "";
+
+function save() {
+  state.notes = document.getElementById("notes").value;
+  const fd = new FormData(document.getElementById("mixer-form"));
+  state.mixer = Object.fromEntries(fd.entries());
+  localStorage.setItem("anyr-cli-ballot", JSON.stringify(state));
+  paintVotes();
+}
+
+function paintVotes() {
+  document.querySelectorAll(".stars").forEach(el => {
+    const id = el.dataset.id;
+    const n = state.scores[id] || 0;
+    el.querySelectorAll("button").forEach(btn => {
+      btn.classList.toggle("on", Number(btn.dataset.n) <= n);
+    });
+  });
+  document.querySelectorAll(".fav").forEach(btn => {
+    btn.classList.toggle("on", state.favorite === btn.dataset.fav);
+  });
+  document.querySelectorAll("nav.jump a").forEach(a => {
+    a.classList.toggle("pick", state.favorite && a.getAttribute("href") === "#" + state.favorite);
+  });
+  const fav = DIRS.find(d => d.id === state.favorite);
+  const scored = Object.entries(state.scores).filter(([,n]) => n);
+  const bits = [];
+  if (fav) bits.push(`Favorite: <b>${fav.name}</b>`);
+  if (scored.length) bits.push(scored.map(([id,n]) => `${id} ${n}/5`).join(" · "));
+  document.getElementById("ballot-sum").innerHTML = bits.join(" — ") || "No votes yet — score the directions above.";
+}
+
+gallery.addEventListener("click", (e) => {
+  const star = e.target.closest(".stars button");
+  if (star) {
+    const id = star.parentElement.dataset.id;
+    state.scores[id] = Number(star.dataset.n);
+    save();
+  }
+  const fav = e.target.closest(".fav");
+  if (fav) {
+    state.favorite = fav.dataset.fav;
+    save();
+  }
+  const tab = e.target.closest("[data-tabs] button");
+  if (tab) {
+    const id = tab.parentElement.dataset.tabs;
+    tab.parentElement.querySelectorAll("button").forEach(b => b.classList.toggle("on", b === tab));
+    document.getElementById("prev-" + id).innerHTML = screen(id, tab.dataset.screen);
+  }
+});
+
+document.getElementById("notes").value = state.notes;
+if (state.mixer) {
+  const form = document.getElementById("mixer-form");
+  Object.entries(state.mixer).forEach(([k,v]) => {
+    const el = form.querySelector(`[name="${k}"][value="${v}"]`);
+    if (el) el.checked = true;
+  });
+}
+
+function mixerScreen(which) {
+  const fd = new FormData(document.getElementById("mixer-form"));
+  const layout = fd.get("layout");
+  const accent = fd.get("accent");
+  const density = fd.get("density");
+  const helpStyle = fd.get("help");
+  const icons = fd.get("icons");
+  const mark = fd.get("mark");
+  const accentColor = { orange: "#f6821f", magenta: "#bb9af7", teal: "#3a95ab", white: "#e1e1e1" }[accent];
+
+  let html;
+  if (which === "help") {
+    html = { examples: helpExamples, table: helpQuiet, twocol: helpTwoCol }[helpStyle]();
+  } else if (which === "models") {
+    html = modelsTable();
+  } else if (which === "settings") {
+    html = { spotlight: settingsSpotlight, twopane: settingsTwoPane, card: settingsCurrent, hud: settingsHud, preflight: settingsSpotlight, quiet: settingsQuiet }[layout]();
+  } else {
+    html = { spotlight: launchSpotlight, twopane: launchTwoPane, card: launchCurrent, hud: launchHud, preflight: launchPreflight, quiet: launchQuiet }[layout]();
+  }
+
+  const wrap = document.createElement("div");
+  wrap.innerHTML = html;
+  const term = wrap.querySelector(".term");
+  term.style.setProperty("--accent", accentColor);
+  if (density === "compact") term.classList.add("compact");
+  if (accent === "white") term.style.setProperty("--orange", "#e1e1e1");
+  if (icons === "none") {
+    term.innerHTML = term.innerHTML.replace(/⚡ |⚙  |✕  |🔑 |📋 |⬇  |◆  |·  /g, "");
+  }
+  if (mark === "never") {
+    term.querySelectorAll(".mark").forEach(m => m.remove());
+  }
+  return wrap.innerHTML;
+}
+
+let mixerWhich = "launcher";
+function renderMixerTabs() {
+  const el = document.getElementById("mixer-tabs");
+  el.innerHTML = SCREENS.map(s => `<button type="button" data-ms="${s}" class="${s===mixerWhich?"on":""}">${SCREEN_LABEL[s]}</button>`).join("");
+}
+function renderMixer() {
+  document.getElementById("mixer-preview").innerHTML = mixerScreen(mixerWhich);
+}
+document.getElementById("mixer-tabs").addEventListener("click", (e) => {
+  const b = e.target.closest("button");
+  if (!b) return;
+  mixerWhich = b.dataset.ms;
+  renderMixerTabs();
+  renderMixer();
+});
+document.getElementById("mixer-form").addEventListener("change", () => { save(); renderMixer(); });
+document.getElementById("notes").addEventListener("input", save);
+
+function ballotText() {
+  const fd = new FormData(document.getElementById("mixer-form"));
+  const mixer = Object.fromEntries(fd.entries());
+  const fav = DIRS.find(d => d.id === state.favorite);
+  const lines = [
+    "anyr CLI redesign ballot",
+    "========================",
+    "Favorite: " + (fav ? fav.letter + " " + fav.name : "(none)"),
+    "",
+    "Scores:",
+    ...DIRS.map(d => `  ${d.letter} ${d.name}: ${state.scores[d.id] || 0}/5`),
+    "",
+    "Custom mixer:",
+    ...Object.entries(mixer).map(([k,v]) => `  ${k}: ${v}`),
+    "",
+    "Notes:",
+    document.getElementById("notes").value.trim() || "(none)",
+  ];
+  return lines.join("\n");
+}
+
+document.getElementById("btn-copy").onclick = () => {
+  const dlg = document.getElementById("dlg");
+  document.getElementById("ballot-text").textContent = ballotText();
+  dlg.showModal();
+};
+document.getElementById("btn-copy2").onclick = async () => {
+  const t = ballotText();
+  try { await navigator.clipboard.writeText(t); } catch {}
+  document.getElementById("btn-copy2").textContent = "Copied";
+};
+document.getElementById("btn-close").onclick = () => document.getElementById("dlg").close();
+document.getElementById("btn-reset").onclick = () => {
+  localStorage.removeItem("anyr-cli-ballot");
+  location.reload();
+};
+
+renderMixerTabs();
+renderMixer();
+paintVotes();
+</script>
+</body>
+</html>
