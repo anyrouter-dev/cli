@@ -389,7 +389,7 @@ pub const VARIANTS: &[PromptVariant] = &[
 pub fn resolve_mode(raw: &str) -> Option<&'static PromptVariant> {
     let lower = raw.trim().to_ascii_lowercase();
     let key = match lower.as_str() {
-        "implement" | "implementation" | "setup" => "impl",
+        "implement" | "implementation" => "impl",
         "migrate" => "plan",
         other => other,
     };
@@ -563,6 +563,10 @@ mod tests {
         assert_eq!(resolve_mode("fix").unwrap().id, "fix");
         assert_eq!(resolve_mode("deploy").unwrap().id, "deploy");
         assert_eq!(resolve_mode("claude-code").unwrap().id, "claude-code");
+        assert!(
+            resolve_mode("setup").is_none(),
+            "setup is login at the top level, not an onboard alias"
+        );
         assert!(resolve_mode("nope").is_none());
     }
 

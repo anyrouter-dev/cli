@@ -8,12 +8,10 @@ thread_local! {
 }
 
 const LAUNCH_HELP_BODY: &str = "\
-Running this with no flags opens the launcher (review settings, then start).
-Add --ok to skip the launcher and start with current settings.
+Launches the coding agent through AnyRouter (signs in first if needed).
 
 Options:
-  --ok, --yes           Skip the launcher and start with current settings
-  --no-check            Skip the pre-launch reachability probe
+  --yes, --ok           Skip confirmation prompts (login / install)
   --model auto|<id>     Session model. \"auto\" picks the most-used catalog model
   --haiku <id>          Claude /model haiku and subagents
   --sonnet <id>         Claude /model sonnet
@@ -218,7 +216,8 @@ pub fn command_help(command: &str) -> Option<String> {
         "pi" => launch_help(&bin, "pi", "Pi"),
         "pool" => launch_help(&bin, "pool", "Poolside"),
         "cursor" | "cline" | "windsurf" => format!(
-            "{bin} {canonical} — print the AnyRouter base URL + key to paste into the editor\n"
+            "{bin} {canonical} — not a launch target yet.\n\
+Print a key with `{bin} auth token` and the base URL with `{bin} onboard impl`.\n"
         ),
         _ => return None,
     })
@@ -525,6 +524,13 @@ mod tests {
         assert!(auth.contains("ar auth <command>"), "{auth}");
         let claude = command_help("claude").unwrap();
         assert!(claude.contains("ar claude"), "{claude}");
+        assert!(!claude.contains("--no-check"), "{claude}");
+        assert!(!claude.contains("opens the launcher"), "{claude}");
+        let cursor = command_help("cursor").unwrap();
+        assert!(
+            cursor.contains("not a launch target") || cursor.contains("auth token"),
+            "{cursor}"
+        );
         set_invoked_bin("anyr");
     }
 

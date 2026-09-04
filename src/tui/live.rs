@@ -28,7 +28,7 @@ pub fn is_interactive() -> bool {
     io::stdin().is_terminal() && io::stdout().is_terminal()
 }
 
-fn translate_key(ev: crossterm::event::KeyEvent) -> Option<KeyEvent> {
+pub(crate) fn translate_key(ev: crossterm::event::KeyEvent) -> Option<KeyEvent> {
     if ev.kind != KeyEventKind::Press {
         return None;
     }
@@ -38,6 +38,7 @@ fn translate_key(ev: crossterm::event::KeyEvent) -> Option<KeyEvent> {
         CtKeyCode::Up => KeyCode::Up,
         CtKeyCode::Down => KeyCode::Down,
         CtKeyCode::Tab => KeyCode::Tab,
+        CtKeyCode::BackTab => KeyCode::BackTab,
         CtKeyCode::Backspace => KeyCode::Backspace,
         CtKeyCode::Delete => KeyCode::Delete,
         CtKeyCode::Char(c) => KeyCode::Char(c),
@@ -328,4 +329,18 @@ pub fn run_settings_live(mut state: SettingsState) -> Result<SettingsOutcome, St
 
 pub fn dump_settings(state: &SettingsState, cols: usize) -> String {
     plain_settings_frame(state, cols)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tui::keys::{map_key, Action, Surface};
+
+    #[test]
+    fn backtab_translates_to_settings_prev_tab() {
+        // WHY: crossterm sends BackTab for Shift-Tab, not Tab+SHIFT.
+        let ev = crossterm::event::KeyEvent::new(CtKeyCode::BackTab, KeyModifiers::NONE);
+        let key = translate_key(ev).expect("BackTab must not be dropped");
+        assert_eq!(map_key(Surface::Settings, key), Action::PrevTab);
+    }
 }

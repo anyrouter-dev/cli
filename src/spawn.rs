@@ -63,8 +63,15 @@ impl ToolConfig {
         if over.model_env.is_some() {
             self.model_env = over.model_env.clone();
         }
-        self.base_suffix = over.base_suffix.clone();
-        self.enable_gateway_model_discovery = over.enable_gateway_model_discovery;
+        if !over.base_suffix.is_empty() {
+            self.base_suffix = over.base_suffix.clone();
+        }
+        // Overlay from `from_yaml` defaults discovery to false when the key
+        // is missing — never copy that over a builtin. `apply_yaml` is the
+        // path that honors an explicit false.
+        if over.enable_gateway_model_discovery {
+            self.enable_gateway_model_discovery = true;
+        }
         if over.shadow_env.is_some() {
             self.shadow_env = over.shadow_env.clone();
         }
@@ -73,44 +80,63 @@ impl ToolConfig {
         }
     }
 
-    pub fn from_yaml(map: &BTreeMap<String, YamlValue>) -> Self {
-        let mut tool = ToolConfig::default();
+    /// Apply only keys present in `map`. Missing keys keep the current value
+    /// so a partial `tools.claude.command:` overlay cannot wipe `/v1` or
+    /// gateway discovery.
+    pub fn apply_yaml(&mut self, map: &BTreeMap<String, YamlValue>) {
         for (key, value) in map {
             match key.as_str() {
-                "command" => tool.command = value.as_string_lossy(),
-                "base_url_env" => tool.base_url_env = value.as_string_lossy(),
-                "auth_env" => tool.auth_env = value.as_string_lossy(),
+                "command" => self.command = value.as_string_lossy(),
+                "base_url_env" => self.base_url_env = value.as_string_lossy(),
+                "auth_env" => self.auth_env = value.as_string_lossy(),
                 "model_env" => {
                     let s = value.as_string_lossy();
-                    tool.model_env = if s.is_empty() || s == "null" {
+                    self.model_env = if s.is_empty() || s == "null" {
                         None
                     } else {
                         Some(s)
                     };
                 }
-                "base_suffix" => tool.base_suffix = value.as_string_lossy(),
+                "base_suffix" => self.base_suffix = value.as_string_lossy(),
                 "enable_gateway_model_discovery" => {
-                    tool.enable_gateway_model_discovery =
+                    self.enable_gateway_model_discovery =
                         matches!(value, YamlValue::Bool(true)) || value.as_string_lossy() == "true"
                 }
                 "shadow_env" => {
                     let s = value.as_string_lossy();
-                    tool.shadow_env = if s.is_empty() || s == "null" {
+                    self.shadow_env = if s.is_empty() || s == "null" {
                         None
                     } else {
                         Some(s)
                     };
                 }
                 _ => {
-                    tool.extra.insert(key.clone(), value.clone());
+                    self.extra.insert(key.clone(), value.clone());
                 }
             }
         }
+    }
+
+    pub fn from_yaml(map: &BTreeMap<String, YamlValue>) -> Self {
+        let mut tool = ToolConfig::default();
+        tool.apply_yaml(map);
         tool
     }
 
+    pub fn extra_flag(&self, key: &str) -> bool {
+        match self.extra.get(key) {
+            Some(YamlValue::Bool(true)) => true,
+            Some(YamlValue::Int(n)) => *n != 0,
+            Some(YamlValue::String(s)) => {
+                let t = s.trim();
+                t == "1" || t.eq_ignore_ascii_case("true") || t.eq_ignore_ascii_case("yes")
+            }
+            _ => false,
+        }
+    }
+
     pub fn to_yaml_lines(&self) -> Vec<String> {
-        vec![
+        let mut lines = vec![
             format!("    command: {}", self.command),
             format!("    base_url_env: {}", self.base_url_env),
             format!("    auth_env: {}", self.auth_env),
@@ -134,7 +160,14 @@ impl ToolConfig {
                 "    shadow_env: {}",
                 self.shadow_env.as_deref().unwrap_or("null")
             ),
-        ]
+        ];
+        for (key, value) in &self.extra {
+            lines.push(format!(
+                "    {key}: {}",
+                crate::config::yaml_scalar_value(value)
+            ));
+        }
+        lines
     }
 }
 
@@ -229,9 +262,9 @@ pub fn resolve_tool(
         format!("Unknown tool \"{name}\". Known tools: claude, codex, grok, opencode, pool, pi.")
     })?;
     if let Some(over) = config.and_then(|c| c.tools.get(id)) {
-        let mut t = fallback;
-        t.merge(over);
-        return Ok(t);
+        // Parsed tools are already builtin + apply_yaml. Clone, don't merge a
+        // second time (merge would treat missing overlay keys as defaults).
+        return Ok(over.clone());
     }
     Ok(fallback)
 }
@@ -319,6 +352,10 @@ pub fn build_tool_env(input: BuildToolEnvInput<'_>) -> BTreeMap<String, String> 
         tool_base_url(input.profile, input.tool),
     );
     env.insert(input.tool.auth_env.clone(), input.api_key.to_string());
+    // Parent-shell Anthropic/OpenAI keys must not beat the AnyRouter token.
+    if let Some(shadow) = &input.tool.shadow_env {
+        env.insert(shadow.clone(), input.api_key.to_string());
+    }
     env.insert(
         "ANYROUTER_PINNED_PRESET".into(),
         input.profile.pinned_preset().to_string(),
@@ -1187,5 +1224,72 @@ mod tests {
         assert!(body.contains("\"require_params\":[\"tools\"]"), "{body}");
         assert!(body.contains("\"min_context\":1000000"), "{body}");
         assert_eq!(env.get("ANYROUTER_EXTRA_BODY"), Some(body));
+    }
+
+    #[test]
+    fn claude_shadow_env_overrides_parent_anthropic_key() {
+        // WHY: a leftover ANTHROPIC_API_KEY in the parent shell must not win.
+        let tool = builtin("claude").unwrap();
+        assert_eq!(tool.shadow_env.as_deref(), Some("ANTHROPIC_API_KEY"));
+        let env = build_tool_env(BuildToolEnvInput {
+            tool_name: "claude",
+            tool: &tool,
+            profile: &profile(),
+            api_key: "sk-ar-v1-secret",
+            model: "auto",
+            effort: None,
+            context_window: None,
+            model_map: None,
+        });
+        assert_eq!(
+            env.get("ANTHROPIC_AUTH_TOKEN").map(String::as_str),
+            Some("sk-ar-v1-secret")
+        );
+        assert_eq!(
+            env.get("ANTHROPIC_API_KEY").map(String::as_str),
+            Some("sk-ar-v1-secret")
+        );
+    }
+
+    #[test]
+    fn apply_yaml_partial_does_not_wipe_gateway_discovery() {
+        let mut tool = builtin("claude").unwrap();
+        let mut map = BTreeMap::new();
+        map.insert("command".into(), YamlValue::String("/opt/claude".into()));
+        tool.apply_yaml(&map);
+        assert_eq!(tool.command, "/opt/claude");
+        assert!(
+            tool.enable_gateway_model_discovery,
+            "partial YAML must keep builtin discovery"
+        );
+    }
+
+    #[test]
+    fn extra_yolo_round_trips_in_yaml() {
+        let mut tool = builtin("claude").unwrap();
+        let mut map = BTreeMap::new();
+        map.insert("yolo".into(), YamlValue::Bool(true));
+        tool.apply_yaml(&map);
+        assert!(tool.extra_flag("yolo"));
+        let yaml = tool.to_yaml_lines().join("\n");
+        assert!(yaml.contains("yolo: true"), "{yaml}");
+        let parsed = crate::config::parse_config(
+            "active_profile: default\nprofiles:\n  default:\n    api_key: x\ntools:\n  claude:\n    yolo: true\n",
+        );
+        let again = parsed.tools.get("claude").cloned().unwrap();
+        assert!(
+            again.extra_flag("yolo"),
+            "parse_config must keep extra yolo"
+        );
+    }
+
+    #[test]
+    fn merge_command_only_overlay_keeps_codex_suffix() {
+        let mut t = builtin("codex").unwrap();
+        let mut over = ToolConfig::default();
+        over.command = "/opt/codex".into();
+        t.merge(&over);
+        assert_eq!(t.command, "/opt/codex");
+        assert_eq!(t.base_suffix, "/v1");
     }
 }
