@@ -848,51 +848,60 @@ pub fn plain_menu_frame(state: &MenuState, cols: usize) -> String {
     lines.join("\n")
 }
 
-/// ANSI-free quiet launcher dump: chip header + numbered rows.
+fn header_val<'a>(header: &'a [String], key: &str) -> &'a str {
+    let prefix = format!("{key}  ");
+    header
+        .iter()
+        .find_map(|h| h.strip_prefix(&prefix))
+        .unwrap_or("—")
+}
+
+/// Compact HUD dump: two status lines, then actions. No dialog card.
 pub fn plain_palette_lines(state: &PaletteState, cols: usize) -> Vec<String> {
     let width = cols.max(40);
     let mut lines = Vec::new();
     let mark = crate::term::TUI_MARK_LINES[0].trim();
-    lines.push(truncate(&format!("▲ anyr  {mark}"), width));
+    let account = header_val(&state.header, "account");
+    let credits = header_val(&state.header, "credits");
+    lines.push(truncate(
+        &format!("▲ anyr  {mark}  ·  account  {account}  ·  credits  {credits}"),
+        width,
+    ));
+    let rest: Vec<&str> = state
+        .header
+        .iter()
+        .map(String::as_str)
+        .filter(|h| !h.starts_with("account  ") && !h.starts_with("credits  "))
+        .collect();
+    if !rest.is_empty() {
+        lines.push(truncate(&rest.join("  ·  "), width));
+    }
     lines.push(String::new());
-    for h in &state.header {
-        lines.push(truncate(h, width));
-    }
-    if !state.header.is_empty() {
-        lines.push(String::new());
-    }
 
     let filtered = state.filtered();
+
     if filtered.is_empty() {
         lines.push(truncate("  (no matches)", width));
     } else {
-        let visible = filtered.len().min(16);
+        let visible = filtered.len().min(12);
         let cursor_row = state.cursor.min(visible.saturating_sub(1));
         let mut last_group: Option<&str> = None;
         for (row_i, &entry_i) in filtered.iter().take(visible).enumerate() {
             let entry = &state.entries[entry_i];
             if last_group != Some(entry.group.as_str()) {
-                if last_group.is_some() {
-                    lines.push(String::new());
-                }
                 if !entry.group.is_empty() {
-                    lines.push(truncate(
-                        &format!("  {}", entry.group.to_ascii_uppercase()),
-                        width,
-                    ));
-                    lines.push(String::new());
+                    lines.push(truncate(&entry.group.to_ascii_uppercase(), width));
                 }
                 last_group = Some(&entry.group);
             }
             let selected = row_i == cursor_row;
             let marker = if selected { "◆" } else { " " };
             let icon = item_icon(&entry.label);
-            let n = row_i + 1;
             let row = if entry.detail.is_empty() {
-                format!("{marker} {n:>2}. {icon}{label}", label = entry.label)
+                format!("{marker} {icon}{label}", label = entry.label)
             } else {
                 format!(
-                    "{marker} {n:>2}. {icon}{label}  —  {detail}",
+                    "{marker} {icon}{label}  {detail}",
                     label = entry.label,
                     detail = entry.detail
                 )
@@ -901,8 +910,7 @@ pub fn plain_palette_lines(state: &PaletteState, cols: usize) -> Vec<String> {
         }
     }
 
-    lines.push(String::new());
-    lines.push(truncate("❯  type a number · q quit", width));
+    lines.push(truncate("❯  ↵ launch  ·  q quit", width));
     lines
 }
 

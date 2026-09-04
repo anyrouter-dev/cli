@@ -1602,11 +1602,11 @@ agents:
     );
     assert!(
         stdout.contains('❯'),
-        "quiet dump must show the number prompt: {stdout}"
+        "HUD dump must show the prompt: {stdout}"
     );
     assert!(
-        stdout.contains("1.") && stdout.contains("2."),
-        "quiet dump is numbered:\n{stdout}"
+        stdout.contains("↵ launch") || stdout.contains("q quit"),
+        "HUD footer missing:\n{stdout}"
     );
     assert!(
         stdout.contains("stealth/ox-alpha"),

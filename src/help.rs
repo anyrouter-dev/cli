@@ -91,7 +91,7 @@ pub fn root_help() -> String {
         "\
 {header}
 EXAMPLES
-  {bin}                         numbered launcher (TTY)
+  {bin}                         HUD launcher (TTY)
   {bin} claude                  launch Claude Code
   {bin} claude --model auto     preset picks the model
   {bin} auth login              sign in
@@ -202,7 +202,7 @@ pub fn command_help(command: &str) -> Option<String> {
         ),
         "menu" => fill(
             &bin,
-            "{bin} menu — numbered launcher (default on a TTY)\n\nUsage:\n  {bin}                 Same as `{bin} menu` on a TTY\n  {bin} menu [--dump-tui]\n\nPrints account / model / agent / credits, then a numbered list.\nType a number to launch or configure. No fullscreen TUI unless\nANYR_TUI=1 (command palette) or you open a picker (`models --pick`).\n\nEach agent row shows its bound model · account · key. Launch uses\nthose bindings; a per-agent key does not fall back to the default\nprofile key.\n\n`--dump-tui` / ANYR_TUI_DUMP=1 prints one plain frame (for tests and pipes).\n",
+            "{bin} menu — compact HUD launcher (default on a TTY)\n\nUsage:\n  {bin}                 Same as `{bin} menu` on a TTY\n  {bin} menu [--dump-tui]\n\nTwo status lines (account · credits, then agent · model), then\nactions. Type a number to launch or configure. No fullscreen TUI\nunless ANYR_TUI=1 (command palette) or you open a picker\n(`models --pick`).\n\nEach agent row shows its bound model · account · key. Launch uses\nthose bindings; a per-agent key does not fall back to the default\nprofile key.\n\n`--dump-tui` / ANYR_TUI_DUMP=1 prints one plain frame (for tests and pipes).\n",
         ),
         "prompt" => fill(
             &bin,

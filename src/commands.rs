@@ -142,7 +142,7 @@ fn tui_palette_select(
     }
 }
 
-/// Quiet CLI: numbered prompt by default. Fullscreen palette only if ANYR_TUI=1.
+/// Compact HUD by default. Fullscreen palette only if ANYR_TUI=1.
 #[cfg(feature = "native")]
 fn launcher_uses_palette() -> bool {
     let tui = std::env::var("ANYR_TUI").unwrap_or_default();
@@ -3418,7 +3418,7 @@ fn run_menu(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, 
     }
 
     // Loop until Quit or a coding-agent launch takes over the process.
-    // Quiet default: numbered prompt. ANYR_TUI=1 restores the palette.
+    // Compact HUD by default. ANYR_TUI=1 restores the palette.
     let cache = Arc::new(Mutex::new(CreditsCache::fresh()));
     #[cfg(feature = "native")]
     if term::is_interactive() {

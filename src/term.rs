@@ -412,13 +412,13 @@ pub fn pick(title: &str, items: &[String], current: Option<usize>) -> Result<usi
     crate::tui::pick(title, items, current)
 }
 
-/// Numbered prompt on the current screen — no alt-screen. Quiet launcher.
+/// Compact HUD prompt on the current screen — no alt-screen.
 pub fn pick_numbered(
     title: &str,
     items: &[String],
     current: Option<usize>,
 ) -> Result<usize, String> {
-    const PAGE: usize = 16;
+    const PAGE: usize = 12;
     if items.is_empty() {
         return Err("Nothing to pick.".into());
     }
@@ -431,30 +431,22 @@ pub fn pick_numbered(
         let start = page * PAGE;
         let end = (start + PAGE).min(items.len());
         let pages = items.len().div_ceil(PAGE);
-        eprintln!();
         eprintln!("{}", accent(&format!("▲ {title}")));
-        eprintln!();
         if pages > 1 {
             eprintln!(
                 "{}",
-                dim(&format!(
-                    "  page {}/{}  ·  n next · p prev · q cancel",
-                    page + 1,
-                    pages
-                ))
+                dim(&format!("page {}/{}  ·  n next · p prev", page + 1, pages))
             );
-            eprintln!();
         }
         for (i, item) in items.iter().enumerate().take(end).skip(start) {
             let marker = if current == Some(i) { "◆" } else { " " };
-            eprintln!("  {marker} {:>2}.  {item}", i + 1);
+            eprintln!("{marker} {item}");
         }
-        eprintln!();
         let hint = current
             .map(|i| format!("Enter = {} · ", i + 1))
             .unwrap_or_default();
         let ans = prompt(&format!(
-            "{} {hint}Pick 1-{} · q cancel: ",
+            "{} {hint}1-{}  ·  q quit: ",
             accent("❯"),
             items.len()
         ))?;
