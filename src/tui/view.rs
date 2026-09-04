@@ -670,9 +670,22 @@ fn render_header(frame: &mut Frame, area: Rect, title: &str, header: &[String]) 
     frame.render_widget(Paragraph::new(lines), area);
 }
 
-/// Row prefix. Spotlight chrome uses the › marker only — no emoji.
-pub fn item_icon(_label: &str) -> &'static str {
-    ""
+/// Geometric row prefix (› for launch rows). No emoji.
+pub fn item_icon(label: &str) -> &'static str {
+    let l = label.to_ascii_lowercase();
+    let stem = l.trim_end_matches('…').trim();
+    if label.starts_with("Launch")
+        || matches!(
+            stem,
+            "claude" | "codex" | "grok" | "opencode" | "pi" | "pool" | "agent"
+        )
+        || l.contains("claude")
+        || l.contains("codex")
+    {
+        "› "
+    } else {
+        ""
+    }
 }
 
 fn mark_line_width() -> usize {
@@ -835,101 +848,61 @@ pub fn plain_menu_frame(state: &MenuState, cols: usize) -> String {
     lines.join("\n")
 }
 
-/// ANSI-free palette frame for `--dump-tui` and unit tests.
+/// ANSI-free quiet launcher dump: chip header + numbered rows.
 pub fn plain_palette_lines(state: &PaletteState, cols: usize) -> Vec<String> {
-    let term_w = cols.max(DIALOG_MIN_WIDTH as usize);
-    let inner = (PALETTE_PREF_WIDTH as usize)
-        .min(term_w.saturating_sub(2))
-        .max(DIALOG_MIN_WIDTH as usize)
-        .min(term_w);
-    let pad = term_w.saturating_sub(inner) / 2;
-    let pad_s = " ".repeat(pad);
-    let content_w = inner.saturating_sub(2);
-
+    let width = cols.max(40);
     let mut lines = Vec::new();
-    let title_raw = " anyr ".to_string();
-    let dash_n = content_w.saturating_sub(title_raw.chars().count());
-    lines.push(format!("{pad_s}╭{title_raw}{}╮", "─".repeat(dash_n)));
-
-    let with_mark = palette_shows_mark(content_w);
-    let header_n = if with_mark {
-        crate::term::TUI_MARK_LINES
-            .len()
-            .max(state.header.len())
-            .max(1)
-    } else {
-        state.header.len().max(1)
-    };
-    for i in 0..header_n {
-        let cap = state.header.get(i).map(String::as_str).unwrap_or("");
-        let row = if with_mark {
-            let mark = padded_mark_line(i);
-            if cap.is_empty() {
-                mark
-            } else {
-                format!("{mark}  {cap}")
-            }
-        } else if cap.is_empty() {
-            "—".into()
-        } else {
-            cap.to_string()
-        };
-        lines.push(format!("{pad_s}│{}│", pad_content(&row, content_w)));
+    let mark = crate::term::TUI_MARK_LINES[0].trim();
+    lines.push(truncate(&format!("▲ anyr  {mark}"), width));
+    lines.push(String::new());
+    for h in &state.header {
+        lines.push(truncate(h, width));
     }
-    lines.push(format!("{pad_s}├{}┤", "─".repeat(content_w)));
-
-    // Input line with a block cursor.
-    lines.push(format!(
-        "{pad_s}│{}│",
-        pad_content(&format!("❯ {}█", state.query), content_w)
-    ));
-    lines.push(format!("{pad_s}├{}┤", "─".repeat(content_w)));
+    if !state.header.is_empty() {
+        lines.push(String::new());
+    }
 
     let filtered = state.filtered();
     if filtered.is_empty() {
-        lines.push(format!("{pad_s}│{}│", pad_content("no matches", content_w)));
+        lines.push(truncate("  (no matches)", width));
     } else {
-        let visible = filtered.len().min(12);
+        let visible = filtered.len().min(16);
         let cursor_row = state.cursor.min(visible.saturating_sub(1));
         let mut last_group: Option<&str> = None;
         for (row_i, &entry_i) in filtered.iter().take(visible).enumerate() {
             let entry = &state.entries[entry_i];
             if last_group != Some(entry.group.as_str()) {
                 if last_group.is_some() {
-                    lines.push(format!("{pad_s}│{}│", pad_content("", content_w)));
+                    lines.push(String::new());
                 }
                 if !entry.group.is_empty() {
-                    lines.push(format!(
-                        "{pad_s}│{}│",
-                        pad_content(
-                            &format!("  {}", entry.group.to_ascii_uppercase()),
-                            content_w
-                        )
+                    lines.push(truncate(
+                        &format!("  {}", entry.group.to_ascii_uppercase()),
+                        width,
                     ));
+                    lines.push(String::new());
                 }
                 last_group = Some(&entry.group);
             }
             let selected = row_i == cursor_row;
             let marker = if selected { "◆" } else { " " };
             let icon = item_icon(&entry.label);
-            let used = 3
-                + icon.chars().count()
-                + entry.label.chars().count()
-                + entry.detail.chars().count();
-            let gap = content_w.saturating_sub(used).max(1);
-            let row = format!(
-                "{marker} {icon}{label}{}{detail}",
-                " ".repeat(gap),
-                label = entry.label,
-                detail = entry.detail
-            );
-            lines.push(format!("{pad_s}│{}│", pad_content(&row, content_w)));
+            let n = row_i + 1;
+            let row = if entry.detail.is_empty() {
+                format!("{marker} {n:>2}. {icon}{label}", label = entry.label)
+            } else {
+                format!(
+                    "{marker} {n:>2}. {icon}{label}  —  {detail}",
+                    label = entry.label,
+                    detail = entry.detail
+                )
+            };
+            lines.push(truncate(&row, width));
         }
     }
 
-    lines.push(format!("{pad_s}├{}┤", "─".repeat(content_w)));
-    lines.push(format!("{pad_s}│{}│", pad_content(state.hint(), content_w)));
-    lines.push(format!("{pad_s}╰{}╯", "─".repeat(content_w)));
+    lines.push(String::new());
+    lines.push(truncate("❯  type a number · q quit", width));
     lines
 }
 
@@ -1070,30 +1043,13 @@ mod tests {
 
     #[test]
     fn icons_cover_launcher_actions() {
-        for label in [
-            "Launch claude",
-            "Config",
-            "Settings",
-            "Switch model",
-            "Credits",
-            "Login / sign in",
-            "Log out",
-            "Agent onboard prompt…",
-            "Quit",
-            "claude",
-            "grok",
-            "opencode",
-            "pi",
-            "model…",
-            "key…",
-            "exacto",
-            "tools",
-            "1M ctx",
-            "install…",
-            "agent…",
-        ] {
-            assert_eq!(item_icon(label), "", "spotlight chrome has no emoji icons");
-        }
+        assert_eq!(item_icon("Launch claude").trim(), "›");
+        assert_eq!(item_icon("claude").trim(), "›");
+        assert_eq!(item_icon("grok").trim(), "›");
+        assert_eq!(item_icon("Config"), "");
+        assert_eq!(item_icon("Quit"), "");
+        assert_eq!(item_icon("model…"), "");
+        assert!(!item_icon("claude").contains("⚡"));
     }
 
     #[test]

@@ -1567,11 +1567,11 @@ agents:
         !stdout.contains('\u{1b}'),
         "dump must be ANSI-free: {stdout}"
     );
-    // Palette frame: AR mark, auth/defaults, input, grouped rows.
+    // Quiet dump: chip header, numbered groups, no dialog card.
     assert!(stdout.contains("anyr"), "{stdout}");
     assert!(
         stdout.contains("▄▄") || stdout.contains("▄█▀") || stdout.contains("████"),
-        "small AR mark missing:\n{stdout}"
+        "AR mark chip missing:\n{stdout}"
     );
     assert!(stdout.contains("account"), "{stdout}");
     assert!(stdout.contains("key"), "{stdout}");
@@ -1602,11 +1602,11 @@ agents:
     );
     assert!(
         stdout.contains('❯'),
-        "palette must show the input line: {stdout}"
+        "quiet dump must show the number prompt: {stdout}"
     );
     assert!(
-        stdout.contains('╭') && stdout.contains('╯'),
-        "dump should look like a dialog card: {stdout}"
+        stdout.contains("1.") && stdout.contains("2."),
+        "quiet dump is numbered:\n{stdout}"
     );
     assert!(
         stdout.contains("stealth/ox-alpha"),

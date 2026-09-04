@@ -142,11 +142,13 @@ fn tui_palette_select(
     }
 }
 
-/// Fullscreen palette only when the terminal can take it; dumb TTYs and
-/// odd hosts get the inline list instead (Direction D fallback).
+/// Quiet CLI: numbered prompt by default. Fullscreen palette only if ANYR_TUI=1.
 #[cfg(feature = "native")]
 fn launcher_uses_palette() -> bool {
-    crate::tui::can_use_fullscreen()
+    let tui = std::env::var("ANYR_TUI").unwrap_or_default();
+    let t = tui.trim();
+    (t == "1" || t.eq_ignore_ascii_case("true") || t.eq_ignore_ascii_case("yes"))
+        && crate::tui::can_use_fullscreen()
 }
 
 #[cfg(not(feature = "native"))]
@@ -3416,8 +3418,7 @@ fn run_menu(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, 
     }
 
     // Loop until Quit or a coding-agent launch takes over the process.
-    // Fullscreen-capable terminals get the command palette; dumb TTYs get
-    // the same entries as an inline numbered prompt (Direction D fallback).
+    // Quiet default: numbered prompt. ANYR_TUI=1 restores the palette.
     let cache = Arc::new(Mutex::new(CreditsCache::fresh()));
     #[cfg(feature = "native")]
     if term::is_interactive() {
@@ -3444,7 +3445,10 @@ fn run_menu(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, 
                     }
                 })
                 .collect();
-            match term::pick("anyr", &labels, Some(0)) {
+            for h in &header {
+                eprintln!("{}", term::dim(h));
+            }
+            match term::pick_numbered("anyr", &labels, Some(0)) {
                 Ok(i) => Some(i),
                 Err(err) if err == "Cancelled." => None,
                 Err(err) => return Err(err),

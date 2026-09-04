@@ -104,7 +104,7 @@ Stable handles. Match these strings, not column layout or ANSI color.
 | Whoami | `cli -- whoami` | `active account` `default`; full fixture key absent |
 | Config path | `cli -- config path` | isolated `config.yaml` |
 | Account switch | `cli -- account use work` | stdout contains `work`; follow with `whoami` |
-| Menu dump | `cli -- menu --dump-tui` | ANSI-free frame with `LAUNCH`, `claude`, `CONFIGURE`, `for claude`, `❯`, box corners `╭`/`╯`; secret absent |
+| Menu dump | `cli -- menu --dump-tui` | ANSI-free quiet dump with `LAUNCH`, `claude`, `CONFIGURE`, `for claude`, numbered `1.`, `❯`; secret absent |
 | Config dump | `cli -- config --dump-tui` | sections `ACCOUNT`, `MODEL`, `AGENT`, `GENERAL` |
 | Agent dry-run | `cli -- claude --dry-run --yes --key sk-ar-v1-fixture-key-0001` | `command:`, `ANTHROPIC_BASE_URL`, key redacted. **Does not spawn Claude** |
 | Upgrade check | `ANYR_RELEASES_JSON=$(control-anyr path RELEASES_FIXTURE)` then `cli -- upgrade --check --dry-run` | no install; no live GitHub required |

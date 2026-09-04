@@ -269,7 +269,29 @@ fn emit_graphics_mark() -> bool {
     true
 }
 
-/// AR mark next to matching caption lines.
+/// One-line chip: ▲ anyr + official half-block mark + captions.
+pub fn brand_chip(captions: &[&str]) -> String {
+    let mut out = String::new();
+    out.push_str(&accent("▲ anyr"));
+    out.push_str("  ");
+    out.push_str(&paint(WHITE, MARK_LINES[0].trim()));
+    let first = captions.first().copied().unwrap_or("").trim();
+    if !first.is_empty() {
+        out.push_str("  ");
+        out.push_str(first);
+    }
+    out.push('\n');
+    for cap in captions.iter().skip(1) {
+        if cap.is_empty() {
+            continue;
+        }
+        out.push_str(cap);
+        out.push('\n');
+    }
+    out
+}
+
+/// AR mark next to matching caption lines (5-row hero).
 pub fn brand_header(captions: &[&str]) -> String {
     let mut out = String::new();
     for (i, mark_line) in MARK_LINES.iter().enumerate() {
@@ -388,6 +410,79 @@ pub fn confirm(question: &str) -> bool {
 #[cfg(feature = "native")]
 pub fn pick(title: &str, items: &[String], current: Option<usize>) -> Result<usize, String> {
     crate::tui::pick(title, items, current)
+}
+
+/// Numbered prompt on the current screen — no alt-screen. Quiet launcher.
+pub fn pick_numbered(
+    title: &str,
+    items: &[String],
+    current: Option<usize>,
+) -> Result<usize, String> {
+    const PAGE: usize = 16;
+    if items.is_empty() {
+        return Err("Nothing to pick.".into());
+    }
+    let mut page = current
+        .map(|i| i / PAGE)
+        .unwrap_or(0)
+        .min(items.len().saturating_sub(1) / PAGE);
+
+    loop {
+        let start = page * PAGE;
+        let end = (start + PAGE).min(items.len());
+        let pages = items.len().div_ceil(PAGE);
+        eprintln!();
+        eprintln!("{}", accent(&format!("▲ {title}")));
+        eprintln!();
+        if pages > 1 {
+            eprintln!(
+                "{}",
+                dim(&format!(
+                    "  page {}/{}  ·  n next · p prev · q cancel",
+                    page + 1,
+                    pages
+                ))
+            );
+            eprintln!();
+        }
+        for (i, item) in items.iter().enumerate().take(end).skip(start) {
+            let marker = if current == Some(i) { "◆" } else { " " };
+            eprintln!("  {marker} {:>2}.  {item}", i + 1);
+        }
+        eprintln!();
+        let hint = current
+            .map(|i| format!("Enter = {} · ", i + 1))
+            .unwrap_or_default();
+        let ans = prompt(&format!(
+            "{} {hint}Pick 1-{} · q cancel: ",
+            accent("❯"),
+            items.len()
+        ))?;
+        let t = ans.trim();
+        if t.is_empty() {
+            if let Some(i) = current {
+                return Ok(i);
+            }
+            continue;
+        }
+        if t.eq_ignore_ascii_case("q") || t.eq_ignore_ascii_case("quit") {
+            return Err("Cancelled.".into());
+        }
+        if t.eq_ignore_ascii_case("n") && page + 1 < pages {
+            page += 1;
+            continue;
+        }
+        if t.eq_ignore_ascii_case("p") && page > 0 {
+            page -= 1;
+            continue;
+        }
+        if let Ok(n) = t.parse::<usize>() {
+            if n >= 1 && n <= items.len() {
+                return Ok(n - 1);
+            }
+        }
+        eprintln!("{}", dim("  type a number in range, or q"));
+    }
 }
 
 /// Fallback readline picker when the native TUI feature is off.
@@ -585,6 +680,20 @@ mod tests {
     fn rank_ids_keeps_order_on_empty_query() {
         let ids = vec!["b".into(), "a".into()];
         assert_eq!(rank_ids("", &ids), ids);
+    }
+
+    #[test]
+    fn brand_chip_is_one_line_mark_plus_caption() {
+        let out = brand_chip(&["AnyRouter CLI v0.1.x", "One key."]);
+        assert!(out.contains("▲ anyr"), "{out}");
+        assert!(out.contains("▀█████████▄"), "{out}");
+        assert!(out.contains("AnyRouter CLI v0.1.x"), "{out}");
+        assert!(out.contains("One key."), "{out}");
+        assert!(out.lines().count() >= 2, "{out}");
+        assert!(
+            !out.contains(MARK_LINES[1].trim()),
+            "chip must not print the 5-row hero:\n{out}"
+        );
     }
 
     #[test]
