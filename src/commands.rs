@@ -144,15 +144,12 @@ fn tui_palette_select(
 
 /// Compact HUD by default. Fullscreen palette only if ANYR_TUI=1.
 #[cfg(feature = "native")]
-fn launcher_uses_palette() -> bool {
-    let tui = std::env::var("ANYR_TUI").unwrap_or_default();
-    let t = tui.trim();
-    (t == "1" || t.eq_ignore_ascii_case("true") || t.eq_ignore_ascii_case("yes"))
-        && crate::tui::can_use_fullscreen()
+fn launcher_uses_palette(env: &BTreeMap<String, String>) -> bool {
+    crate::tui::env_flag(env, "ANYR_TUI") && crate::tui::can_use_fullscreen()
 }
 
 #[cfg(not(feature = "native"))]
-fn launcher_uses_palette() -> bool {
+fn launcher_uses_palette(_env: &BTreeMap<String, String>) -> bool {
     false
 }
 
@@ -217,7 +214,6 @@ const LAUNCH_FLAGS: &[&str] = &[
     "dry-run",
     "yes",
     "ok",
-    "no-check",
     "device",
     "device-code",
     "paste",
@@ -623,10 +619,7 @@ fn dispatch(
                 stub("relay")
             }
         }
-        "cursor" | "cline" | "windsurf" => {
-            print!("{}", command_help(command).unwrap_or_default());
-            Ok(0)
-        }
+        "cursor" | "cline" | "windsurf" => stub(command),
         "upgrade" | "update" => crate::upgrade::run(parsed, env),
         "onboard" | "impl" | "plan" | "fix" | "deploy" | "cp" => {
             crate::onboard::run(command, parsed)
@@ -696,7 +689,7 @@ fn persist_login(
     }
     let mut cfg = upsert_profile(existing.unwrap_or_default(), &name, profile);
     cfg.active_profile = name.clone();
-    if !parsed.flag_true("yes") && term::is_interactive() {
+    if !parsed.skip_confirm() && term::is_interactive() {
         let models = models_for_picker(&base, Some(&key), env);
         if let Ok(id) = pick_model(&models, None, "Default model") {
             if let Some(p) = cfg.profiles.get_mut(&name) {
@@ -1312,6 +1305,11 @@ fn run_whoami(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32
         term::dim("claude_opus    "),
         term::model_id(profile.claude_opus())
     );
+    println!(
+        "{}  {}",
+        term::dim("claude_fable   "),
+        term::model_id(profile.claude_fable())
+    );
     if let Some(tool) = &profile.default_tool {
         println!(
             "{}  {}",
@@ -1450,8 +1448,9 @@ fn run_config_tui(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result
     #[cfg(feature = "native")]
     {
         if tui_wants_dump(parsed, env) {
+            let tab = settings_tab_index(env);
             let (state, _) =
-                config_settings_frame(parsed, env, &path, false, &mut CreditsCache::fresh(), 0);
+                config_settings_frame(parsed, env, &path, false, &mut CreditsCache::fresh(), tab);
             print!("{}", tui_dump_settings(state, env));
             return Ok(0);
         }
@@ -1464,6 +1463,24 @@ fn run_config_tui(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result
 /// Build one settings frame: grouped rows with current values, plus a parallel
 /// list mapping row index → edit kind. `online` gates network (dump stays
 /// offline-deterministic).
+#[cfg(feature = "native")]
+fn settings_tab_index(env: &BTreeMap<String, String>) -> usize {
+    let Some(raw) = env
+        .get("ANYR_TUI_TAB")
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    else {
+        return 0;
+    };
+    if let Ok(i) = raw.parse::<usize>() {
+        return i;
+    }
+    settings_tab_names()
+        .iter()
+        .position(|t| t.eq_ignore_ascii_case(raw))
+        .unwrap_or(0)
+}
+
 #[cfg(feature = "native")]
 fn settings_tab_names() -> Vec<String> {
     let mut tabs = vec!["general".to_string()];
@@ -1738,7 +1755,7 @@ fn fill_agent_settings(
             "not installed".into()
         },
         if present { Tone::Good } else { Tone::Warn },
-        SettingKind::Install(id),
+        SettingKind::Mapping,
     );
     entry(
         rows,
@@ -2295,8 +2312,26 @@ fn config_reset_row(path: &std::path::Path, kind: SettingKind) -> Result<i32, St
         SettingKind::Account
         | SettingKind::ApiKey
         | SettingKind::Install(_)
-        | SettingKind::ToolCommand(_)
         | SettingKind::Mapping => Ok(0),
+        SettingKind::ToolCommand(id) => {
+            let builtin = resolve_tool(None, id)?;
+            match cfg.tools.get_mut(id) {
+                Some(t) if t.command != builtin.command => {
+                    t.command = builtin.command.clone();
+                }
+                _ => {
+                    println!("{}", term::dim(&format!("{id} command already at default")));
+                    return Ok(0);
+                }
+            }
+            write_config(&cfg, path)?;
+            println!(
+                "{}  {id} command reset to {}",
+                term::ok("Saved"),
+                builtin.command
+            );
+            Ok(0)
+        }
         SettingKind::AgentAccount(id) | SettingKind::AgentKey(id) | SettingKind::AgentModel(id) => {
             let (label, was_set) = {
                 let Some(b) = cfg.agents.get_mut(id) else {
@@ -2651,7 +2686,7 @@ fn run_launch(
     args.extend(model_args_for(tool_name, &model, model_mode));
     // --yolo is shorthand for Claude Code's full-permission flag; other tools
     // don't have an equivalent, so it only maps there.
-    if tool_name == "claude" && parsed.flag_true("yolo") {
+    if tool_name == "claude" && (parsed.flag_true("yolo") || tool.extra_flag("yolo")) {
         args.push("--dangerously-skip-permissions".into());
     }
     args.extend(parsed.passthrough.clone());
@@ -2972,7 +3007,7 @@ fn run_keys(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, 
                 .unwrap_or_else(default_key_name);
             let key = create_key(&base, &cred, &name)?;
             println!("Created \"{name}\":\n\n  {key}\n\nShown once — store it now.");
-            let save = parsed.flag_true("yes")
+            let save = parsed.skip_confirm()
                 || (term::is_interactive()
                     && term::confirm("Use this key for the current profile?"));
             if save {
@@ -3082,7 +3117,7 @@ fn run_keys(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, 
                     ))
                 }
             };
-            if !parsed.flag_true("yes") {
+            if !parsed.skip_confirm() {
                 if !term::is_interactive() {
                     return Err(
                         "Revoking a key is destructive; pass --yes to run non-interactively."
@@ -3428,7 +3463,7 @@ fn run_menu(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, 
         let key = resolve_api_key(&parsed.flags, env, profile);
         kick_credits_refresh(&cache, base, key);
     }
-    let inline = !launcher_uses_palette();
+    let inline = !launcher_uses_palette(env);
     loop {
         let (header, entries) = {
             let mut credits = cache.lock().unwrap_or_else(|p| p.into_inner());
@@ -3598,6 +3633,12 @@ fn install_agent_dialog(path: &PathBuf, env: &BTreeMap<String, String>) -> Resul
 }
 
 fn persist_tool_command(path: &PathBuf, id: &str, command: &str) -> Result<(), String> {
+    let builtin = resolve_tool(None, id)
+        .map(|t| t.command)
+        .unwrap_or_else(|_| id.to_string());
+    if !crate::install::should_persist_command(command, &builtin) {
+        return Ok(());
+    }
     let mut cfg = load_config_if_present(path).unwrap_or_default();
     let mut tool = resolve_tool(Some(&cfg), id)?;
     tool.command = command.to_string();
@@ -4078,6 +4119,28 @@ fn should_open_launcher(raw: &[String], interactive: bool, dump: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::should_open_launcher;
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn settings_tab_index_reads_name_and_number() {
+        use super::settings_tab_index;
+        use std::collections::BTreeMap;
+        let mut env = BTreeMap::new();
+        assert_eq!(settings_tab_index(&env), 0);
+        env.insert("ANYR_TUI_TAB".into(), "claude".into());
+        assert_eq!(settings_tab_index(&env), 1);
+        env.insert("ANYR_TUI_TAB".into(), "2".into());
+        assert_eq!(settings_tab_index(&env), 2);
+    }
+
+    #[test]
+    fn persist_tool_command_skips_bare_builtin() {
+        assert!(!crate::install::should_persist_command("claude", "claude"));
+        assert!(crate::install::should_persist_command(
+            "/opt/claude",
+            "claude"
+        ));
+    }
 
     #[test]
     fn bare_tty_opens_launcher_not_help() {

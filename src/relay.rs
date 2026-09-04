@@ -226,7 +226,11 @@ fn parse_start_args(parsed: &crate::parse::ParsedArgs) -> StartArgs {
 /// Mint an rk_ pairing token via POST /relay/devices with the user's sk-ar-v1
 /// inference key (the route accepts inference keys) and persist it to the
 /// shared config. Shared by explicit `relay pair` and auto-pair in start.
-fn pair_device(api_key: &str, name: &str, env: &BTreeMap<String, String>) -> Result<(), String> {
+fn pair_device(
+    api_key: &str,
+    name: &str,
+    env: &BTreeMap<String, String>,
+) -> Result<String, String> {
     let url = format!("{DEFAULT_API_BASE}/relay/devices");
     let body = json!({ "name": name }).to_string();
     let (status, resp) = crate::http::http_post(&url, Some(api_key), Some(&body))?;
@@ -248,7 +252,7 @@ fn pair_device(api_key: &str, name: &str, env: &BTreeMap<String, String>) -> Res
     {
         write_profile_field(RELAY_DEVICE_ID_FIELD, id, env)?;
     }
-    Ok(())
+    Ok(token.to_string())
 }
 
 /// Resolve the credential chain documented in the module comment. Returns the
@@ -269,19 +273,13 @@ fn ensure_relay_token(
     {
         return Ok(t.to_string());
     }
-    let path = crate::config::resolve_config_path(None, env);
-    if let Some(cfg) = crate::key::load_config_if_present(&path) {
-        if let Some(p) = cfg.profiles.get(&cfg.active_profile) {
-            if let Some(t) = p
-                .relay_token
-                .as_deref()
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-            {
-                return Ok(t.to_string());
-            }
-        }
+    if let Some(t) = read_stored_relay_token(env)
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+    {
+        return Ok(t);
     }
+    let path = crate::config::resolve_config_path(None, env);
 
     // No relay token yet: resolve (or mint) an sk-ar inference key, auto-pair.
     let api_key = match crate::key::resolve_api_key(
@@ -313,12 +311,12 @@ or set ANYROUTER_API_KEY / {RELAY_TOKEN_ENV_VAR}, or pass --token."
     };
 
     ulog("No relay token found — pairing this device automatically…");
-    pair_device(&api_key, device_name, env)?;
+    let token = pair_device(&api_key, device_name, env)?;
     ulog(&format!(
         "Paired as \"{device_name}\". Token saved to {}.",
         path.display()
     ));
-    Ok(read_stored_relay_token(env).expect("pair_device persisted a relay token"))
+    Ok(token)
 }
 
 fn read_stored_relay_token(env: &BTreeMap<String, String>) -> Option<String> {
@@ -788,7 +786,15 @@ fn serve_connection(
         // 1. Drain worker output first so streamed chunks go out promptly.
         loop {
             match state.rx.try_recv() {
-                Ok(frame) => send_frame(ws, &frame),
+                Ok(frame) => {
+                    match &frame {
+                        ClientFrame::Done { id } | ClientFrame::Error { id, .. } => {
+                            lock_in_flight(&state.in_flight).remove(id);
+                        }
+                        _ => {}
+                    }
+                    send_frame(ws, &frame);
+                }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => return, // unreachable; workers outlive rx
             }
@@ -800,7 +806,7 @@ fn serve_connection(
             Ok(tungstenite::Message::Text(text)) => match parse_server_frame(&text) {
                 Some(Ok(frame)) => spawn_request(state, frame, target),
                 Some(Err(id)) => {
-                    if let Some(flag) = state.in_flight.lock().unwrap().remove(&id) {
+                    if let Some(flag) = lock_in_flight(&state.in_flight).remove(&id) {
                         flag.store(true, Ordering::SeqCst);
                     }
                 }
@@ -834,25 +840,35 @@ fn short_id(s: &str, max_chars: usize) -> String {
 /// Spawn a worker thread for one incoming request frame and register its
 /// cancel flag. `target` is 'static by construction: either one of the built-in
 /// probe constants or a leaked --target value (resolved once per process).
+fn lock_in_flight(
+    map: &Arc<Mutex<BTreeMap<String, Arc<AtomicBool>>>>,
+) -> std::sync::MutexGuard<'_, BTreeMap<String, Arc<AtomicBool>>> {
+    map.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 fn spawn_request(state: &ConnState, frame: RequestFrame, target: &'static str) {
     let cancel = Arc::new(AtomicBool::new(false));
-    state
-        .in_flight
-        .lock()
-        .unwrap()
-        .insert(frame.id.clone(), Arc::clone(&cancel));
+    let id = frame.id.clone();
+    lock_in_flight(&state.in_flight).insert(id.clone(), Arc::clone(&cancel));
     let tx = state.tx.clone();
-    std::thread::Builder::new()
-        .name(format!("relay-req-{}", short_id(&frame.id, 8)))
+    if let Err(err) = std::thread::Builder::new()
+        .name(format!("relay-req-{}", short_id(&id, 8)))
         .spawn(move || handle_request(&tx, &frame, target, &cancel))
-        .expect("spawn relay worker");
+    {
+        lock_in_flight(&state.in_flight).remove(&id);
+        let _ = state.tx.send(ClientFrame::Error {
+            id,
+            message: format!("Could not spawn relay worker: {err}"),
+        });
+    }
 }
 
 fn abort_in_flight(in_flight: &Arc<Mutex<BTreeMap<String, Arc<AtomicBool>>>>) {
-    for flag in in_flight.lock().unwrap().values() {
+    let mut map = lock_in_flight(in_flight);
+    for flag in map.values() {
         flag.store(true, Ordering::SeqCst);
     }
-    in_flight.lock().unwrap().clear();
+    map.clear();
 }
 
 fn send_frame(ws: &mut Ws, frame: &ClientFrame) {
@@ -981,7 +997,7 @@ fn run_relay_pair(
             ));
         }
     };
-    pair_device(&api_key, &name, env)?;
+    let _ = pair_device(&api_key, &name, env)?;
     println!("Paired as \"{name}\". Token saved to your AnyRouter config.");
     println!("Run: {} relay start", crate::help::invoked_bin());
     Ok(0)

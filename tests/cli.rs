@@ -1605,7 +1605,7 @@ agents:
         "HUD dump must show the prompt: {stdout}"
     );
     assert!(
-        stdout.contains("↵ launch") || stdout.contains("q quit"),
+        stdout.contains("↵ launch") || stdout.contains("esc quit"),
         "HUD footer missing:\n{stdout}"
     );
     assert!(
@@ -1690,6 +1690,10 @@ profiles:
     assert!(stdout.contains("install an agent…"), "{stdout}");
     assert!(stdout.contains("none detected"), "{stdout}");
     assert!(!stdout.contains("◆ claude"), "{stdout}");
+    assert!(
+        !stdout.contains("Launch claude") && !stdout.contains("Launch grok"),
+        "empty PATH must not emit dead launch rows:\n{stdout}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -2203,11 +2207,181 @@ agents:
 
 #[test]
 fn models_dump_tui_pins_anyrouter_auto_without_most_used() {
-    let (code, stdout, stderr) = run(&["models", "--dump-tui"]);
+    let dir = temp_home();
+    let (code, stdout, stderr) = {
+        let out = anyr()
+            .args(["models", "--dump-tui"])
+            .env("ANYROUTER_HOME", &dir)
+            .env_remove("ANYROUTER_API_KEY")
+            .output()
+            .expect("models dump");
+        (
+            out.status.code().unwrap_or(1),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
     assert_eq!(code, 0, "{stdout}{stderr}");
     assert!(stdout.contains("anyrouter/auto"), "{stdout}");
     assert!(
         !stdout.to_ascii_lowercase().contains("most used"),
+        "{stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn config_dump_tui_claude_tab_shows_agent_rows() {
+    let dir = temp_home();
+    let path = dir.join("config.yaml");
+    std::fs::write(
+        &path,
+        "\
+active_profile: default
+profiles:
+  default:
+    api_key: sk-ar-v1-tab-dump-secret-abcdef
+    default_model: auto
+",
+    )
+    .unwrap();
+    let out = anyr()
+        .args(["config", "--dump-tui", "--config", path.to_str().unwrap()])
+        .env("ANYR_TUI_TAB", "claude")
+        .env("ANYROUTER_HOME", &dir)
+        .output()
+        .expect("config claude tab");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code().unwrap_or(1), 0, "{stdout}{stderr}");
+    assert!(stdout.contains("[claude]"), "{stdout}");
+    for row in ["command", "install", "gateway discovery", "haiku"] {
+        assert!(stdout.contains(row), "missing {row} in:\n{stdout}");
+    }
+    assert!(
+        !stdout.contains("tab-dump-secret"),
+        "dump must not leak secret: {stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn config_dump_tui_grok_tab_omits_claude_aliases() {
+    let dir = temp_home();
+    let path = dir.join("config.yaml");
+    std::fs::write(
+        &path,
+        "\
+active_profile: default
+profiles:
+  default:
+    api_key: sk-ar-v1-grok-tab-secret-abcdef
+    default_model: auto
+",
+    )
+    .unwrap();
+    let out = anyr()
+        .args(["config", "--dump-tui", "--config", path.to_str().unwrap()])
+        .env("ANYR_TUI_TAB", "grok")
+        .env("ANYROUTER_HOME", &dir)
+        .output()
+        .expect("config grok tab");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code().unwrap_or(1), 0, "{stdout}{stderr}");
+    assert!(stdout.contains("[grok]"), "{stdout}");
+    assert!(
+        stdout.contains("GROK_MODELS_BASE_URL") || stdout.contains("base URL env"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("haiku"), "{stdout}");
+    assert!(!stdout.contains("gateway discovery"), "{stdout}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn claude_yolo_extra_in_config_expands_like_flag() {
+    // WHY: tools.claude.yolo must survive serialize and launch like --yolo.
+    let dir = temp_home();
+    std::fs::write(
+        dir.join("config.yaml"),
+        "\
+active_profile: default
+profiles:
+  default:
+    api_key: sk-ar-v1-fixture-key-0001
+    default_model: auto
+tools:
+  claude:
+    yolo: true
+",
+    )
+    .unwrap();
+    let out = anyr()
+        .args(["claude", "--dry-run", "--yes"])
+        .env("ANYROUTER_HOME", &dir)
+        .env_remove("ANYROUTER_API_KEY")
+        .output()
+        .expect("yolo extra dry-run");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code().unwrap_or(1), 0, "{stdout}{stderr}");
+    assert!(
+        stdout.contains("--dangerously-skip-permissions"),
+        "config yolo must expand:\n{stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn whoami_and_keys_fail_loud_without_config() {
+    let dir = temp_home();
+    for args in [vec!["whoami"], vec!["keys", "list"]] {
+        let out = anyr()
+            .args(&args)
+            .env("ANYROUTER_HOME", &dir)
+            .env_remove("ANYROUTER_API_KEY")
+            .output()
+            .expect("missing key");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_ne!(out.status.code().unwrap_or(1), 0, "{args:?} {stderr}");
+        assert!(
+            stderr.contains("No AnyRouter config") || stderr.contains("no key"),
+            "{args:?} {stderr}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn cursor_is_honest_stub_not_silent_success() {
+    let (code, stdout, stderr) = run(&["cursor"]);
+    assert_ne!(code, 0, "{stdout}{stderr}");
+    let combined = format!("{stdout}{stderr}");
+    assert!(
+        combined.contains("not yet") || combined.contains("not a launch"),
+        "{combined}"
+    );
+}
+
+#[test]
+fn launch_rejects_unknown_flag() {
+    let (code, _stdout, stderr) = run(&["claude", "--bogus"]);
+    assert_eq!(code, 1);
+    assert!(
+        stderr.contains("Unknown") || stderr.contains("bogus"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn yes_equals_true_skips_confirm_parse() {
+    let (code, stdout, stderr) = run(&["claude", "--help"]);
+    assert_eq!(code, 0, "{stdout}{stderr}");
+    assert!(!stdout.contains("Skip the launcher"), "{stdout}");
+    assert!(!stdout.contains("--no-check"), "{stdout}");
+    assert!(
+        stdout.contains("--yes") && stdout.contains("--ok"),
         "{stdout}"
     );
 }
