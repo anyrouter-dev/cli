@@ -50,7 +50,7 @@ Keep implementation details out of the map. Name only user paths, stable handles
 - [Help and version](./help-and-version.md) covers root `--help`, `--version`, grouped command help, and unknown-command errors.
 - [Onboard prompts](./onboard-prompts.md) covers paste-ready impl/plan/fix prompts and JSON output without network.
 - [Agent launch dry-run](./agent-launch-dry-run.md) covers printing the child command and redacted env without spawning an agent.
-- [TUI launcher](./tui-launcher.md) covers `menu --dump-tui`, `config --dump-tui`, and optional PTY quit.
+- [TUI launcher](./tui-launcher.md) covers the compact HUD (`menu --dump-tui`), unsigned/empty PATH still offering Launch claude, `config --dump-tui`, and optional PTY quit.
 - [Model picker catalog](./model-picker.md) covers the inline model picker pinning `anyrouter/auto` without a most-used dump.
 - [Accounts and config](./accounts-and-config.md) covers whoami, account switch, config path, and logout against the isolated home.
 - [Per-agent bindings](./per-agent-bindings.md) covers inline model/account/key binds per coding agent and launch that honors per-agent keys.

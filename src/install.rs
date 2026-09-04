@@ -158,7 +158,11 @@ pub fn resolve_executable(command: &str) -> Option<String> {
                 return cached.clone();
             }
             let found = find_on_path(command);
-            hits.borrow_mut().insert(command.to_string(), found.clone());
+            // Cache hits only. A miss must be retried after install
+            // (PATH changes in-process; a cached None would always fail).
+            if found.is_some() {
+                hits.borrow_mut().insert(command.to_string(), found.clone());
+            }
             found
         })
     }
@@ -342,5 +346,17 @@ mod tests {
         env.insert("ANYR_AGENTS".into(), "codex".into());
         assert!(!agent_available("claude", "claude", &env));
         assert!(agent_available("codex", "codex", &env));
+    }
+
+    #[test]
+    fn misses_are_not_cached_so_install_can_retry() {
+        assert!(resolve_executable("anyr-definitely-not-on-path-xyz").is_none());
+        #[cfg(unix)]
+        {
+            assert!(
+                resolve_executable("true").is_some(),
+                "a miss must not poison later lookups"
+            );
+        }
     }
 }

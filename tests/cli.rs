@@ -1017,6 +1017,32 @@ fn login_help_describes_device_and_paste() {
     assert!(combined.contains("--device"), "{combined}");
     assert!(combined.contains("--paste"), "{combined}");
     assert!(combined.contains("device"), "{combined}");
+    assert!(
+        combined.contains("claude"),
+        "login help must point at anyr claude:\n{combined}"
+    );
+    assert!(
+        !combined.to_ascii_lowercase().contains("wizard"),
+        "login must not mention a post-login wizard:\n{combined}"
+    );
+}
+
+#[test]
+fn claude_help_starts_immediately() {
+    // WHY: `anyr claude` is the post-install path. Help must not send the
+    // user through a settings launcher first.
+    let (code, stdout, stderr) = run(&["claude", "--help"]);
+    assert_eq!(code, 0, "{stdout}{stderr}");
+    let combined = format!("{stdout}{stderr}");
+    assert!(combined.contains("--dry-run"), "{combined}");
+    assert!(
+        !combined.contains("opens the launcher"),
+        "named launch must start, not open a picker:\n{combined}"
+    );
+    assert!(
+        combined.to_ascii_lowercase().contains("sign in"),
+        "first run signs in if needed:\n{combined}"
+    );
 }
 
 #[test]
@@ -1622,7 +1648,7 @@ agents:
 }
 
 #[test]
-fn menu_dump_tui_empty_agents_shows_install() {
+fn menu_dump_tui_empty_agents_still_offers_launch_claude() {
     let dir = std::env::temp_dir().join(format!("anyr-cli-menu-empty-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("config.yaml");
@@ -1646,10 +1672,9 @@ profiles:
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(out.status.code().unwrap_or(1), 0, "{stdout}{stderr}");
     assert!(
-        stdout.contains("Install an agent…") || stdout.contains("install an agent"),
-        "{stdout}"
+        stdout.contains("Launch claude"),
+        "empty PATH must still offer Launch claude:\n{stdout}"
     );
-    assert!(!stdout.contains("Launch claude"), "{stdout}");
     assert!(stdout.contains("Config"), "{stdout}");
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -2137,6 +2162,34 @@ agents:
         assert!(stdout.contains("\"min_context\":1000000"), "{stdout}");
         assert!(!stdout.contains("sk-ar-v1-fixture-key-0001"), "{stdout}");
     }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn unsigned_hud_dump_offers_launch_claude() {
+    // WHY: right after install there is no key yet. Enter on the HUD
+    // should still be "Launch claude" (login happens inside launch).
+    let dir = temp_home();
+    let path = dir.join("config.yaml");
+    let out = anyr()
+        .args(["menu", "--dump-tui", "--config", path.to_str().unwrap()])
+        .env("ANYROUTER_HOME", &dir)
+        .env("ANYR_AGENTS", "none")
+        .env_remove("ANYROUTER_API_KEY")
+        .output()
+        .expect("unsigned hud");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code().unwrap_or(1), 0, "{stdout}{stderr}");
+    assert!(stdout.contains("Launch claude"), "{stdout}");
+    assert!(stdout.contains("What do you want to do?"), "{stdout}");
+    assert!(stdout.contains("Config"), "{stdout}");
+    assert!(stdout.contains("Quit"), "{stdout}");
+    assert!(!stdout.contains("Login"), "{stdout}");
+    assert!(
+        !stdout.contains("Install an agent"),
+        "unsigned first-run must not hide Launch behind install:\n{stdout}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 

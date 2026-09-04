@@ -1,4 +1,4 @@
-anyr  ● default  ·  anyrouter/auto  ·  claude  ·  -
+anyr  ○ default  ·  anyrouter/auto  ·  claude  ·  -
 
 What do you want to do?
   1. Launch claude
