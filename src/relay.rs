@@ -1237,4 +1237,220 @@ profiles:
         assert_eq!(p.relay_token.as_deref(), Some("rk_pairing-token"));
         assert_eq!(p.relay_device_id.as_deref(), Some("dev_123"));
     }
+
+    fn spawn_stub_target(responses: Vec<(u16, String)>) -> (String, std::thread::JoinHandle<()>) {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind stub");
+        let addr = listener.local_addr().expect("local addr");
+        let url = format!("http://{addr}");
+        let handle = std::thread::spawn(move || {
+            for (status, body) in responses {
+                let (mut stream, _) = match listener.accept() {
+                    Ok(pair) => pair,
+                    Err(_) => return,
+                };
+                let mut buf = Vec::new();
+                let mut tmp = [0u8; 1024];
+                loop {
+                    match stream.read(&mut tmp) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            buf.extend_from_slice(&tmp[..n]);
+                            if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                                let header_end = pos + 4;
+                                let headers = String::from_utf8_lossy(&buf[..header_end]);
+                                let want = headers
+                                    .lines()
+                                    .find_map(|line| {
+                                        let (k, v) = line.split_once(':')?;
+                                        (k.eq_ignore_ascii_case("content-length"))
+                                            .then(|| v.trim().parse::<usize>().ok())
+                                            .flatten()
+                                    })
+                                    .unwrap_or(0);
+                                while buf.len() - header_end < want {
+                                    match stream.read(&mut tmp) {
+                                        Ok(0) => break,
+                                        Ok(n) => buf.extend_from_slice(&tmp[..n]),
+                                        Err(_) => break,
+                                    }
+                                }
+                                break;
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+                let reason = match status {
+                    200 => "OK",
+                    502 => "Bad Gateway",
+                    _ => "OK",
+                };
+                let bytes = body.as_bytes();
+                let resp = format!(
+                    "HTTP/1.1 {status} {reason}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    bytes.len()
+                );
+                let _ = stream.write_all(resp.as_bytes());
+                let _ = stream.write_all(bytes);
+                let _ = stream.flush();
+            }
+        });
+        (url, handle)
+    }
+
+    fn req(id: &str, path: &str, body: &str) -> RequestFrame {
+        RequestFrame {
+            id: id.into(),
+            path: path.into(),
+            body: body.into(),
+        }
+    }
+
+    fn drain(rx: &mpsc::Receiver<ClientFrame>) -> Vec<ClientFrame> {
+        let mut out = Vec::new();
+        while let Ok(frame) = rx.try_recv() {
+            out.push(frame);
+        }
+        out
+    }
+
+    fn chunk_text(frames: &[ClientFrame]) -> String {
+        frames
+            .iter()
+            .filter_map(|f| match f {
+                ClientFrame::Chunk { data, .. } => Some(data.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn streams_local_response_back_as_head_chunk_done() {
+        let (target, join) = spawn_stub_target(vec![(200, "hello world".into())]);
+        let (tx, rx) = mpsc::channel();
+        handle_request(
+            &tx,
+            &req("r1", "/v1/chat/completions", "{}"),
+            &target,
+            &AtomicBool::new(false),
+        );
+        let frames = drain(&rx);
+        let _ = join.join();
+        assert!(
+            matches!(
+                frames.as_slice(),
+                [
+                    ClientFrame::Head {
+                        id,
+                        status: 200,
+                        ..
+                    },
+                    ClientFrame::Chunk { data, .. },
+                    ClientFrame::Done { .. }
+                ] if id == "r1" && data == "hello world"
+            ),
+            "expected Head(200)+Chunk+Done, got {} frames",
+            frames.len()
+        );
+    }
+
+    #[test]
+    fn non_2xx_from_target_relays_status_and_body() {
+        let (target, join) = spawn_stub_target(vec![(502, "bad gateway".into())]);
+        let (tx, rx) = mpsc::channel();
+        handle_request(
+            &tx,
+            &req("r2", "/v1/chat/completions", "{}"),
+            &target,
+            &AtomicBool::new(false),
+        );
+        let frames = drain(&rx);
+        let _ = join.join();
+        assert!(
+            matches!(
+                frames.as_slice(),
+                [
+                    ClientFrame::Head { status: 502, .. },
+                    ClientFrame::Chunk { data, .. },
+                    ClientFrame::Done { .. }
+                ] if data == "bad gateway"
+            ),
+            "expected Head(502)+Chunk+Done, got {} frames",
+            frames.len()
+        );
+    }
+
+    #[test]
+    fn unreachable_target_produces_error_frame() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        let target = format!("http://{addr}");
+        let (tx, rx) = mpsc::channel();
+        handle_request(
+            &tx,
+            &req("r3", "/v1/chat/completions", "{}"),
+            &target,
+            &AtomicBool::new(false),
+        );
+        let frames = drain(&rx);
+        assert_eq!(frames.len(), 1, "expected a single Error frame");
+        match &frames[0] {
+            ClientFrame::Error { id, message } => {
+                assert_eq!(id, "r3");
+                assert!(message.contains("Local target unreachable"), "{message}");
+            }
+            _ => panic!("expected Error frame"),
+        }
+    }
+
+    #[test]
+    fn cancel_flag_stops_streaming() {
+        let body = "x".repeat(1024 * 1024);
+        let (target, join) = spawn_stub_target(vec![(200, body)]);
+        let (tx, rx) = mpsc::channel();
+        handle_request(
+            &tx,
+            &req("r4", "/v1/chat/completions", "{}"),
+            &target,
+            &AtomicBool::new(true),
+        );
+        let frames = drain(&rx);
+        let _ = join.join();
+        let extra = frames
+            .iter()
+            .any(|f| matches!(f, ClientFrame::Chunk { .. } | ClientFrame::Done { .. }));
+        assert!(
+            !extra,
+            "cancel before handle_request must not send Chunk or Done (got {} frames)",
+            frames.len()
+        );
+    }
+
+    #[test]
+    fn utf8_split_body_round_trips() {
+        let expected = "héllo 🚀".repeat(1000);
+        let (target, join) = spawn_stub_target(vec![(200, expected.clone())]);
+        let (tx, rx) = mpsc::channel();
+        handle_request(
+            &tx,
+            &req("r5", "/v1/chat/completions", "{}"),
+            &target,
+            &AtomicBool::new(false),
+        );
+        let frames = drain(&rx);
+        let _ = join.join();
+        assert!(
+            matches!(frames.first(), Some(ClientFrame::Head { status: 200, .. })),
+            "missing Head(200)"
+        );
+        assert!(
+            matches!(frames.last(), Some(ClientFrame::Done { .. })),
+            "missing Done"
+        );
+        assert_eq!(chunk_text(&frames), expected);
+    }
 }
