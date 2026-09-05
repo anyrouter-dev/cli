@@ -338,12 +338,13 @@ pub fn build_tool_env(input: BuildToolEnvInput<'_>) -> BTreeMap<String, String> 
         env.insert("ANYROUTER_EFFORT".into(), effort.to_string());
     }
     if input.tool_name == "pi" {
+        // Placeholder until `prepare_pi_wrapper` overwrites with the full catalog.
         let base = tool_base_url(input.profile, input.tool);
         let model_id = pi_resolved_model(input.model);
+        let ids = vec![model_id];
         env.insert(
             "PI_MODELS_JSON".into(),
-            serde_json::to_string(&pi_models_config(&base, &model_id))
-                .unwrap_or_else(|_| "{}".into()),
+            serde_json::to_string(&pi_models_config(&base, &ids)).unwrap_or_else(|_| "{}".into()),
         );
     }
     if input.tool_name == "opencode" {
@@ -571,7 +572,18 @@ pub fn pi_resolved_model(model: &str) -> String {
     }
 }
 
-pub fn pi_models_config(base_url: &str, model_id: &str) -> serde_json::Value {
+/// Build Pi `models.json` for the AnyRouter provider.
+///
+/// Pi's `/model` picker only lists ids present under `providers.anyrouter.models`.
+/// Writing a single selected id made the picker show one row (e.g.
+/// `dots-studio/dots-3-note-preview`) with "Only showing models from configured
+/// providers". Pass the full catalog (selected first) so `/model` can switch.
+pub fn pi_models_config(base_url: &str, model_ids: &[String]) -> serde_json::Value {
+    let models: Vec<serde_json::Value> = model_ids
+        .iter()
+        .filter(|id| !id.is_empty())
+        .map(|id| serde_json::json!({ "id": id }))
+        .collect();
     serde_json::json!({
         "providers": {
             "anyrouter": {
@@ -580,10 +592,30 @@ pub fn pi_models_config(base_url: &str, model_id: &str) -> serde_json::Value {
                 "apiKey": "ANYROUTER_API_KEY",
                 "authHeader": true,
                 "headers": { "X-AnyRouter-App": "pi" },
-                "models": [{ "id": model_id }]
+                "models": models
             }
         }
     })
+}
+
+/// Deduped catalog ids for Pi, with `selected` first (after `pi_resolved_model`).
+pub fn pi_catalog_model_ids(selected: &str, catalog_ids: &[String]) -> Vec<String> {
+    let selected = pi_resolved_model(selected);
+    let mut out = Vec::with_capacity(catalog_ids.len().saturating_add(1));
+    if !selected.is_empty() {
+        out.push(selected.clone());
+    }
+    for id in catalog_ids {
+        let id = catalog_model_id(id);
+        if id.is_empty() || id == selected || out.iter().any(|x| x == &id) {
+            continue;
+        }
+        out.push(id);
+    }
+    if out.is_empty() && !selected.is_empty() {
+        out.push(selected);
+    }
+    out
 }
 
 pub fn pi_agent_dir(config_path: &Path) -> PathBuf {
@@ -594,18 +626,24 @@ pub fn pi_agent_dir(config_path: &Path) -> PathBuf {
 }
 
 /// Pi reads `models.json` from `PI_CODING_AGENT_DIR` (not `PI_MODELS_JSON`).
-/// Write a wrap dir with AnyRouter already registered and selected.
+/// Write a wrap dir with AnyRouter already registered and the full catalog listed.
+///
+/// `catalog_ids` should be live `/v1/models` ids (any order). The selected
+/// `model` is listed first; if `catalog_ids` is empty, only the selected id is
+/// written (offline / fetch-failure fallback).
 pub fn prepare_pi_wrapper(
     env: &mut BTreeMap<String, String>,
     config_path: &Path,
     profile: &Profile,
     tool: &ToolConfig,
     model: &str,
+    catalog_ids: &[String],
 ) -> Result<(), String> {
     let dir = pi_agent_dir(config_path);
     let model_id = pi_resolved_model(model);
     let base = tool_base_url(profile, tool);
-    let models = pi_models_config(&base, &model_id);
+    let ids = pi_catalog_model_ids(model, catalog_ids);
+    let models = pi_models_config(&base, &ids);
     write_pi_wrapper_files(&dir, &models, &model_id)?;
     env.insert(
         "PI_CODING_AGENT_DIR".into(),
@@ -1132,7 +1170,20 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let tool = builtin("pi").unwrap();
         let mut env = BTreeMap::new();
-        prepare_pi_wrapper(&mut env, &cfg, &profile(), &tool, "anyrouter/free").unwrap();
+        let catalog = vec![
+            "anyrouter/free".to_string(),
+            "anthropic/claude-sonnet-4.6".to_string(),
+            "z-ai/glm-5.2".to_string(),
+        ];
+        prepare_pi_wrapper(
+            &mut env,
+            &cfg,
+            &profile(),
+            &tool,
+            "anyrouter/free",
+            &catalog,
+        )
+        .unwrap();
         let agent = dir.join("pi");
         let agent_s = agent.to_string_lossy().into_owned();
         assert_eq!(
@@ -1143,6 +1194,8 @@ mod tests {
         assert!(models.contains("ANYROUTER_API_KEY"), "{models}");
         assert!(!models.contains("$ANYROUTER_API_KEY"), "{models}");
         assert!(models.contains("anyrouter/free"), "{models}");
+        assert!(models.contains("anthropic/claude-sonnet-4.6"), "{models}");
+        assert!(models.contains("z-ai/glm-5.2"), "{models}");
         assert!(models.contains("anyrouter.dev/api/v1"), "{models}");
         let settings = std::fs::read_to_string(agent.join("settings.json")).unwrap();
         assert!(
@@ -1151,6 +1204,39 @@ mod tests {
         );
         assert!(settings.contains("anyrouter/free"), "{settings}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pi_catalog_model_ids_puts_selected_first_and_dedupes() {
+        let ids = pi_catalog_model_ids(
+            "z-ai/glm-5.2",
+            &[
+                "anyrouter/free".into(),
+                "z-ai/glm-5.2".into(),
+                "anyrouter/free".into(),
+            ],
+        );
+        assert_eq!(
+            ids,
+            vec![
+                "z-ai/glm-5.2".to_string(),
+                "anyrouter/free".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn pi_models_config_lists_every_id() {
+        let json = pi_models_config(
+            "https://anyrouter.dev/api/v1",
+            &["a/b".into(), "c/d".into()],
+        );
+        let models = json["providers"]["anyrouter"]["models"]
+            .as_array()
+            .expect("models array");
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0]["id"], "a/b");
+        assert_eq!(models[1]["id"], "c/d");
     }
 
     #[test]

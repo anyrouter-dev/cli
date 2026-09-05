@@ -2729,7 +2729,16 @@ fn run_launch(
         .unwrap_or_default();
     apply_routing_env(&mut env_map, &routing, tool_name);
     if tool_name == "pi" {
-        prepare_pi_wrapper(&mut env_map, &path, &profile, &tool, &model)?;
+        let catalog = fetch_models(&base, Some(&key)).unwrap_or_default();
+        let catalog_ids: Vec<String> = catalog.iter().map(|m| m.id.clone()).collect();
+        prepare_pi_wrapper(
+            &mut env_map,
+            &path,
+            &profile,
+            &tool,
+            &model,
+            &catalog_ids,
+        )?;
     }
     let mut args = Vec::new();
     args.extend(effort_args_for(tool_name, effort.as_deref()));
