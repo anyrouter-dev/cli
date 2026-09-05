@@ -4,6 +4,36 @@ This file is maintained automatically by [release-please](https://github.com/goo
 
 GitHub Releases use this file as the release notes (full history through that tag).
 
+## [0.1.12](https://github.com/anyrouter-dev/cli/compare/v0.1.11...v0.1.12) (2026-09-05)
+
+
+### Features
+
+* **cli:** animate anyr update with from→to and channel ([#41](https://github.com/anyrouter-dev/cli/issues/41)) ([18be07f](https://github.com/anyrouter-dev/cli/commit/18be07f9c78db5bb90f8e0eccca84f2f189c8299))
+* **cli:** Compact HUD launcher ([#51](https://github.com/anyrouter-dev/cli/issues/51)) ([3dd0d12](https://github.com/anyrouter-dev/cli/commit/3dd0d123aa8e6876e1e32e057e6214dd10a5c498))
+* **cli:** compact HUD picker, examples-first help, status config ([#53](https://github.com/anyrouter-dev/cli/issues/53)) ([7c1bbd9](https://github.com/anyrouter-dev/cli/commit/7c1bbd9979c18439e3fe15ede3a2fd99d8d28292))
+* **cli:** launch Claude right after install ([#54](https://github.com/anyrouter-dev/cli/issues/54)) ([b37c9c5](https://github.com/anyrouter-dev/cli/commit/b37c9c5cee920cfaf6caf07f4f5c2c3bab5be782))
+* **cli:** spotlight chrome — examples-first help, brand orange, models table ([#50](https://github.com/anyrouter-dev/cli/issues/50)) ([7094017](https://github.com/anyrouter-dev/cli/commit/7094017c0e89545e9cfcae680982ab005886e783))
+* **relay:** anyr relay start/pair — serve local models to the cloud ([0ee4699](https://github.com/anyrouter-dev/cli/commit/0ee4699572080fddfc49929322e99df73273bc48))
+* **security:** read pasted API keys with terminal echo off ([#31](https://github.com/anyrouter-dev/cli/issues/31)) ([d6359c8](https://github.com/anyrouter-dev/cli/commit/d6359c8b14dbf3303b26940895591228e67a61bb)), closes [#21](https://github.com/anyrouter-dev/cli/issues/21)
+* **security:** verify sha256 of downloaded release assets before replace ([#30](https://github.com/anyrouter-dev/cli/issues/30)) ([211c7bc](https://github.com/anyrouter-dev/cli/commit/211c7bcbcf71071d483aaa6790dfaba446e206a5)), closes [#20](https://github.com/anyrouter-dev/cli/issues/20)
+* **tui:** AR-mark palette card, agent rows, settings polish ([866d7b0](https://github.com/anyrouter-dev/cli/commit/866d7b061c6214d1950a01df76c8ecc8fecf0eb1))
+* **tui:** per-agent routing filters (exacto, tools, 1M ctx) ([#44](https://github.com/anyrouter-dev/cli/issues/44)) ([5ee9ce3](https://github.com/anyrouter-dev/cli/commit/5ee9ce396ffbd5875893fcf0fd042b508af56c7c))
+
+
+### Bug Fixes
+
+* **auth:** honor expires_in and bound transient network retries in device login ([#28](https://github.com/anyrouter-dev/cli/issues/28)) ([689b54f](https://github.com/anyrouter-dev/cli/commit/689b54fa98a52dd4c8e5dc7a0d742d167fa7bb96)), closes [#18](https://github.com/anyrouter-dev/cli/issues/18)
+* **ci:** build darwin-x86_64 in the main matrix so beta installs work on Intel Macs ([#26](https://github.com/anyrouter-dev/cli/issues/26)) ([db13555](https://github.com/anyrouter-dev/cli/commit/db1355506269538e959278c9cb2193717424743c)), closes [#16](https://github.com/anyrouter-dev/cli/issues/16)
+* **cli:** avoid GitHub Releases API 403 and empty /latest 404 ([#33](https://github.com/anyrouter-dev/cli/issues/33)) ([ca6e78e](https://github.com/anyrouter-dev/cli/commit/ca6e78eff4daa8b00191e92012fdc039545495d6)), closes [#32](https://github.com/anyrouter-dev/cli/issues/32)
+* **cli:** fail loud on empty release assets; reject dummy test keys ([ba8b62f](https://github.com/anyrouter-dev/cli/commit/ba8b62f720f22ecbff1adba0b2a5c3a4d8f0a931))
+* **cli:** stop the login re-reveal loop; persist profile across relogin ([358bcca](https://github.com/anyrouter-dev/cli/commit/358bcca0534653141bccbb01166721a57bf7bbb3))
+* **pi:** write full catalog into models.json for /model picker ([b4941e2](https://github.com/anyrouter-dev/cli/commit/b4941e2945aad566636087e2a6cb22fc9c213b87))
+* **relay:** never panic on multibyte request ids when naming worker threads ([#27](https://github.com/anyrouter-dev/cli/issues/27)) ([77adf3a](https://github.com/anyrouter-dev/cli/commit/77adf3aefd1b0a1c857035c0400d6032777219dc)), closes [#17](https://github.com/anyrouter-dev/cli/issues/17)
+* **security:** write config atomically with 0700 dir / 0600 file ([#29](https://github.com/anyrouter-dev/cli/issues/29)) ([9ca7ac7](https://github.com/anyrouter-dev/cli/commit/9ca7ac7ea2a535f9059b42426b276d0e07f296dc)), closes [#19](https://github.com/anyrouter-dev/cli/issues/19)
+* **tui:** bind model/account/key per coding agent ([#39](https://github.com/anyrouter-dev/cli/issues/39)) ([97d3370](https://github.com/anyrouter-dev/cli/commit/97d3370c144e3f53603f2b05c21e003577e8a8d5))
+* **tui:** pin anyrouter/auto in the inline model picker ([#40](https://github.com/anyrouter-dev/cli/issues/40)) ([59b1f6a](https://github.com/anyrouter-dev/cli/commit/59b1f6aae4346db8d459de471fdbdde926457917))
+
 ## [0.1.11](https://github.com/anyrouter-dev/cli/compare/v0.1.10...v0.1.11) (2026-08-24)
 
 
