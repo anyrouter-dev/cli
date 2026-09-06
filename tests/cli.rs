@@ -2359,3 +2359,48 @@ fn yes_equals_true_skips_confirm_parse() {
         "{stdout}"
     );
 }
+
+#[test]
+fn menu_non_tty_prints_status_before_actions() {
+    // WHY: a piped `anyr menu` can't be driven, but the status line is the
+    // preflight payoff — account · model · agent · credits. It must lead so
+    // scripts/CI see state, not just a bare action list.
+    let dir = temp_home();
+    std::fs::write(
+        dir.join("config.yaml"),
+        "\
+active_profile: default
+profiles:
+  default:
+    api_key: sk-ar-v1-menu-status-secret-abcdef
+    default_model: auto
+",
+    )
+    .unwrap();
+    let out = anyr()
+        .arg("menu")
+        .env("ANYROUTER_HOME", &dir)
+        .output()
+        .expect("menu non-tty");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code().unwrap_or(1), 0, "{stdout}{stderr}");
+    // First line is the status, not an action: it names the binary and the
+    // signed-in dot, and never leaks the full secret.
+    let first = stdout.lines().next().unwrap_or("");
+    assert!(first.contains("anyr"), "status must name anyr: {first}");
+    assert!(
+        first.contains("auto") || first.contains("claude"),
+        "status must show model/agent: {first}"
+    );
+    assert!(
+        !stdout.contains("menu-status-secret"),
+        "leaked secret: {stdout}"
+    );
+    // Actions follow the status line.
+    assert!(
+        stdout.contains("Config") && stdout.contains("Quit"),
+        "{stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

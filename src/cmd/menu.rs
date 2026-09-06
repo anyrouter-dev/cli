@@ -304,7 +304,12 @@ pub(crate) fn run_menu(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> R
     }
 
     if !term::is_interactive() {
-        let (_, actions) = launcher_hud(&path, parsed, env, &mut CreditsCache::fresh());
+        let (status, actions) = launcher_hud(&path, parsed, env, &mut CreditsCache::fresh());
+        // Without a TTY the menu can't be driven, but the status line is the
+        // whole point of the "preflight" launcher: account · model · agent ·
+        // credits. Print it first so a piped `anyr menu` still reports state,
+        // then list the actions it would offer.
+        println!("{status}");
         println!(
             "{}",
             actions
