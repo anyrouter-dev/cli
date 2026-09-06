@@ -12,7 +12,10 @@ Launches the coding agent through AnyRouter (signs in first if needed).
 
 Options:
   --yes, --ok           Skip confirmation prompts (login / install)
-  --model auto|<id>     Session model. \"auto\" picks the most-used catalog model
+  --model auto|<id>     Session model. Default (no flag) = \"auto\" → \
+anyrouter/auto on a fresh install; \"auto\" resolves to the most-used \
+catalog model on an authed key, else anyrouter/auto. Omit to let failover \
+pick the best stable model per turn.
   --haiku <id>          Claude /model haiku and subagents
   --sonnet <id>         Claude /model sonnet
   --opus <id>           Claude /model opus
