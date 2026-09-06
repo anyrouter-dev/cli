@@ -3,6 +3,7 @@
 pub mod auth;
 pub mod buildinfo;
 pub mod channel;
+pub mod cmd;
 pub mod commands;
 pub mod config;
 pub mod demo;
