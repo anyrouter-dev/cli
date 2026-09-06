@@ -138,6 +138,16 @@ Already installed somewhere else? Point AnyRouter at it:\n\
     )
 }
 
+/// Persist `tools[id].command` only for a real path override, not a PATH hit
+/// that resolved the builtin name to `/usr/bin/claude`.
+pub fn should_persist_command(resolved: &str, builtin: &str) -> bool {
+    let trimmed = resolved.trim();
+    if trimmed.is_empty() || trimmed == builtin {
+        return false;
+    }
+    trimmed.contains('/') || trimmed.contains('\\') || trimmed.starts_with('.')
+}
+
 pub fn resolve_executable(command: &str) -> Option<String> {
     if command.contains('/') || command.contains('\\') || command.starts_with('.') {
         return Some(command.to_string());
@@ -158,7 +168,7 @@ pub fn resolve_executable(command: &str) -> Option<String> {
                 return cached.clone();
             }
             let found = find_on_path(command);
-            // Cache hits only. A miss must be retried after install
+            // Cache hits only. A miss must be retried after `--install`
             // (PATH changes in-process; a cached None would always fail).
             if found.is_some() {
                 hits.borrow_mut().insert(command.to_string(), found.clone());
@@ -346,6 +356,14 @@ mod tests {
         env.insert("ANYR_AGENTS".into(), "codex".into());
         assert!(!agent_available("claude", "claude", &env));
         assert!(agent_available("codex", "codex", &env));
+    }
+
+    #[test]
+    fn should_persist_only_path_overrides() {
+        assert!(!should_persist_command("claude", "claude"));
+        assert!(!should_persist_command("", "claude"));
+        assert!(should_persist_command("/usr/bin/claude", "claude"));
+        assert!(should_persist_command("./bin/claude", "claude"));
     }
 
     #[test]

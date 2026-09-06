@@ -120,15 +120,12 @@ pub(crate) fn tui_palette_select(
 }
 
 #[cfg(feature = "native")]
-pub(crate) fn launcher_uses_palette() -> bool {
-    let tui = std::env::var("ANYR_TUI").unwrap_or_default();
-    let t = tui.trim();
-    (t == "1" || t.eq_ignore_ascii_case("true") || t.eq_ignore_ascii_case("yes"))
-        && crate::tui::can_use_fullscreen()
+pub(crate) fn launcher_uses_palette(env: &BTreeMap<String, String>) -> bool {
+    crate::tui::env_flag(env, "ANYR_TUI") && crate::tui::can_use_fullscreen()
 }
 
 #[cfg(not(feature = "native"))]
-pub(crate) fn launcher_uses_palette() -> bool {
+pub(crate) fn launcher_uses_palette(_env: &BTreeMap<String, String>) -> bool {
     false
 }
 
@@ -196,7 +193,6 @@ pub(crate) const LAUNCH_FLAGS: &[&str] = &[
     "dry-run",
     "yes",
     "ok",
-    "no-check",
     "device",
     "device-code",
     "paste",
@@ -425,6 +421,12 @@ pub(crate) fn catalog_lookup_enabled(env: &BTreeMap<String, String>) -> bool {
 }
 
 pub(crate) fn persist_tool_command(path: &PathBuf, id: &str, command: &str) -> Result<(), String> {
+    let builtin = resolve_tool(None, id)
+        .map(|t| t.command)
+        .unwrap_or_else(|_| id.to_string());
+    if !crate::install::should_persist_command(command, &builtin) {
+        return Ok(());
+    }
     let mut cfg = load_config_if_present(path).unwrap_or_default();
     let mut tool = resolve_tool(Some(&cfg), id)?;
     tool.command = command.to_string();
@@ -577,6 +579,15 @@ pub(crate) fn should_open_launcher(raw: &[String], interactive: bool, dump: bool
 #[cfg(test)]
 mod tests {
     use super::should_open_launcher;
+
+    #[test]
+    fn persist_tool_command_skips_bare_builtin() {
+        assert!(!crate::install::should_persist_command("claude", "claude"));
+        assert!(crate::install::should_persist_command(
+            "/opt/claude",
+            "claude"
+        ));
+    }
 
     #[test]
     fn bare_tty_opens_launcher_not_help() {

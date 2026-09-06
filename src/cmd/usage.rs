@@ -91,6 +91,11 @@ pub(crate) fn run_whoami(
         term::dim("claude_opus    "),
         term::model_id(profile.claude_opus())
     );
+    println!(
+        "{}  {}",
+        term::dim("claude_fable   "),
+        term::model_id(profile.claude_fable())
+    );
     if let Some(tool) = &profile.default_tool {
         println!(
             "{}  {}",

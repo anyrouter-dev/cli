@@ -644,7 +644,7 @@ pub fn parse_config(source: &str) -> Config {
                     .get(name)
                     .cloned()
                     .unwrap_or_else(ToolConfig::default);
-                tool.merge(&ToolConfig::from_yaml(tm));
+                tool.apply_yaml(tm);
                 config.tools.insert(name.clone(), tool);
             }
         }
@@ -985,6 +985,37 @@ agents:
         assert!(claude2.routing.wants_exacto());
         assert!(claude2.routing.requires_tools());
         assert_eq!(claude2.routing.min_context, Some(1_000_000));
+    }
+
+    #[test]
+    fn partial_tools_yaml_keeps_builtin_gateway_discovery() {
+        // WHY: `tools.claude.command` alone must not flip discovery off.
+        let cfg = parse_config(
+            "\
+active_profile: default
+profiles:
+  default:
+    api_key: x
+tools:
+  claude:
+    command: /opt/claude
+",
+        );
+        let claude = cfg.tools.get("claude").expect("claude tool");
+        assert_eq!(claude.command, "/opt/claude");
+        assert!(
+            claude.enable_gateway_model_discovery,
+            "partial overlay wiped gateway discovery"
+        );
+        let yaml = serialize_config(&cfg);
+        let again = parse_config(&yaml);
+        assert!(
+            again
+                .tools
+                .get("claude")
+                .expect("roundtrip")
+                .enable_gateway_model_discovery
+        );
     }
 
     #[test]

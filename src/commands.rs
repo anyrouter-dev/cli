@@ -150,10 +150,7 @@ fn dispatch(
                 stub("relay")
             }
         }
-        "cursor" | "cline" | "windsurf" => {
-            print!("{}", command_help(command).unwrap_or_default());
-            Ok(0)
-        }
+        "cursor" | "cline" | "windsurf" => stub(command),
         "upgrade" | "update" => crate::upgrade::run(parsed, env),
         "onboard" | "impl" | "plan" | "fix" | "deploy" | "cp" => {
             crate::onboard::run(command, parsed)

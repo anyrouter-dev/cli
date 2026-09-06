@@ -25,15 +25,17 @@ pub use state::{
     PickerState, SettingRow, SettingsOutcome, SettingsState, Tone,
 };
 
+pub fn env_flag(env: &BTreeMap<String, String>, key: &str) -> bool {
+    env.get(key)
+        .map(|s| {
+            let t = s.trim();
+            t == "1" || t.eq_ignore_ascii_case("true") || t.eq_ignore_ascii_case("yes")
+        })
+        .unwrap_or(false)
+}
+
 pub fn wants_dump(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> bool {
-    parsed.flag_true("dump-tui")
-        || env
-            .get("ANYR_TUI_DUMP")
-            .map(|s| {
-                let t = s.trim();
-                t == "1" || t.eq_ignore_ascii_case("true") || t.eq_ignore_ascii_case("yes")
-            })
-            .unwrap_or(false)
+    parsed.flag_true("dump-tui") || env_flag(env, "ANYR_TUI_DUMP")
 }
 
 pub fn dump_cols(env: &BTreeMap<String, String>) -> usize {

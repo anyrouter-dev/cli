@@ -162,8 +162,9 @@ pub(crate) fn run_config_tui(
     #[cfg(feature = "native")]
     {
         if tui_wants_dump(parsed, env) {
+            let tab = settings_tab_index(env);
             let (state, _) =
-                config_settings_frame(parsed, env, &path, false, &mut CreditsCache::fresh(), 0);
+                config_settings_frame(parsed, env, &path, false, &mut CreditsCache::fresh(), tab);
             print!("{}", tui_dump_settings(state, env));
             return Ok(0);
         }
@@ -171,6 +172,24 @@ pub(crate) fn run_config_tui(
     }
     #[cfg(not(feature = "native"))]
     config_menu_loop_legacy(parsed, env, &path)
+}
+
+#[cfg(feature = "native")]
+pub(crate) fn settings_tab_index(env: &BTreeMap<String, String>) -> usize {
+    let Some(raw) = env
+        .get("ANYR_TUI_TAB")
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    else {
+        return 0;
+    };
+    if let Ok(i) = raw.parse::<usize>() {
+        return i;
+    }
+    settings_tab_names()
+        .iter()
+        .position(|t| t.eq_ignore_ascii_case(raw))
+        .unwrap_or(0)
 }
 
 #[cfg(feature = "native")]
@@ -440,7 +459,7 @@ pub(crate) fn fill_agent_settings(
             "not installed".into()
         },
         if present { Tone::Good } else { Tone::Warn },
-        SettingKind::Install(id),
+        SettingKind::Mapping,
     );
     entry(
         rows,
@@ -1230,5 +1249,21 @@ pub(crate) fn run_config(
         Some(other) => Err(hint(&format!(
             "Unknown config command \"{other}\". Try: {{bin}} config · {{bin}} config path · {{bin}} config use <account>"
         ))),
+    }
+}
+
+#[cfg(test)]
+mod settings_tab_tests {
+    use super::settings_tab_index;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn settings_tab_index_reads_name_and_number() {
+        let mut env = BTreeMap::new();
+        assert_eq!(settings_tab_index(&env), 0);
+        env.insert("ANYR_TUI_TAB".into(), "claude".into());
+        assert_eq!(settings_tab_index(&env), 1);
+        env.insert("ANYR_TUI_TAB".into(), "2".into());
+        assert_eq!(settings_tab_index(&env), 2);
     }
 }

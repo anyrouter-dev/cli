@@ -288,7 +288,7 @@ pub(crate) fn run_menu(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> R
     let dumping = tui_wants_dump(parsed, env);
 
     if dumping {
-        if launcher_uses_palette() {
+        if launcher_uses_palette(env) {
             let (header, entries) =
                 launcher_palette(&path, parsed, env, &mut CreditsCache::fresh());
             print!("{}", tui_dump_palette(entries, header, env));
@@ -326,7 +326,7 @@ pub(crate) fn run_menu(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> R
         let key = resolve_api_key(&parsed.flags, env, profile);
         kick_credits_refresh(&cache, base, key);
     }
-    let inline = !launcher_uses_palette();
+    let inline = !launcher_uses_palette(env);
     loop {
         if inline {
             let (status, actions) = {
