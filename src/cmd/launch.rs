@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use crate::auth::acquire_api_key;
 use crate::config::{write_config, DEFAULT_PROFILE};
-use crate::http::{fetch_models, most_used_model_id};
+use crate::http::fetch_models;
 use crate::install::ensure_tool_installed;
 use crate::key::{
     load_config_if_present, profile_for_agent, resolve_base_url, resolve_launch_api_key,
@@ -44,14 +44,15 @@ pub(crate) fn resolve_session_model(
             context_window: None,
         };
     };
-    let id = if is_auto_model(&requested) {
-        most_used_model_id(&models).unwrap_or(requested)
-    } else {
-        requested
-    };
+    // Keep `auto` / `anyrouter/auto` as-is so the gateway applies the full
+    // preset failover chain on the first turn — pinning a single concrete model
+    // here would defeat anyrouter/auto's cross-model failover (north star:
+    // "fewer models that work"). The live `/models` lookup still contributes the
+    // context-window probe used for Claude's 1M-context suffix decision below.
+    let id = requested;
     let context_window = models
         .iter()
-        .find(|m| catalog_model_id(&m.id) == id)
+        .find(|m| is_auto_model(&m.id))
         .and_then(|m| m.context_length);
     ResolvedModel { id, context_window }
 }
