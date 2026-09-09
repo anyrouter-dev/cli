@@ -466,16 +466,20 @@ fn claude_dry_run_pinned_model_collapses_aliases() {
     };
     assert_eq!(code, 0, "stderr={stderr}");
     assert!(
-        stdout.contains("ANTHROPIC_MODEL=stealth/ox-alpha[1m]"),
+        stdout.contains("ANTHROPIC_MODEL=stealth/ox-alpha"),
+        "{stdout}"
+    );
+    assert!(
+        !stdout.contains("ANTHROPIC_MODEL=stealth/ox-alpha[1m]"),
         "{stdout}"
     );
     // Unset alias slots follow the pinned model so nothing falls back to
     // haiku/sonnet/opus behind the user's back.
     for key_line in [
-        "ANTHROPIC_DEFAULT_HAIKU_MODEL=stealth/ox-alpha[1m]",
-        "ANTHROPIC_DEFAULT_SONNET_MODEL=stealth/ox-alpha[1m]",
-        "ANTHROPIC_DEFAULT_OPUS_MODEL=stealth/ox-alpha[1m]",
-        "CLAUDE_CODE_SUBAGENT_MODEL=stealth/ox-alpha[1m]",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL=stealth/ox-alpha",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL=stealth/ox-alpha",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL=stealth/ox-alpha",
+        "CLAUDE_CODE_SUBAGENT_MODEL=stealth/ox-alpha",
     ] {
         assert!(stdout.contains(key_line), "missing {key_line}:\n{stdout}");
     }
@@ -509,11 +513,11 @@ fn claude_dry_run_haiku_flag_beats_pinned_model() {
     };
     assert_eq!(code, 0, "stderr={stderr}");
     assert!(
-        stdout.contains("ANTHROPIC_DEFAULT_HAIKU_MODEL=z-ai/glm-4.7-flash[1m]"),
+        stdout.contains("ANTHROPIC_DEFAULT_HAIKU_MODEL=z-ai/glm-4.7-flash"),
         "{stdout}"
     );
     assert!(
-        stdout.contains("ANTHROPIC_DEFAULT_SONNET_MODEL=stealth/ox-alpha[1m]"),
+        stdout.contains("ANTHROPIC_DEFAULT_SONNET_MODEL=stealth/ox-alpha"),
         "{stdout}"
     );
 }
@@ -568,7 +572,11 @@ fn claude_yolo_with_ox_alpha_1m_still_works() {
     };
     assert_eq!(code, 0, "stderr={stderr}");
     assert!(
-        stdout.contains("ANTHROPIC_MODEL=stealth/ox-alpha[1m]"),
+        stdout.contains("ANTHROPIC_MODEL=stealth/ox-alpha"),
+        "{stdout}"
+    );
+    assert!(
+        !stdout.contains("ANTHROPIC_MODEL=stealth/ox-alpha[1m]"),
         "{stdout}"
     );
     assert!(
@@ -629,13 +637,13 @@ fn claude_dry_run_fable_flag_beats_pinned_model() {
     assert_eq!(code, 0, "stderr={stderr}");
     // Explicit --fable wins over the pinned session model...
     assert!(
-        stdout.contains("ANTHROPIC_DEFAULT_FABLE_MODEL=anthropic/claude-fable-5[1m]"),
+        stdout.contains("ANTHROPIC_DEFAULT_FABLE_MODEL=anthropic/claude-fable-5"),
         "{stdout}"
     );
     // ...while every other unset slot still follows the pin.
     for key_line in [
-        "ANTHROPIC_DEFAULT_SONNET_MODEL=stealth/ox-alpha[1m]",
-        "ANTHROPIC_DEFAULT_OPUS_MODEL=stealth/ox-alpha[1m]",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL=stealth/ox-alpha",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL=stealth/ox-alpha",
     ] {
         assert!(stdout.contains(key_line), "missing {key_line}:\n{stdout}");
     }
@@ -671,7 +679,7 @@ fn claude_dry_run_haiku_flag_overrides_alias() {
     };
     assert_eq!(code, 0, "stderr={stderr}");
     assert!(
-        stdout.contains("ANTHROPIC_DEFAULT_HAIKU_MODEL=z-ai/glm-4.7-flash[1m]"),
+        stdout.contains("ANTHROPIC_DEFAULT_HAIKU_MODEL=z-ai/glm-4.7-flash"),
         "{stdout}"
     );
     assert!(
@@ -756,7 +764,7 @@ fn launch_remembers_explicit_model_as_session_default() {
         .expect("relaunch");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains("ANTHROPIC_MODEL=z-ai/glm-4.7-flash[1m]"),
+        stdout.contains("ANTHROPIC_MODEL=z-ai/glm-4.7-flash"),
         "session default not remembered:\n{stdout}"
     );
 
@@ -1953,7 +1961,7 @@ agents:
         String::from_utf8_lossy(&grok.stderr)
     );
     assert!(
-        claude_out.contains("ANTHROPIC_MODEL=stealth/ox-alpha[1m]"),
+        claude_out.contains("ANTHROPIC_MODEL=stealth/ox-alpha"),
         "{claude_out}"
     );
     assert!(
@@ -2049,7 +2057,11 @@ fn claude_model_1m_flag_still_launches() {
     ]);
     assert_eq!(code, 0, "{stdout}{stderr}");
     assert!(
-        stdout.contains("ANTHROPIC_MODEL=stealth/ox-alpha[1m]"),
+        stdout.contains("ANTHROPIC_MODEL=stealth/ox-alpha"),
+        "{stdout}"
+    );
+    assert!(
+        !stdout.contains("ANTHROPIC_MODEL=stealth/ox-alpha[1m]"),
         "{stdout}"
     );
     assert!(

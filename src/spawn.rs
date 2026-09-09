@@ -6,8 +6,11 @@ use std::process::{Command, Stdio};
 use crate::config::{Profile, YamlValue, DEFAULT_BASE_URL, DEFAULT_PRESET, DEFAULT_TIMEOUT_MS};
 
 pub const PI_DEFAULT_MODEL: &str = "anthropic/claude-sonnet-4.6";
-/// Claude Code 1M-context suffix. Claude strips it before the gateway; other
-/// agents must never send it (Pi/Codex 404 on `id[1m]`).
+/// Historical 1M-context suffix used by Claude Code. Claude Code used to strip
+/// it before the gateway, but third-party catalog ids (e.g.
+/// `meituan/longcat-2.0`) are forwarded verbatim to the provider and 404 on
+/// `id[1m]`. The CLI no longer appends it; we keep stripping it on ingest as
+/// defense against a user-typed or relay-tagged id.
 pub const CLAUDE_1M_SUFFIX: &str = "[1m]";
 const MIN_1M_CONTEXT: i64 = 1_000_000;
 
@@ -532,36 +535,29 @@ pub fn session_model_label(model: &str) -> String {
 pub fn claude_wants_1m(context_window: Option<i64>) -> bool {
     match context_window {
         Some(n) => n >= MIN_1M_CONTEXT,
-        // Unknown: Claude Code strips `[1m]` before the provider, so appending
-        // is safe for the gateway and unlocks 1M when the model supports it.
+        // Unknown: we no longer append `[1m]` for Claude (third-party catalog
+        // ids 404 on the suffix), but this predicate still drives the
+        // `CLAUDE_CODE_AUTO_COMPACT_WINDOW` env var in `build_tool_env`.
         None => true,
     }
 }
 
-/// Agent-specific model id. Claude Code gets `[1m]` (1M context). Pi/Codex/etc
-/// get the catalog id — the suffix 404s on the OpenAI-compatible API.
+/// Agent-specific model id. Every agent (including Claude) gets the canonical
+/// catalog id — no `[1m]` suffix. Historically Claude received a `[1m]` 1M
+/// suffix that Claude stripped upstream, but third-party catalog ids must
+/// reach the provider verbatim, so we no longer append it.
 pub fn model_id_for_tool(tool_name: &str, model: &str, context_window: Option<i64>) -> String {
+    let _ = (tool_name, context_window);
     let id = catalog_model_id(model);
-    if is_auto_model(&id) || id.starts_with("anyrouter/") {
-        return if is_auto_model(&id) {
-            display_model_id(&id)
-        } else {
-            id
-        };
-    }
-    if tool_name == "claude" && claude_wants_1m(context_window) {
-        if id.ends_with(CLAUDE_1M_SUFFIX) {
-            id
-        } else {
-            format!("{id}{CLAUDE_1M_SUFFIX}")
-        }
+    if is_auto_model(&id) {
+        display_model_id(&id)
     } else {
         id
     }
 }
 
-/// Strip CSI, Claude's `[1m]` 1M suffix, and dangling SGR tails (`[1m` without
-/// `]`). Config and non-Claude agents store/send the catalog id only.
+/// Strip CSI, Claude's `[1m]` 1M suffix, closed `[Nm]` / `[0;1m]` tails, and
+/// dangling SGR (`[1m` without `]`). Store/send the catalog id only.
 pub fn sanitize_model_id(model: &str) -> String {
     catalog_model_id(model)
 }
@@ -583,14 +579,13 @@ pub fn catalog_model_id(model: &str) -> String {
         }
         s.push(c);
     }
-    if let Some(stripped) = s.strip_suffix(CLAUDE_1M_SUFFIX) {
-        s = stripped.to_string();
-    }
+    // Trailing `[1m]`, `[Nm]`, CSI-like `[0;1m]`, and dangling `[1m` (no `]`).
     if let Some(i) = s.rfind('[') {
         let tail = &s[i + 1..];
-        if tail.ends_with('m')
-            && tail.len() > 1
-            && tail[..tail.len() - 1]
+        let codes = tail.strip_suffix(']').unwrap_or(tail);
+        if codes.ends_with('m')
+            && codes.len() > 1
+            && codes[..codes.len() - 1]
                 .bytes()
                 .all(|b| b.is_ascii_digit() || b == b';')
         {
@@ -877,6 +872,11 @@ mod tests {
             sanitize_model_id("\u{1b}[1mstealth/ox-alpha\u{1b}[0m"),
             "stealth/ox-alpha"
         );
+        assert_eq!(sanitize_model_id("stealth/ox-alpha[2m]"), "stealth/ox-alpha");
+        assert_eq!(
+            sanitize_model_id("stealth/ox-alpha[0;1m]"),
+            "stealth/ox-alpha"
+        );
         assert_eq!(pi_resolved_model("anyrouter/auto"), PI_DEFAULT_MODEL);
         assert_eq!(pi_resolved_model("auto"), PI_DEFAULT_MODEL);
         assert_eq!(
@@ -886,14 +886,14 @@ mod tests {
     }
 
     #[test]
-    fn model_id_for_tool_appends_1m_only_for_claude() {
+    fn model_id_for_tool_never_appends_1m_for_claude() {
         assert_eq!(
             model_id_for_tool("claude", "stealth/ox-alpha", None),
-            "stealth/ox-alpha[1m]"
+            "stealth/ox-alpha"
         );
         assert_eq!(
             model_id_for_tool("claude", "stealth/ox-alpha[1m]", None),
-            "stealth/ox-alpha[1m]"
+            "stealth/ox-alpha"
         );
         assert_eq!(
             model_id_for_tool("claude", "stealth/ox-alpha", Some(200_000)),
@@ -901,7 +901,11 @@ mod tests {
         );
         assert_eq!(
             model_id_for_tool("claude", "stealth/ox-alpha", Some(1_000_000)),
-            "stealth/ox-alpha[1m]"
+            "stealth/ox-alpha"
+        );
+        assert_eq!(
+            model_id_for_tool("claude", "stealth/ox-alpha[2m]", None),
+            "stealth/ox-alpha"
         );
         assert_eq!(
             model_id_for_tool("pi", "stealth/ox-alpha[1m]", None),
@@ -998,7 +1002,7 @@ mod tests {
         });
         assert_eq!(
             env.get("ANTHROPIC_MODEL").map(String::as_str),
-            Some("stealth/ox-alpha[1m]")
+            Some("stealth/ox-alpha")
         );
         assert_eq!(
             env.get("CLAUDE_CODE_AUTO_COMPACT_WINDOW")
@@ -1016,7 +1020,7 @@ mod tests {
         ] {
             assert_eq!(
                 env.get(key).map(String::as_str),
-                Some("stealth/ox-alpha[1m]"),
+                Some("stealth/ox-alpha"),
                 "{key} should follow the pinned model"
             );
         }
@@ -1040,7 +1044,7 @@ mod tests {
         assert_eq!(
             env.get("ANTHROPIC_DEFAULT_SONNET_MODEL")
                 .map(String::as_str),
-            Some("z-ai/glm-4.7-flash[1m]")
+            Some("z-ai/glm-4.7-flash")
         );
         for key in [
             "ANTHROPIC_DEFAULT_HAIKU_MODEL",
@@ -1050,7 +1054,7 @@ mod tests {
         ] {
             assert_eq!(
                 env.get(key).map(String::as_str),
-                Some("stealth/ox-alpha[1m]"),
+                Some("stealth/ox-alpha"),
                 "{key} should follow the pinned model"
             );
         }
@@ -1079,11 +1083,11 @@ mod tests {
         );
         assert_eq!(
             env.get("ANTHROPIC_DEFAULT_HAIKU_MODEL").map(String::as_str),
-            Some("z-ai/glm-4.7-flash[1m]")
+            Some("z-ai/glm-4.7-flash")
         );
         assert_eq!(
             env.get("CLAUDE_CODE_SUBAGENT_MODEL").map(String::as_str),
-            Some("z-ai/glm-4.7-flash[1m]")
+            Some("z-ai/glm-4.7-flash")
         );
         assert_eq!(
             env.get("ANYROUTER_MODEL_MODE").map(String::as_str),
