@@ -12,10 +12,8 @@ Launches the coding agent through AnyRouter (signs in first if needed).
 
 Options:
   --yes, --ok           Skip confirmation prompts (login / install)
-  --model auto|<id>     Session model. Default (no flag) = \"auto\" → \
-anyrouter/auto on a fresh install; \"auto\" resolves to the most-used \
-catalog model on an authed key, else anyrouter/auto. Omit to let failover \
-pick the best stable model per turn.
+  --model auto|<id>     Session model. Omit the flag (or pass auto) to use \
+the documented anyrouter/auto preset — gateway failover, not a catalog SKU.
   --haiku <id>          Claude /model haiku and subagents
   --sonnet <id>         Claude /model sonnet
   --opus <id>           Claude /model opus
@@ -87,7 +85,7 @@ pub fn root_help() -> String {
 Start
   $ curl -fsSL https://anyrouter.dev/setup.sh | bash
   $ {bin} auth login
-  $ {bin} claude
+  $ {bin} claude                 # default model: anyrouter/auto
 
 Swap the model, keep the agent
   $ {bin} claude --model z-ai/glm-4.7-flash

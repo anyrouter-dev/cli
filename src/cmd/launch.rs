@@ -172,7 +172,7 @@ pub(crate) fn run_launch(
         let id = catalog_model_id(&flag_model);
         let stored = if is_auto_model(&id) { None } else { Some(id) };
         if let Some(p) = cfg.profiles.get_mut(&cfg.active_profile) {
-            // Auto stays unset so the next launch re-picks the most-used model.
+            // Auto stays unset so the next launch keeps the anyrouter/auto preset.
             p.default_model = stored.clone();
         }
         cfg.agent_binding_mut(tool_name).default_model = stored;
