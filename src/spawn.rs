@@ -3,7 +3,9 @@ use std::path::{Path, PathBuf};
 #[cfg(feature = "native")]
 use std::process::{Command, Stdio};
 
-use crate::config::{Profile, YamlValue, DEFAULT_BASE_URL, DEFAULT_PRESET, DEFAULT_TIMEOUT_MS};
+use crate::config::{
+    Profile, YamlValue, DEFAULT_BASE_URL, DEFAULT_MODEL, DEFAULT_PRESET, DEFAULT_TIMEOUT_MS,
+};
 
 pub const PI_DEFAULT_MODEL: &str = "anthropic/claude-sonnet-4.6";
 /// Claude Code 1M-context suffix. Claude strips it before the gateway; other
@@ -282,7 +284,7 @@ pub fn default_profile_for_env(base_url: Option<&str>, api_key: Option<&str>) ->
         api_key: api_key.map(str::to_string),
         base_url: Some(base_url.unwrap_or(DEFAULT_BASE_URL).to_string()),
         pinned_preset: Some(DEFAULT_PRESET.into()),
-        default_model: Some("auto".into()),
+        default_model: Some(DEFAULT_MODEL.into()),
         timeout_ms: Some(DEFAULT_TIMEOUT_MS),
         ..Profile::default()
     }

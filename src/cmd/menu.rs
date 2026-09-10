@@ -45,7 +45,11 @@ pub(crate) fn agent_binding_detail(
         .filter(|s| !s.is_empty())
         .map(session_model_label)
         .unwrap_or_else(|| {
-            session_model_label(profile.map(|p| p.default_model()).unwrap_or("auto"))
+            session_model_label(
+                profile
+                    .map(|p| p.default_model())
+                    .unwrap_or(crate::config::DEFAULT_MODEL),
+            )
         });
     let account = binding
         .and_then(|b| b.profile.as_deref())
@@ -389,7 +393,11 @@ pub(crate) fn launcher_hud(
         .peek_identity()
         .map(|me| me.display_label())
         .unwrap_or_else(|| cfg.active_profile.clone());
-    let model = session_model_label(profile.map(|p| p.default_model()).unwrap_or("auto"));
+    let model = session_model_label(
+        profile
+            .map(|p| p.default_model())
+            .unwrap_or(crate::config::DEFAULT_MODEL),
+    );
     let credits_s = credits.peek_credits();
     let dot = if signed_in {
         term::ok("●")

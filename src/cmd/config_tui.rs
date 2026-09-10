@@ -57,7 +57,11 @@ pub(crate) fn print_config_status(
     } else {
         format!("{account}  {extra_email}")
     };
-    let model = session_model_label(profile.map(|p| p.default_model()).unwrap_or("auto"));
+    let model = session_model_label(
+        profile
+            .map(|p| p.default_model())
+            .unwrap_or(crate::config::DEFAULT_MODEL),
+    );
     let agent = profile
         .and_then(|p| p.default_tool.clone())
         .or_else(|| cfg.last_tool.clone())
@@ -339,7 +343,11 @@ pub(crate) fn fill_general_settings(
         rows,
         kinds,
         "default",
-        session_model_label(profile.map(|p| p.default_model()).unwrap_or("auto")),
+        session_model_label(
+            profile
+                .map(|p| p.default_model())
+                .unwrap_or(crate::config::DEFAULT_MODEL),
+        ),
         Tone::Model,
         SettingKind::Model("default"),
     );
@@ -1183,7 +1191,11 @@ pub(crate) fn config_tui_header(path: &std::path::Path) -> Vec<String> {
         ),
         format!(
             "model    {}",
-            session_model_label(profile.map(|p| p.default_model()).unwrap_or("auto"))
+            session_model_label(
+                profile
+                    .map(|p| p.default_model())
+                    .unwrap_or(crate::config::DEFAULT_MODEL),
+            )
         ),
         format!("file     {}", path.display()),
     ]
