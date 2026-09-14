@@ -424,6 +424,88 @@ fn claude_dry_run_omitted_model_uses_anyrouter_auto() {
 }
 
 #[test]
+fn claude_dry_run_model_auto_1m_sets_min_context_in_extra_body() {
+    let key = "sk-ar-v1-fixture-key-0001";
+    let out = anyr()
+        .args([
+            "claude",
+            "--dry-run",
+            "--yes",
+            "--key",
+            key,
+            "--model",
+            "anyrouter/auto[1m]",
+        ])
+        .env("ANYROUTER_HOME", temp_home())
+        .env_remove("ANYROUTER_API_KEY")
+        .output()
+        .expect("dry-run");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code().unwrap_or(1), 0, "{stdout}{stderr}");
+    // Claude strips the [1m] floor from the catalog model id.
+    assert!(
+        stdout.contains("ANTHROPIC_MODEL=anyrouter/auto"),
+        "{stdout}"
+    );
+    assert!(
+        !stdout.contains("ANTHROPIC_MODEL=anyrouter/auto[1m]"),
+        "{stdout}"
+    );
+    // The floor is carried into CLAUDE_CODE_EXTRA_BODY under provider.min_context.
+    assert!(stdout.contains("CLAUDE_CODE_EXTRA_BODY="), "{stdout}");
+    assert!(
+        stdout.contains("\"min_context\":1000000"),
+        "expected min_context 1_000_000 in extra body:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("\"provider\""),
+        "expected provider object in extra body:\n{stdout}"
+    );
+}
+
+#[test]
+fn claude_dry_run_model_auto_500k_sets_min_context_in_extra_body() {
+    let key = "sk-ar-v1-fixture-key-0001";
+    let out = anyr()
+        .args([
+            "claude",
+            "--dry-run",
+            "--yes",
+            "--key",
+            key,
+            "--model",
+            "anyrouter/auto[500k]",
+        ])
+        .env("ANYROUTER_HOME", temp_home())
+        .env_remove("ANYROUTER_API_KEY")
+        .output()
+        .expect("dry-run");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code().unwrap_or(1), 0, "{stdout}{stderr}");
+    // Claude strips the [500k] floor from the catalog model id.
+    assert!(
+        stdout.contains("ANTHROPIC_MODEL=anyrouter/auto"),
+        "{stdout}"
+    );
+    assert!(
+        !stdout.contains("ANTHROPIC_MODEL=anyrouter/auto[500k]"),
+        "{stdout}"
+    );
+    // The floor is carried into CLAUDE_CODE_EXTRA_BODY under provider.min_context.
+    assert!(stdout.contains("CLAUDE_CODE_EXTRA_BODY="), "{stdout}");
+    assert!(
+        stdout.contains("\"min_context\":500000"),
+        "expected min_context 500_000 in extra body:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("\"provider\""),
+        "expected provider object in extra body:\n{stdout}"
+    );
+}
+
+#[test]
 fn claude_help_documents_anyrouter_auto_not_invented_skus() {
     let (code, stdout, stderr) = run(&["claude", "--help"]);
     assert_eq!(code, 0, "{stdout}{stderr}");
@@ -432,6 +514,9 @@ fn claude_help_documents_anyrouter_auto_not_invented_skus() {
         !stdout.to_ascii_lowercase().contains("most-used"),
         "help must not claim auto invents a usage SKU:\n{stdout}"
     );
+    // Help documents the min-context floor suffixes.
+    assert!(stdout.contains("[1m]"), "{stdout}");
+    assert!(stdout.contains("[500k]"), "{stdout}");
 }
 
 #[test]
