@@ -516,6 +516,7 @@ pub fn effort_args_for(tool_name: &str, effort: Option<&str>) -> Vec<String> {
 
 pub fn is_auto_model(model: &str) -> bool {
     let value = catalog_model_id(model);
+    let value = crate::config::strip_context_window_suffix(&value);
     value.is_empty() || value == "auto" || value == "anyrouter/auto"
 }
 
@@ -581,7 +582,10 @@ pub fn catalog_model_id(model: &str) -> String {
         }
         s.push(c);
     }
-    // Trailing `[1m]`, `[Nm]`, CSI-like `[0;1m]`, and dangling `[1m` (no `]`).
+    // Trailing `[1m]` / `[500k]` floors, CSI-like `[0;1m]`, dangling `[1m`.
+    if crate::config::parse_context_window_suffix(&s).is_some() {
+        s = crate::config::strip_context_window_suffix(&s).to_string();
+    }
     if let Some(i) = s.rfind('[') {
         let tail = &s[i + 1..];
         let codes = tail.strip_suffix(']').unwrap_or(tail);
@@ -926,6 +930,17 @@ mod tests {
             model_id_for_tool("claude", "anyrouter/free", None),
             "anyrouter/free"
         );
+        assert_eq!(
+            model_id_for_tool("claude", "anyrouter/auto[1m]", None),
+            "anyrouter/auto"
+        );
+        assert_eq!(
+            model_id_for_tool("claude", "anyrouter/auto[500k]", None),
+            "anyrouter/auto"
+        );
+        assert!(is_auto_model("anyrouter/auto[1m]"));
+        assert!(is_auto_model("anyrouter/auto[500k]"));
+        assert_eq!(catalog_model_id("anyrouter/auto[500k]"), "anyrouter/auto");
     }
 
     #[test]

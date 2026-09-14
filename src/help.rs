@@ -12,8 +12,8 @@ Launches the coding agent through AnyRouter (signs in first if needed).
 
 Options:
   --yes, --ok           Skip confirmation prompts (login / install)
-  --model auto|<id>     Session model. Omit the flag (or pass auto) to use \
-the documented anyrouter/auto preset — gateway failover, not a catalog SKU.
+  --model auto|<id>     Session model. auto / anyrouter/auto; [1m] and [500k] \
+are min-context floors on auto (not catalog SKUs).
   --haiku <id>          Claude /model haiku and subagents
   --sonnet <id>         Claude /model sonnet
   --opus <id>           Claude /model opus
@@ -89,6 +89,8 @@ Start
 
 Swap the model, keep the agent
   $ {bin} claude --model z-ai/glm-4.7-flash
+  $ {bin} claude --yolo --model anyrouter/auto[1m]
+  $ {bin} claude --model anyrouter/auto[500k]
   $ {bin} claude --model auto --effort high
 
 Same key, other agents
