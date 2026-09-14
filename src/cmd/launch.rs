@@ -112,11 +112,20 @@ pub(crate) fn run_launch(
         context_window: resolved.context_window,
         model_map: None,
     });
-    let routing = existing
+    let mut routing = existing
         .as_ref()
         .and_then(|c| c.agent_binding(tool_name))
         .map(|b| b.routing.clone())
         .unwrap_or_default();
+    if let Some(raw) = get_string_flag(&parsed.flags, "model") {
+        routing.apply_model_id_context_suffix(&raw);
+    } else if let Some(raw) = existing
+        .as_ref()
+        .and_then(|c| c.agent_binding(tool_name))
+        .and_then(|b| b.default_model.as_deref())
+    {
+        routing.apply_model_id_context_suffix(raw);
+    }
     apply_routing_env(&mut env_map, &routing, tool_name);
     if tool_name == "pi" {
         let catalog = fetch_models(&base, Some(&key)).unwrap_or_default();
