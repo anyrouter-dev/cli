@@ -8,6 +8,8 @@ pub const DEFAULT_BASE_URL: &str = "https://anyrouter.dev/api";
 pub const DEFAULT_TIMEOUT_MS: i64 = 3_000_000;
 pub const DEFAULT_PROFILE: &str = "default";
 pub const DEFAULT_PRESET: &str = "@preset/coding-stack";
+/// Documented gateway auto preset. Never invent a catalog SKU for this slot.
+pub const DEFAULT_MODEL: &str = "anyrouter/auto";
 pub const DEFAULT_CLAUDE_HAIKU: &str = "anthropic/claude-haiku-4.5";
 pub const DEFAULT_CLAUDE_SONNET: &str = "anthropic/claude-sonnet-4.6";
 pub const DEFAULT_CLAUDE_OPUS: &str = "anthropic/claude-opus-4.6";
@@ -78,7 +80,7 @@ impl Profile {
     }
 
     pub fn default_model(&self) -> &str {
-        self.default_model.as_deref().unwrap_or("auto")
+        self.default_model.as_deref().unwrap_or(DEFAULT_MODEL)
     }
 
     pub fn claude_haiku(&self) -> &str {
@@ -328,7 +330,7 @@ pub fn create_default_profile(input: DefaultProfileInput) -> Profile {
         pinned_preset: Some(normalize_preset(
             input.preset.as_deref().unwrap_or(DEFAULT_PRESET),
         )),
-        default_model: Some(input.default_model.unwrap_or_else(|| "auto".into())),
+        default_model: Some(input.default_model.unwrap_or_else(|| DEFAULT_MODEL.into())),
         timeout_ms: Some(input.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS)),
         ..Profile::default()
     }

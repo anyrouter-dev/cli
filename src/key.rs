@@ -107,7 +107,7 @@ pub fn resolve_launch_model(
     tool: &str,
 ) -> String {
     if let Some(m) = get_string_flag(flags, "model") {
-        return crate::spawn::catalog_model_id(&m);
+        return crate::spawn::display_model_id(&m);
     }
     let id = canonical_tool(tool);
     if let Some(m) = config
@@ -116,9 +116,9 @@ pub fn resolve_launch_model(
         .map(str::trim)
         .filter(|s| !s.is_empty())
     {
-        return crate::spawn::catalog_model_id(m);
+        return crate::spawn::display_model_id(m);
     }
-    profile.default_model().to_string()
+    crate::spawn::display_model_id(profile.default_model())
 }
 
 pub fn resolve_base_url(
@@ -315,6 +315,17 @@ agents:
         assert_eq!(
             resolve_launch_model(&with_flag, Some(&cfg), claude_profile, "claude"),
             "stealth/ox-alpha"
+        );
+        let mut auto_flag = HashMap::new();
+        auto_flag.insert("model".into(), FlagValue::Value("auto".into()));
+        assert_eq!(
+            resolve_launch_model(&auto_flag, Some(&cfg), claude_profile, "claude"),
+            "anyrouter/auto"
+        );
+        let empty = Profile::default();
+        assert_eq!(
+            resolve_launch_model(&flags, None, &empty, "claude"),
+            "anyrouter/auto"
         );
     }
 }

@@ -3,7 +3,9 @@ use std::path::{Path, PathBuf};
 #[cfg(feature = "native")]
 use std::process::{Command, Stdio};
 
-use crate::config::{Profile, YamlValue, DEFAULT_BASE_URL, DEFAULT_PRESET, DEFAULT_TIMEOUT_MS};
+use crate::config::{
+    Profile, YamlValue, DEFAULT_BASE_URL, DEFAULT_MODEL, DEFAULT_PRESET, DEFAULT_TIMEOUT_MS,
+};
 
 pub const PI_DEFAULT_MODEL: &str = "anthropic/claude-sonnet-4.6";
 /// Historical 1M-context suffix used by Claude Code. Claude Code used to strip
@@ -25,7 +27,7 @@ const CLAUDE_EFFORT_TOKENS: &[(&str, i64)] = &[
     ("max", 32000),
 ];
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct ToolConfig {
     pub command: String,
     pub base_url_env: String,
@@ -35,21 +37,6 @@ pub struct ToolConfig {
     pub enable_gateway_model_discovery: bool,
     pub shadow_env: Option<String>,
     pub extra: BTreeMap<String, YamlValue>,
-}
-
-impl Default for ToolConfig {
-    fn default() -> Self {
-        Self {
-            command: String::new(),
-            base_url_env: String::new(),
-            auth_env: String::new(),
-            model_env: None,
-            base_suffix: String::new(),
-            enable_gateway_model_discovery: false,
-            shadow_env: None,
-            extra: BTreeMap::new(),
-        }
-    }
 }
 
 impl ToolConfig {
@@ -285,7 +272,7 @@ pub fn default_profile_for_env(base_url: Option<&str>, api_key: Option<&str>) ->
         api_key: api_key.map(str::to_string),
         base_url: Some(base_url.unwrap_or(DEFAULT_BASE_URL).to_string()),
         pinned_preset: Some(DEFAULT_PRESET.into()),
-        default_model: Some("auto".into()),
+        default_model: Some(DEFAULT_MODEL.into()),
         timeout_ms: Some(DEFAULT_TIMEOUT_MS),
         ..Profile::default()
     }
@@ -872,7 +859,10 @@ mod tests {
             sanitize_model_id("\u{1b}[1mstealth/ox-alpha\u{1b}[0m"),
             "stealth/ox-alpha"
         );
-        assert_eq!(sanitize_model_id("stealth/ox-alpha[2m]"), "stealth/ox-alpha");
+        assert_eq!(
+            sanitize_model_id("stealth/ox-alpha[2m]"),
+            "stealth/ox-alpha"
+        );
         assert_eq!(
             sanitize_model_id("stealth/ox-alpha[0;1m]"),
             "stealth/ox-alpha"
@@ -1301,7 +1291,7 @@ mod tests {
         let mut env = BTreeMap::new();
         let mut routing = crate::config::RoutingConstraints::default();
         apply_routing_env(&mut env, &routing, "claude");
-        assert!(env.get("CLAUDE_CODE_EXTRA_BODY").is_none());
+        assert!(!env.contains_key("CLAUDE_CODE_EXTRA_BODY"));
         routing.set_exacto(true);
         routing.set_require_tools(true);
         routing.set_require_1m(true);
@@ -1373,8 +1363,10 @@ mod tests {
     #[test]
     fn merge_command_only_overlay_keeps_codex_suffix() {
         let mut t = builtin("codex").unwrap();
-        let mut over = ToolConfig::default();
-        over.command = "/opt/codex".into();
+        let over = ToolConfig {
+            command: "/opt/codex".into(),
+            ..Default::default()
+        };
         t.merge(&over);
         assert_eq!(t.command, "/opt/codex");
         assert_eq!(t.base_suffix, "/v1");

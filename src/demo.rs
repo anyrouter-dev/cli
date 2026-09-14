@@ -196,7 +196,7 @@ fn demo_usage(json: bool) -> String {
 fn demo_whoami() -> String {
     let _env: BTreeMap<String, String> = BTreeMap::new();
     format!(
-        "active account  default\napi_key         {}\ndefault_model   auto\n{DEMO_HINT}",
+        "active account  default\napi_key         {}\ndefault_model   anyrouter/auto\n{DEMO_HINT}",
         mask_api_key(Some("sk-ar-v1-demo-key-value"))
     )
 }

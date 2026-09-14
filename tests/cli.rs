@@ -396,6 +396,45 @@ fn pi_dry_run_uses_anyrouter_provider() {
 }
 
 #[test]
+fn claude_dry_run_omitted_model_uses_anyrouter_auto() {
+    let key = "sk-ar-v1-fixture-key-0001";
+    let (code, stdout, stderr) = {
+        let out = anyr()
+            .args(["claude", "--dry-run", "--yes", "--key", key])
+            .env("ANYROUTER_HOME", temp_home())
+            .env_remove("ANYROUTER_API_KEY")
+            .output()
+            .expect("dry-run");
+        (
+            out.status.code().unwrap_or(1),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+    assert_eq!(code, 0, "stderr={stderr}");
+    assert!(
+        stdout.contains("ANTHROPIC_MODEL=anyrouter/auto"),
+        "omitted --model must send the documented auto preset:\n{stdout}"
+    );
+    assert!(stdout.contains("ANYROUTER_MODEL_MODE=auto"), "{stdout}");
+    assert!(
+        !stdout.to_ascii_lowercase().contains("most used"),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn claude_help_documents_anyrouter_auto_not_invented_skus() {
+    let (code, stdout, stderr) = run(&["claude", "--help"]);
+    assert_eq!(code, 0, "{stdout}{stderr}");
+    assert!(stdout.contains("anyrouter/auto"), "{stdout}");
+    assert!(
+        !stdout.to_ascii_lowercase().contains("most-used"),
+        "help must not claim auto invents a usage SKU:\n{stdout}"
+    );
+}
+
+#[test]
 fn claude_dry_run_with_key_prints_base_and_redacts_secret() {
     let key = "sk-ar-v1-fixture-key-0001";
     let (code, stdout, stderr) = {

@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::Path;
 
 use crate::config::{write_config, Profile};
 use crate::http::{fetch_credits, fetch_models, format_models_list, CatalogModel};
@@ -214,7 +214,7 @@ pub(crate) fn known_model_id(models: &[CatalogModel], id: &str) -> bool {
 
 pub(crate) fn save_model_slot(
     existing: Option<crate::config::Config>,
-    path: &PathBuf,
+    path: &Path,
     slot: &str,
     id: &str,
 ) -> Result<i32, String> {
@@ -256,7 +256,7 @@ pub(crate) fn known_agent(name: &str) -> Result<String, String> {
     }
 }
 
-pub(crate) fn save_agent_model(path: &PathBuf, agent: &str, id: &str) -> Result<i32, String> {
+pub(crate) fn save_agent_model(path: &Path, agent: &str, id: &str) -> Result<i32, String> {
     let agent = known_agent(agent)?;
     let mut cfg = load_config_if_present(path).ok_or_else(no_key_error)?;
     let id = catalog_model_id(id);
@@ -276,11 +276,7 @@ pub(crate) fn save_agent_model(path: &PathBuf, agent: &str, id: &str) -> Result<
     Ok(0)
 }
 
-pub(crate) fn save_agent_account(
-    path: &PathBuf,
-    agent: &str,
-    profile: &str,
-) -> Result<i32, String> {
+pub(crate) fn save_agent_account(path: &Path, agent: &str, profile: &str) -> Result<i32, String> {
     let agent = known_agent(agent)?;
     let mut cfg = load_config_if_present(path).ok_or_else(no_key_error)?;
     if !cfg.profiles.contains_key(profile) {
@@ -296,7 +292,7 @@ pub(crate) fn save_agent_account(
     Ok(0)
 }
 
-pub(crate) fn save_agent_key(path: &PathBuf, agent: &str, key: &str) -> Result<i32, String> {
+pub(crate) fn save_agent_key(path: &Path, agent: &str, key: &str) -> Result<i32, String> {
     let agent = known_agent(agent)?;
     let mut cfg = load_config_if_present(path).ok_or_else(no_key_error)?;
     cfg.agent_binding_mut(&agent).api_key = Some(key.to_string());

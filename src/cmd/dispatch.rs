@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, HashMap};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use crate::config::{resolve_config_path, write_config};
@@ -406,7 +406,7 @@ pub(crate) fn config_path(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -
     resolve_config_path(get_string_flag(&parsed.flags, "config").as_deref(), env)
 }
 
-pub(crate) fn tool_command_for(path: &PathBuf, id: &str) -> String {
+pub(crate) fn tool_command_for(path: &Path, id: &str) -> String {
     let cfg = load_config_if_present(path);
     resolve_tool(cfg.as_ref(), id)
         .map(|t| t.command)
@@ -414,13 +414,13 @@ pub(crate) fn tool_command_for(path: &PathBuf, id: &str) -> String {
 }
 
 pub(crate) fn catalog_lookup_enabled(env: &BTreeMap<String, String>) -> bool {
-    match env.get("ANYR_NO_CATALOG").map(|s| s.as_str()) {
-        Some("1" | "true" | "TRUE" | "yes") => false,
-        _ => true,
-    }
+    !matches!(
+        env.get("ANYR_NO_CATALOG").map(|s| s.as_str()),
+        Some("1" | "true" | "TRUE" | "yes")
+    )
 }
 
-pub(crate) fn persist_tool_command(path: &PathBuf, id: &str, command: &str) -> Result<(), String> {
+pub(crate) fn persist_tool_command(path: &Path, id: &str, command: &str) -> Result<(), String> {
     let builtin = resolve_tool(None, id)
         .map(|t| t.command)
         .unwrap_or_else(|_| id.to_string());
@@ -435,7 +435,7 @@ pub(crate) fn persist_tool_command(path: &PathBuf, id: &str, command: &str) -> R
 }
 
 pub(crate) fn launcher_last_tool(
-    path: &PathBuf,
+    path: &Path,
     parsed: &ParsedArgs,
     env: &BTreeMap<String, String>,
 ) -> String {
