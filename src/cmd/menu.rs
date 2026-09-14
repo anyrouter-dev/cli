@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use crate::http::{fetch_keys, fetch_models, is_active_key_row, reveal_key};
@@ -86,7 +86,7 @@ pub(crate) fn agent_binding_detail(
 
 #[cfg(feature = "native")]
 pub(crate) fn launcher_palette(
-    path: &PathBuf,
+    path: &Path,
     parsed: &ParsedArgs,
     env: &BTreeMap<String, String>,
     credits: &mut CreditsCache,
@@ -162,7 +162,7 @@ pub(crate) fn launcher_palette(
 
 #[cfg(not(feature = "native"))]
 pub(crate) fn launcher_palette(
-    path: &PathBuf,
+    path: &Path,
     parsed: &ParsedArgs,
     env: &BTreeMap<String, String>,
     _credits: &mut CreditsCache,
@@ -379,7 +379,7 @@ pub(crate) fn run_menu(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> R
 }
 
 pub(crate) fn launcher_hud(
-    path: &PathBuf,
+    path: &Path,
     parsed: &ParsedArgs,
     env: &BTreeMap<String, String>,
     credits: &mut CreditsCache,
@@ -541,7 +541,7 @@ pub(crate) fn push_agent_configure_entries(
 }
 
 pub(crate) fn install_agent_dialog(
-    path: &PathBuf,
+    path: &Path,
     env: &BTreeMap<String, String>,
 ) -> Result<i32, String> {
     let missing = missing_agents(env, |id| tool_command_for(path, id));
@@ -576,7 +576,7 @@ pub(crate) fn install_agent_dialog(
 }
 
 pub(crate) fn launcher_signed_in(
-    path: &PathBuf,
+    path: &Path,
     parsed: &ParsedArgs,
     env: &BTreeMap<String, String>,
 ) -> bool {
@@ -587,7 +587,7 @@ pub(crate) fn launcher_dispatch(
     action: &str,
     parsed: &ParsedArgs,
     env: &BTreeMap<String, String>,
-    path: &PathBuf,
+    path: &Path,
 ) -> Result<LauncherNext, String> {
     if action == "Quit" || action.starts_with("Quit") {
         return Ok(LauncherNext::Exit(0));
@@ -715,7 +715,7 @@ pub(crate) fn launcher_dispatch(
 pub(crate) fn switch_agent_model(
     parsed: &ParsedArgs,
     env: &BTreeMap<String, String>,
-    path: &PathBuf,
+    path: &Path,
     agent: &str,
 ) -> Result<LauncherNext, String> {
     if agent.is_empty() {
@@ -736,7 +736,7 @@ pub(crate) fn switch_agent_model(
 pub(crate) fn bind_agent_model(
     parsed: &ParsedArgs,
     env: &BTreeMap<String, String>,
-    path: &PathBuf,
+    path: &Path,
     agent: &str,
 ) -> Result<i32, String> {
     let existing = load_config_if_present(path);
@@ -758,7 +758,7 @@ pub(crate) fn bind_agent_model(
 pub(crate) fn switch_agent_account(
     _parsed: &ParsedArgs,
     _env: &BTreeMap<String, String>,
-    path: &PathBuf,
+    path: &Path,
     agent: &str,
 ) -> Result<LauncherNext, String> {
     if agent.is_empty() {
@@ -772,7 +772,7 @@ pub(crate) fn switch_agent_account(
     Ok(LauncherNext::Continue)
 }
 
-pub(crate) fn bind_agent_account(path: &PathBuf, agent: &str) -> Result<i32, String> {
+pub(crate) fn bind_agent_account(path: &Path, agent: &str) -> Result<i32, String> {
     let cfg = load_config_if_present(path).unwrap_or_default();
     let mut names: Vec<String> = cfg.profiles.keys().cloned().collect();
     names.sort();
@@ -807,7 +807,7 @@ pub(crate) fn bind_agent_account(path: &PathBuf, agent: &str) -> Result<i32, Str
 pub(crate) fn switch_agent_key(
     parsed: &ParsedArgs,
     env: &BTreeMap<String, String>,
-    path: &PathBuf,
+    path: &Path,
     agent: &str,
 ) -> Result<LauncherNext, String> {
     if agent.is_empty() {
@@ -828,7 +828,7 @@ pub(crate) fn switch_agent_key(
 pub(crate) fn bind_agent_key(
     parsed: &ParsedArgs,
     env: &BTreeMap<String, String>,
-    path: &PathBuf,
+    path: &Path,
     agent: &str,
 ) -> Result<i32, String> {
     let (_keys_path, cfg, base, api_key) = keys_credential(parsed, env)?;
@@ -871,7 +871,7 @@ pub(crate) fn bind_agent_key(
 pub(crate) fn launch_agent_picker(
     parsed: &ParsedArgs,
     env: &BTreeMap<String, String>,
-    path: &PathBuf,
+    path: &Path,
 ) -> Result<LauncherNext, String> {
     if !launcher_signed_in(path, parsed, env) {
         eprintln!(

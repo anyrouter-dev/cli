@@ -781,7 +781,7 @@ mod tests {
             Some("sk-ar-v1-DifferentTail00000000000000000000abcd")
         ));
         // A longer-head ASCII-dot mask matches on head AND literal tail.
-        let long = getKeyPrefixStyleMask("sk-ar-v1-abcd", "wxyz");
+        let long = get_key_prefix_style_mask("sk-ar-v1-abcd", "wxyz");
         assert!(is_active_key_row(
             &long,
             Some("sk-ar-v1-abcd-middle-secret-wxyz")
@@ -790,7 +790,7 @@ mod tests {
     }
 
     /// Helper mirroring the server's getKeyPrefix() shape for tests.
-    fn getKeyPrefixStyleMask(head: &str, tail: &str) -> String {
+    fn get_key_prefix_style_mask(head: &str, tail: &str) -> String {
         format!("{head}...{tail}")
     }
 }

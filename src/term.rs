@@ -82,7 +82,7 @@ const MARK_PNG: &[u8] = include_bytes!("../assets/mark.png");
 const B64: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 fn base64_encode(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity((bytes.len() + 2) / 3 * 4);
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
         let a = chunk[0] as u32;
         let b = chunk.get(1).copied().unwrap_or(0) as u32;
@@ -507,7 +507,7 @@ fn pick_inline_raw(
             )
             .map_err(|e| e.to_string())?;
         }
-        write!(out, "{frame}\n").map_err(|e| e.to_string())?;
+        writeln!(out, "{frame}").map_err(|e| e.to_string())?;
         out.flush().map_err(|e| e.to_string())?;
         last_lines = n;
 

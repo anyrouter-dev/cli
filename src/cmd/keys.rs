@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::Path;
 
 use crate::config::write_config;
 use crate::http::{create_key, delete_key, fetch_keys, is_active_key_row, reveal_key};
@@ -276,7 +276,7 @@ pub(crate) fn key_pick_label(row: &crate::http::RemoteKey, current: bool) -> Str
 pub(crate) fn stored_api_key(
     parsed: &ParsedArgs,
     env: &BTreeMap<String, String>,
-    path: &PathBuf,
+    path: &Path,
 ) -> Option<String> {
     let existing = load_config_if_present(path);
     let profile = existing

@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::Path;
 
 use crate::config::{valid_account_name, write_config, Profile};
 use crate::http::{fetch_credits, fetch_me};
@@ -35,7 +35,7 @@ use crate::cmd::usage::run_usage;
 pub(crate) fn print_config_status(
     parsed: &ParsedArgs,
     env: &BTreeMap<String, String>,
-    path: &PathBuf,
+    path: &Path,
 ) -> Result<(), String> {
     let cfg = load_config_if_present(path).unwrap_or_default();
     let profile = cfg.profiles.get(&cfg.active_profile);
@@ -207,7 +207,7 @@ pub(crate) fn settings_tab_names() -> Vec<String> {
 pub(crate) fn config_settings_frame(
     parsed: &ParsedArgs,
     env: &BTreeMap<String, String>,
-    path: &PathBuf,
+    path: &Path,
     online: bool,
     cache: &mut CreditsCache,
     tab: usize,
@@ -280,7 +280,7 @@ pub(crate) fn config_settings_frame(
 pub(crate) fn fill_general_settings(
     rows: &mut Vec<crate::tui::SettingRow>,
     kinds: &mut Vec<Option<SettingKind>>,
-    path: &PathBuf,
+    path: &Path,
     parsed: &ParsedArgs,
     env: &BTreeMap<String, String>,
     profile: Option<&Profile>,
@@ -420,7 +420,7 @@ pub(crate) fn fill_general_settings(
 pub(crate) fn fill_agent_settings(
     rows: &mut Vec<crate::tui::SettingRow>,
     kinds: &mut Vec<Option<SettingKind>>,
-    path: &PathBuf,
+    path: &Path,
     env: &BTreeMap<String, String>,
     profile: Option<&Profile>,
     id: &'static str,
@@ -711,7 +711,7 @@ pub(crate) fn slot_current_opt(profile: Option<&Profile>, slot: &str) -> String 
 pub(crate) fn config_settings_loop(
     parsed: &ParsedArgs,
     env: &BTreeMap<String, String>,
-    path: &PathBuf,
+    path: &Path,
 ) -> Result<i32, String> {
     let mut cache = CreditsCache::fresh();
     let mut tab = 0usize;
@@ -758,7 +758,7 @@ pub(crate) fn config_settings_loop(
 pub(crate) fn config_edit_row(
     parsed: &ParsedArgs,
     env: &BTreeMap<String, String>,
-    path: &PathBuf,
+    path: &Path,
     kind: SettingKind,
 ) -> Result<i32, String> {
     match kind {
@@ -1133,7 +1133,7 @@ pub(crate) fn config_reset_row(path: &std::path::Path, kind: SettingKind) -> Res
 pub(crate) fn config_menu_loop_legacy(
     parsed: &ParsedArgs,
     env: &BTreeMap<String, String>,
-    path: &PathBuf,
+    path: &Path,
 ) -> Result<i32, String> {
     let items = vec![
         "Switch key".into(),
