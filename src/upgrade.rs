@@ -547,7 +547,8 @@ fn print_pending_notice(env: &BTreeMap<String, String>) {
     }
     let running = VERSION.trim().strip_prefix('v').unwrap_or(VERSION.trim());
     if ver == running {
-        eprintln!("anyr: updated to {ver}");
+        eprintln!("anyr: auto-updated to {ver}");
+        eprintln!("{}", crate::spinner::RESTART_RESUME_HINT);
         let _ = fs::remove_file(&path);
     }
 }
@@ -921,6 +922,13 @@ mod tests {
         )
         .unwrap();
         assert!(!auto_update_enabled(&env));
+    }
+
+    #[test]
+    fn pending_notice_mentions_auto_update_and_ctrl_g() {
+        assert!(crate::spinner::RESTART_RESUME_HINT.contains("Ctrl+G"));
+        assert!(crate::spinner::RESTART_RESUME_HINT.contains("restart and resume"));
+        assert!(crate::spinner::START_USING.contains("Ctrl+G"));
     }
 
     fn parsed_check() -> ParsedArgs {
