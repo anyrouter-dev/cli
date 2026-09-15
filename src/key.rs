@@ -98,11 +98,13 @@ pub fn resolve_launch_api_key(
         .map(str::to_string)
 }
 
-/// Keep `[1m]` / `[500k]` on virtual `anyrouter/auto` so launch can peel it
-/// into `provider.min_context`. Concrete ids still drop Claude's `[1m]` tag.
+/// Keep `[1m]` / `[500k]` on virtual presets (`anyrouter/auto`, `free`, `byok`, …)
+/// so launch can peel them into `provider.min_context`. Concrete ids still drop
+/// Claude's `[1m]` tag.
 fn launch_model_id(raw: &str) -> String {
     let raw = raw.trim();
-    if crate::config::parse_context_window_suffix(raw).is_some() && crate::spawn::is_auto_model(raw)
+    if crate::config::parse_context_window_suffix(raw).is_some()
+        && crate::spawn::is_virtual_preset(raw)
     {
         let stem = crate::config::strip_context_window_suffix(raw);
         let suffix = &raw[stem.len()..];
@@ -343,6 +345,15 @@ agents:
         assert_eq!(
             resolve_launch_model(&auto_1m, Some(&cfg), claude_profile, "claude"),
             "anyrouter/auto[1m]"
+        );
+        let mut free_1m = HashMap::new();
+        free_1m.insert(
+            "model".into(),
+            FlagValue::Value("anyrouter/free[1m]".into()),
+        );
+        assert_eq!(
+            resolve_launch_model(&free_1m, Some(&cfg), claude_profile, "claude"),
+            "anyrouter/free[1m]"
         );
         let empty = Profile::default();
         assert_eq!(
