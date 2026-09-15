@@ -235,10 +235,21 @@ impl RoutingConstraints {
         self.min_context = on.then_some(ROUTING_MIN_1M_CONTEXT);
     }
 
+    /// Raise the token floor. Higher (stricter) wins.
+    pub fn merge_min_context(&mut self, floor: i64) {
+        if floor <= 0 {
+            return;
+        }
+        self.min_context = Some(match self.min_context {
+            Some(existing) => existing.max(floor),
+            None => floor,
+        });
+    }
+
     /// Merge `[1m]` / `[500k]` on a model id into `min_context` (higher wins).
     pub fn apply_model_id_context_suffix(&mut self, model: &str) {
         if let Some(n) = parse_context_window_suffix(model) {
-            self.min_context = Some(self.min_context.map(|e| e.max(n)).unwrap_or(n));
+            self.merge_min_context(n);
         }
     }
 

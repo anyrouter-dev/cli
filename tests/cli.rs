@@ -2302,6 +2302,51 @@ agents:
 }
 
 #[test]
+fn claude_dry_run_peels_auto_1m_into_extra_body_not_laguna() {
+    let dir = std::env::temp_dir().join(format!("anyr-cli-auto-1m-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("config.yaml");
+    std::fs::write(
+        &path,
+        "\
+active_profile: default
+profiles:
+  default:
+    api_key: sk-ar-v1-fixture-key-0001
+    default_model: auto
+",
+    )
+    .unwrap();
+    let out = anyr()
+        .args([
+            "claude",
+            "--dry-run",
+            "--yes",
+            "--config",
+            path.to_str().unwrap(),
+            "--model",
+            "anyrouter/auto[1m]",
+        ])
+        .output()
+        .expect("claude dry-run auto[1m]");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code().unwrap_or(1), 0, "{stdout}{stderr}");
+    assert!(
+        stdout.contains("ANTHROPIC_MODEL=anyrouter/auto"),
+        "must keep virtual auto, not a concrete SKU:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("ANTHROPIC_MODEL=anyrouter/auto[1m]"),
+        "Claude strips [1m]; send min_context instead:\n{stdout}"
+    );
+    assert!(!stdout.to_ascii_lowercase().contains("laguna"), "{stdout}");
+    assert!(stdout.contains("CLAUDE_CODE_EXTRA_BODY="), "{stdout}");
+    assert!(stdout.contains("\"min_context\":1000000"), "{stdout}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn unsigned_hud_dump_offers_launch_claude() {
     // WHY: right after install there is no key yet. Enter on the HUD
     // should still be "Launch claude" (login happens inside launch).

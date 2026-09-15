@@ -407,7 +407,10 @@ pub fn build_tool_env(input: BuildToolEnvInput<'_>) -> BTreeMap<String, String> 
         );
         env.insert(
             "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY".into(),
-            if input.tool.enable_gateway_model_discovery {
+            // Discovery remaps unknown ids (including virtual `anyrouter/auto`)
+            // onto a catalog SKU such as Laguna. Keep it off for auto so the
+            // gateway still sees the virtual id + extra-body min_context.
+            if input.tool.enable_gateway_model_discovery && !is_auto_model(input.model) {
                 "1"
             } else {
                 "0"
@@ -548,6 +551,66 @@ pub fn model_id_for_tool(tool_name: &str, model: &str, context_window: Option<i6
 /// dangling SGR (`[1m` without `]`). Store/send the catalog id only.
 pub fn sanitize_model_id(model: &str) -> String {
     catalog_model_id(model)
+}
+
+/// Parse trailing `[<n>k|m]` as a token floor (`k` = thousand, `m` = million).
+/// Same spelling as `anyrouter/auto[1m]` / `[500k]`. Does not strip CSI.
+pub fn peel_context_window_suffixes(model: &str) -> (String, Option<i64>) {
+    let mut s = model.trim().to_string();
+    let mut min_context: Option<i64> = None;
+    loop {
+        let Some(open) = s.rfind('[') else {
+            break;
+        };
+        if !s.ends_with(']') || open + 2 >= s.len() {
+            break;
+        }
+        let inner = &s[open + 1..s.len() - 1];
+        let Some(unit) = inner.chars().last() else {
+            break;
+        };
+        let digits = &inner[..inner.len() - 1];
+        if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+            break;
+        }
+        let n: i64 = match digits.parse() {
+            Ok(n) if n > 0 => n,
+            _ => break,
+        };
+        let floor = match unit {
+            'm' | 'M' => n.saturating_mul(1_000_000),
+            'k' | 'K' => n.saturating_mul(1_000),
+            _ => break,
+        };
+        min_context = Some(match min_context {
+            Some(existing) => existing.max(floor),
+            None => floor,
+        });
+        s.truncate(open);
+    }
+    (s, min_context)
+}
+
+/// Peel `[1m]` / `[500k]` (and `:exacto`) into routing prefs; return catalog id.
+pub fn apply_model_id_routing(
+    model: &str,
+    routing: &mut crate::config::RoutingConstraints,
+) -> String {
+    let (mut peeled, floor) = peel_context_window_suffixes(model);
+    if let Some(n) = floor {
+        routing.merge_min_context(n);
+    }
+    if let Some((base, suffix)) = peeled.rsplit_once(':') {
+        if suffix.eq_ignore_ascii_case(crate::config::ROUTING_SORT_EXACTO) {
+            routing.set_exacto(true);
+            let (base2, floor2) = peel_context_window_suffixes(base);
+            if let Some(n) = floor2 {
+                routing.merge_min_context(n);
+            }
+            peeled = base2;
+        }
+    }
+    catalog_model_id(&peeled)
 }
 
 pub fn catalog_model_id(model: &str) -> String {
@@ -1315,7 +1378,27 @@ mod tests {
         assert!(body.contains("\"sort\":\"exacto\""), "{body}");
         assert!(body.contains("\"require_params\":[\"tools\"]"), "{body}");
         assert!(body.contains("\"min_context\":1000000"), "{body}");
+        assert!(body.contains("\"provider\""), "{body}");
         assert_eq!(env.get("ANYROUTER_EXTRA_BODY"), Some(body));
+    }
+
+    #[test]
+    fn peel_auto_1m_and_500k_into_min_context() {
+        let (id, floor) = peel_context_window_suffixes("anyrouter/auto[1m]");
+        assert_eq!(id, "anyrouter/auto");
+        assert_eq!(floor, Some(1_000_000));
+        let (id, floor) = peel_context_window_suffixes("anyrouter/auto[500k]");
+        assert_eq!(id, "anyrouter/auto");
+        assert_eq!(floor, Some(500_000));
+        let mut routing = crate::config::RoutingConstraints::default();
+        let catalog = apply_model_id_routing("anyrouter/auto[1m]:exacto", &mut routing);
+        assert_eq!(catalog, "anyrouter/auto");
+        assert!(is_auto_model(&catalog));
+        assert_eq!(routing.min_context, Some(1_000_000));
+        assert!(routing.wants_exacto());
+        let body = routing.extra_body_json().expect("body");
+        assert!(body.contains("\"min_context\":1000000"), "{body}");
+        assert!(body.contains("\"sort\":\"exacto\""), "{body}");
     }
 
     #[test]
@@ -1340,6 +1423,28 @@ mod tests {
         assert_eq!(
             env.get("ANTHROPIC_API_KEY").map(String::as_str),
             Some("sk-ar-v1-secret")
+        );
+        assert_eq!(
+            env.get("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY")
+                .map(String::as_str),
+            Some("0"),
+            "auto must not be remapped by catalog discovery"
+        );
+        let concrete = build_tool_env(BuildToolEnvInput {
+            tool_name: "claude",
+            tool: &tool,
+            profile: &profile(),
+            api_key: "sk-ar-v1-secret",
+            model: "poolside/laguna-s-2.1",
+            effort: None,
+            context_window: None,
+            model_map: None,
+        });
+        assert_eq!(
+            concrete
+                .get("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY")
+                .map(String::as_str),
+            Some("1")
         );
     }
 
