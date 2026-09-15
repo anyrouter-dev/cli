@@ -90,6 +90,7 @@ Start
 Swap the model, keep the agent
   $ {bin} claude --model z-ai/glm-4.7-flash
   $ {bin} claude --yolo --model anyrouter/auto[1m]
+  $ {bin} claude --model anyrouter/free[1m]
   $ {bin} claude --model anyrouter/auto[500k]
   $ {bin} claude --model auto --effort high
 

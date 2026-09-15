@@ -407,10 +407,10 @@ pub fn build_tool_env(input: BuildToolEnvInput<'_>) -> BTreeMap<String, String> 
         );
         env.insert(
             "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY".into(),
-            // Discovery remaps unknown ids (including virtual `anyrouter/auto`)
-            // onto a catalog SKU such as Laguna. Keep it off for auto so the
+            // Discovery remaps unknown ids (including virtual `anyrouter/*`)
+            // onto a catalog SKU such as Laguna. Keep it off for presets so the
             // gateway still sees the virtual id + extra-body min_context.
-            if input.tool.enable_gateway_model_discovery && !is_auto_model(input.model) {
+            if input.tool.enable_gateway_model_discovery && !is_virtual_preset(input.model) {
                 "1"
             } else {
                 "0"
@@ -422,7 +422,7 @@ pub fn build_tool_env(input: BuildToolEnvInput<'_>) -> BTreeMap<String, String> 
         // automatic model fallback, which rides the fable alias on third-party
         // providers — falls back to a different model. Slots set explicitly
         // (--haiku/--sonnet/--opus/--fable or the profile config) still win.
-        let pinned = (!is_auto_model(input.model)).then_some(input.model);
+        let pinned = (!is_virtual_preset(input.model)).then_some(input.model);
         let alias = |slot: &Option<String>, default: &str| -> String {
             let explicit = slot.as_deref().map(str::trim).filter(|s| !s.is_empty());
             match (pinned, explicit) {
@@ -502,10 +502,33 @@ pub fn effort_args_for(tool_name: &str, effort: Option<&str>) -> Vec<String> {
     vec![]
 }
 
+/// First-party virtual presets (`anyrouter/auto`, `anyrouter/free`, …).
+/// Keep in lockstep with gateway `ANYROUTER_VIRTUAL_MODELS`.
+const VIRTUAL_PRESETS: &[&str] = &[
+    "anyrouter/auto",
+    "anyrouter/free",
+    "anyrouter/byok",
+    "anyrouter/coding",
+    "anyrouter/agent",
+    "anyrouter/hermes",
+    "anyrouter/cowork",
+    "anyrouter/latest",
+];
+
 pub fn is_auto_model(model: &str) -> bool {
     let value = catalog_model_id(model);
     let value = crate::config::strip_context_window_suffix(&value);
     value.is_empty() || value == "auto" || value == "anyrouter/auto"
+}
+
+/// Virtual routing presets. `[1m]` / `[500k]` are min_context floors, not listing ids.
+pub fn is_virtual_preset(model: &str) -> bool {
+    if is_auto_model(model) {
+        return true;
+    }
+    let id = catalog_model_id(model);
+    let id = crate::config::strip_context_window_suffix(&id);
+    VIRTUAL_PRESETS.iter().any(|p| *p == id)
 }
 
 /// Catalog id for display and config. Auto is `anyrouter/auto`.
@@ -1399,6 +1422,18 @@ mod tests {
         let body = routing.extra_body_json().expect("body");
         assert!(body.contains("\"min_context\":1000000"), "{body}");
         assert!(body.contains("\"sort\":\"exacto\""), "{body}");
+        for id in [
+            "anyrouter/free[1m]",
+            "anyrouter/byok[1m]",
+            "anyrouter/hermes[500k]",
+            "anyrouter/latest[1m]",
+        ] {
+            let mut r = crate::config::RoutingConstraints::default();
+            let catalog = apply_model_id_routing(id, &mut r);
+            assert!(is_virtual_preset(id), "{id}");
+            assert!(!catalog.contains('['), "{catalog}");
+            assert!(r.min_context.is_some(), "{id}");
+        }
     }
 
     #[test]
@@ -1429,6 +1464,25 @@ mod tests {
                 .map(String::as_str),
             Some("0"),
             "auto must not be remapped by catalog discovery"
+        );
+        let free = build_tool_env(BuildToolEnvInput {
+            tool_name: "claude",
+            tool: &tool,
+            profile: &profile(),
+            api_key: "sk-ar-v1-secret",
+            model: "anyrouter/free[1m]",
+            effort: None,
+            context_window: None,
+            model_map: None,
+        });
+        assert_eq!(
+            free.get("ANTHROPIC_MODEL").map(String::as_str),
+            Some("anyrouter/free")
+        );
+        assert_eq!(
+            free.get("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY")
+                .map(String::as_str),
+            Some("0")
         );
         let concrete = build_tool_env(BuildToolEnvInput {
             tool_name: "claude",

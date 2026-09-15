@@ -2347,6 +2347,77 @@ profiles:
 }
 
 #[test]
+fn claude_dry_run_peels_virtual_preset_1m_into_extra_body() {
+    let dir = std::env::temp_dir().join(format!("anyr-cli-virtual-1m-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("config.yaml");
+    std::fs::write(
+        &path,
+        "\
+active_profile: default
+profiles:
+  default:
+    api_key: sk-ar-v1-fixture-key-0001
+    default_model: auto
+",
+    )
+    .unwrap();
+    for (flag, expected) in [
+        ("anyrouter/free[1m]", "anyrouter/free"),
+        ("anyrouter/byok[1m]", "anyrouter/byok"),
+        ("anyrouter/hermes[500k]", "anyrouter/hermes"),
+    ] {
+        let out = anyr()
+            .args([
+                "claude",
+                "--dry-run",
+                "--yes",
+                "--config",
+                path.to_str().unwrap(),
+                "--model",
+                flag,
+            ])
+            .output()
+            .expect("claude dry-run virtual[1m]");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(
+            out.status.code().unwrap_or(1),
+            0,
+            "{flag}\n{stdout}{stderr}"
+        );
+        assert!(
+            stdout.contains(&format!("ANTHROPIC_MODEL={expected}")),
+            "{flag} must keep virtual id:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=0"),
+            "{flag}\n{stdout}"
+        );
+        assert!(
+            stdout.contains("CLAUDE_CODE_EXTRA_BODY="),
+            "{flag}\n{stdout}"
+        );
+        if flag.contains("[1m]") {
+            assert!(
+                stdout.contains("\"min_context\":1000000"),
+                "{flag}\n{stdout}"
+            );
+        } else {
+            assert!(
+                stdout.contains("\"min_context\":500000"),
+                "{flag}\n{stdout}"
+            );
+        }
+        assert!(
+            !stdout.to_ascii_lowercase().contains("laguna"),
+            "{flag}\n{stdout}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn unsigned_hud_dump_offers_launch_claude() {
     // WHY: right after install there is no key yet. Enter on the HUD
     // should still be "Launch claude" (login happens inside launch).
