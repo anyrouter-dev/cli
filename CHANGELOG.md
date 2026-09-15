@@ -4,6 +4,13 @@ This file is maintained automatically by [release-please](https://github.com/goo
 
 GitHub Releases use this file as the release notes (full history through that tag).
 
+## [0.1.13](https://github.com/anyrouter-dev/cli/compare/v0.1.12...v0.1.13) (2026-09-15)
+
+
+### Features
+
+* **cli:** peel [1m]/[500k] on all anyrouter virtual presets ([#67](https://github.com/anyrouter-dev/cli/issues/67)) ([97fba31](https://github.com/anyrouter-dev/cli/commit/97fba3144c178ce9e27a5e12118b7ba29bd5a3dc))
+
 ## [0.1.12](https://github.com/anyrouter-dev/cli/compare/v0.1.11...v0.1.12) (2026-09-15)
 
 
