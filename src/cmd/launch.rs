@@ -114,6 +114,7 @@ pub(crate) fn run_launch(
         model: &model,
         effort: effort.as_deref(),
         context_window: resolved.context_window,
+        min_context: routing.min_context,
         model_map: None,
     });
     apply_routing_env(&mut env_map, &routing, tool_name);

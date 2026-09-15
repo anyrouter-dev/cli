@@ -149,6 +149,7 @@ fn demo_launch(tool: &str, parsed: &crate::parse::ParsedArgs) -> Result<String, 
         model: &model,
         effort: effort.as_deref(),
         context_window: None,
+        min_context: None,
         model_map: None,
     });
     let mut args = Vec::new();

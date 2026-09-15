@@ -443,14 +443,9 @@ fn claude_dry_run_model_auto_1m_sets_min_context_in_extra_body() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(out.status.code().unwrap_or(1), 0, "{stdout}{stderr}");
-    // Claude strips the [1m] floor from the catalog model id.
     assert!(
-        stdout.contains("ANTHROPIC_MODEL=anyrouter/auto"),
-        "{stdout}"
-    );
-    assert!(
-        !stdout.contains("ANTHROPIC_MODEL=anyrouter/auto[1m]"),
-        "{stdout}"
+        stdout.contains("ANTHROPIC_MODEL=anyrouter/auto[1m]"),
+        "Claude HUD needs the [1m] suffix on virtual auto:\n{stdout}"
     );
     // The floor is carried into CLAUDE_CODE_EXTRA_BODY under provider.min_context.
     assert!(stdout.contains("CLAUDE_CODE_EXTRA_BODY="), "{stdout}");
@@ -484,14 +479,9 @@ fn claude_dry_run_model_auto_500k_sets_min_context_in_extra_body() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(out.status.code().unwrap_or(1), 0, "{stdout}{stderr}");
-    // Claude strips the [500k] floor from the catalog model id.
     assert!(
-        stdout.contains("ANTHROPIC_MODEL=anyrouter/auto"),
-        "{stdout}"
-    );
-    assert!(
-        !stdout.contains("ANTHROPIC_MODEL=anyrouter/auto[500k]"),
-        "{stdout}"
+        stdout.contains("ANTHROPIC_MODEL=anyrouter/auto[500k]"),
+        "Claude HUD needs the [500k] suffix on virtual auto:\n{stdout}"
     );
     // The floor is carried into CLAUDE_CODE_EXTRA_BODY under provider.min_context.
     assert!(stdout.contains("CLAUDE_CODE_EXTRA_BODY="), "{stdout}");
@@ -2282,9 +2272,14 @@ agents:
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert_eq!(out.status.code().unwrap_or(1), 0, "{stdout}{stderr}");
         assert!(stdout.contains("command:"), "{stdout}");
+        let expected = if model == "anyrouter/auto" {
+            "ANTHROPIC_MODEL=anyrouter/auto[1m]"
+        } else {
+            "ANTHROPIC_MODEL=anyrouter/free[1m]"
+        };
         assert!(
-            stdout.contains(&format!("ANTHROPIC_MODEL={model}")),
-            "{stdout}"
+            stdout.contains(expected),
+            "yaml min_context 1M must re-apply the HUD suffix:\n{stdout}"
         );
         assert!(
             stdout.contains("CLAUDE_CODE_EXTRA_BODY="),
@@ -2333,12 +2328,8 @@ profiles:
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(out.status.code().unwrap_or(1), 0, "{stdout}{stderr}");
     assert!(
-        stdout.contains("ANTHROPIC_MODEL=anyrouter/auto"),
-        "must keep virtual auto, not a concrete SKU:\n{stdout}"
-    );
-    assert!(
-        !stdout.contains("ANTHROPIC_MODEL=anyrouter/auto[1m]"),
-        "Claude strips [1m]; send min_context instead:\n{stdout}"
+        stdout.contains("ANTHROPIC_MODEL=anyrouter/auto[1m]"),
+        "must keep virtual auto[1m] for the Claude HUD, not a concrete SKU:\n{stdout}"
     );
     assert!(!stdout.to_ascii_lowercase().contains("laguna"), "{stdout}");
     assert!(stdout.contains("CLAUDE_CODE_EXTRA_BODY="), "{stdout}");
@@ -2363,9 +2354,9 @@ profiles:
     )
     .unwrap();
     for (flag, expected) in [
-        ("anyrouter/free[1m]", "anyrouter/free"),
-        ("anyrouter/byok[1m]", "anyrouter/byok"),
-        ("anyrouter/hermes[500k]", "anyrouter/hermes"),
+        ("anyrouter/free[1m]", "anyrouter/free[1m]"),
+        ("anyrouter/byok[1m]", "anyrouter/byok[1m]"),
+        ("anyrouter/hermes[500k]", "anyrouter/hermes[500k]"),
     ] {
         let out = anyr()
             .args([

@@ -327,6 +327,8 @@ pub struct BuildToolEnvInput<'a> {
     pub model: &'a str,
     pub effort: Option<&'a str>,
     pub context_window: Option<i64>,
+    /// Peeled `[1m]`/`[500k]` or `routing.min_context`. Not catalog `context_length`.
+    pub min_context: Option<i64>,
     pub model_map: Option<&'a HashMap<String, String>>,
 }
 
@@ -358,7 +360,7 @@ pub fn build_tool_env(input: BuildToolEnvInput<'_>) -> BTreeMap<String, String> 
     if let Some(model_env) = &input.tool.model_env {
         env.insert(
             model_env.clone(),
-            model_id_for_tool(input.tool_name, input.model, input.context_window),
+            model_id_for_tool(input.tool_name, input.model, input.min_context),
         );
     }
     if let Some(effort) = input.effort {
@@ -403,7 +405,7 @@ pub fn build_tool_env(input: BuildToolEnvInput<'_>) -> BTreeMap<String, String> 
     if input.tool_name == "claude" {
         env.insert(
             "ANTHROPIC_MODEL".into(),
-            model_id_for_tool("claude", input.model, input.context_window),
+            model_id_for_tool("claude", input.model, input.min_context),
         );
         env.insert(
             "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY".into(),
@@ -426,7 +428,7 @@ pub fn build_tool_env(input: BuildToolEnvInput<'_>) -> BTreeMap<String, String> 
         let alias = |slot: &Option<String>, default: &str| -> String {
             let explicit = slot.as_deref().map(str::trim).filter(|s| !s.is_empty());
             match (pinned, explicit) {
-                (Some(id), None) => model_id_for_tool("claude", id, input.context_window),
+                (Some(id), None) => model_id_for_tool("claude", id, input.min_context),
                 (None, Some(id)) => model_id_for_tool("claude", id, None),
                 (Some(_), Some(id)) => model_id_for_tool("claude", id, None),
                 (None, None) => default.to_string(),
@@ -447,7 +449,15 @@ pub fn build_tool_env(input: BuildToolEnvInput<'_>) -> BTreeMap<String, String> 
             alias(&input.profile.claude_fable, input.profile.claude_fable()),
         );
         env.insert("CLAUDE_CODE_SUBAGENT_MODEL".into(), haiku);
-        if !is_auto_model(input.model) && claude_wants_1m(input.context_window) {
+        let floor = peel_context_window_suffixes(input.model)
+            .1
+            .or(input.min_context);
+        let wants_compact = if is_virtual_preset(input.model) {
+            floor.is_some_and(|n| n >= MIN_1M_CONTEXT)
+        } else {
+            claude_wants_1m(input.context_window)
+        };
+        if wants_compact {
             env.insert("CLAUDE_CODE_AUTO_COMPACT_WINDOW".into(), "1000000".into());
         }
         // Label each picker entry with its role; otherwise four identical IDs
@@ -556,18 +566,45 @@ pub fn claude_wants_1m(context_window: Option<i64>) -> bool {
     }
 }
 
-/// Agent-specific model id. Every agent (including Claude) gets the canonical
-/// catalog id — no `[1m]` suffix. Historically Claude received a `[1m]` 1M
-/// suffix that Claude stripped upstream, but third-party catalog ids must
-/// reach the provider verbatim, so we no longer append it.
-pub fn model_id_for_tool(tool_name: &str, model: &str, context_window: Option<i64>) -> String {
-    let _ = (tool_name, context_window);
-    let id = catalog_model_id(model);
-    if is_auto_model(&id) {
+/// Spell a token floor as `[1m]` / `[500k]` (same as `--model` suffixes).
+pub fn context_floor_suffix(n: i64) -> Option<String> {
+    if n <= 0 {
+        return None;
+    }
+    if n % 1_000_000 == 0 {
+        return Some(format!("[{}m]", n / 1_000_000));
+    }
+    if n % 1_000 == 0 {
+        return Some(format!("[{}k]", n / 1_000));
+    }
+    None
+}
+
+/// Agent-specific model id.
+///
+/// Claude + virtual presets (`anyrouter/auto`, `free`, …) keep `[1m]` / `[500k]`
+/// on `ANTHROPIC_MODEL` so Claude Code's HUD does not invent `[200k]` from its
+/// default window. Concrete catalog ids still drop the suffix (they 404).
+pub fn model_id_for_tool(tool_name: &str, model: &str, min_context: Option<i64>) -> String {
+    let (peeled, peeled_floor) = peel_context_window_suffixes(model);
+    let id = catalog_model_id(&peeled);
+    let catalog = if is_auto_model(&id) {
         display_model_id(&id)
     } else {
         id
+    };
+    if tool_name == "claude" && is_virtual_preset(&catalog) {
+        let floor = match (peeled_floor, min_context) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (a, b) => a.or(b),
+        };
+        if let Some(n) = floor {
+            if let Some(sfx) = context_floor_suffix(n) {
+                return format!("{catalog}{sfx}");
+            }
+        }
     }
+    catalog
 }
 
 /// Strip CSI, Claude's `[1m]` 1M suffix, closed `[Nm]` / `[0;1m]` tails, and
@@ -1006,10 +1043,22 @@ mod tests {
         );
         assert_eq!(
             model_id_for_tool("claude", "anyrouter/auto[1m]", None),
-            "anyrouter/auto"
+            "anyrouter/auto[1m]"
         );
         assert_eq!(
             model_id_for_tool("claude", "anyrouter/auto[500k]", None),
+            "anyrouter/auto[500k]"
+        );
+        assert_eq!(
+            model_id_for_tool("claude", "anyrouter/auto", Some(1_000_000)),
+            "anyrouter/auto[1m]"
+        );
+        assert_eq!(
+            model_id_for_tool("claude", "anyrouter/free[1m]", None),
+            "anyrouter/free[1m]"
+        );
+        assert_eq!(
+            model_id_for_tool("pi", "anyrouter/auto[1m]", None),
             "anyrouter/auto"
         );
         assert!(is_auto_model("anyrouter/auto[1m]"));
@@ -1049,6 +1098,7 @@ mod tests {
             model: "auto",
             effort: None,
             context_window: None,
+            min_context: None,
             model_map: None,
         });
         assert_eq!(
@@ -1089,6 +1139,7 @@ mod tests {
             model: "stealth/ox-alpha",
             effort: None,
             context_window: None,
+            min_context: None,
             model_map: None,
         });
         assert_eq!(
@@ -1130,6 +1181,7 @@ mod tests {
             model: "stealth/ox-alpha",
             effort: None,
             context_window: None,
+            min_context: None,
             model_map: None,
         });
         assert_eq!(
@@ -1166,6 +1218,7 @@ mod tests {
             model: "anyrouter/auto",
             effort: None,
             context_window: None,
+            min_context: None,
             model_map: None,
         });
         assert_eq!(
@@ -1197,6 +1250,7 @@ mod tests {
             model: "x",
             effort: None,
             context_window: None,
+            min_context: None,
             model_map: None,
         });
         assert!(env.get("OPENAI_BASE_URL").unwrap().ends_with("/v1"));
@@ -1213,6 +1267,7 @@ mod tests {
             model: "x",
             effort: None,
             context_window: None,
+            min_context: None,
             model_map: None,
         });
         assert!(env.contains_key("GROK_MODELS_BASE_URL"));
@@ -1230,6 +1285,7 @@ mod tests {
             model: "auto",
             effort: None,
             context_window: None,
+            min_context: None,
             model_map: None,
         });
         let out = render_dry_run("claude", &[], &env);
@@ -1248,6 +1304,7 @@ mod tests {
             model: "z-ai/glm-4.7-flash",
             effort: None,
             context_window: None,
+            min_context: None,
             model_map: None,
         });
         assert_eq!(
@@ -1379,6 +1436,7 @@ mod tests {
             model: "anthropic/claude-sonnet-4.6",
             effort: Some("minimal"),
             context_window: None,
+            min_context: None,
             model_map: None,
         });
         assert_eq!(
@@ -1437,6 +1495,78 @@ mod tests {
     }
 
     #[test]
+    fn claude_virtual_auto_1m_sets_anthropic_model_suffix_and_compact() {
+        let tool = builtin("claude").unwrap();
+        let mut env = build_tool_env(BuildToolEnvInput {
+            tool_name: "claude",
+            tool: &tool,
+            profile: &profile(),
+            api_key: "sk-ar-v1-secret",
+            model: "anyrouter/auto[1m]",
+            effort: None,
+            context_window: None,
+            min_context: None,
+            model_map: None,
+        });
+        let mut routing = crate::config::RoutingConstraints::default();
+        let catalog = apply_model_id_routing("anyrouter/auto[1m]", &mut routing);
+        assert_eq!(catalog, "anyrouter/auto");
+        apply_routing_env(&mut env, &routing, "claude");
+        assert_eq!(
+            env.get("ANTHROPIC_MODEL").map(String::as_str),
+            Some("anyrouter/auto[1m]")
+        );
+        let body = env.get("CLAUDE_CODE_EXTRA_BODY").expect("extra body");
+        assert!(body.contains("\"min_context\":1000000"), "{body}");
+        assert_eq!(
+            env.get("CLAUDE_CODE_AUTO_COMPACT_WINDOW")
+                .map(String::as_str),
+            Some("1000000")
+        );
+
+        // Launch peels the suffix first and only passes routing.min_context.
+        let peeled = build_tool_env(BuildToolEnvInput {
+            tool_name: "claude",
+            tool: &tool,
+            profile: &profile(),
+            api_key: "sk-ar-v1-secret",
+            model: "anyrouter/auto",
+            effort: None,
+            context_window: Some(200_000),
+            min_context: Some(1_000_000),
+            model_map: None,
+        });
+        assert_eq!(
+            peeled.get("ANTHROPIC_MODEL").map(String::as_str),
+            Some("anyrouter/auto[1m]"),
+            "do not use catalog 200k as the HUD suffix"
+        );
+        assert_eq!(
+            peeled
+                .get("CLAUDE_CODE_AUTO_COMPACT_WINDOW")
+                .map(String::as_str),
+            Some("1000000")
+        );
+
+        let half = build_tool_env(BuildToolEnvInput {
+            tool_name: "claude",
+            tool: &tool,
+            profile: &profile(),
+            api_key: "sk-ar-v1-secret",
+            model: "anyrouter/auto[500k]",
+            effort: None,
+            context_window: None,
+            min_context: None,
+            model_map: None,
+        });
+        assert_eq!(
+            half.get("ANTHROPIC_MODEL").map(String::as_str),
+            Some("anyrouter/auto[500k]")
+        );
+        assert!(half.get("CLAUDE_CODE_AUTO_COMPACT_WINDOW").is_none());
+    }
+
+    #[test]
     fn claude_shadow_env_overrides_parent_anthropic_key() {
         // WHY: a leftover ANTHROPIC_API_KEY in the parent shell must not win.
         let tool = builtin("claude").unwrap();
@@ -1449,6 +1579,7 @@ mod tests {
             model: "auto",
             effort: None,
             context_window: None,
+            min_context: None,
             model_map: None,
         });
         assert_eq!(
@@ -1473,11 +1604,12 @@ mod tests {
             model: "anyrouter/free[1m]",
             effort: None,
             context_window: None,
+            min_context: None,
             model_map: None,
         });
         assert_eq!(
             free.get("ANTHROPIC_MODEL").map(String::as_str),
-            Some("anyrouter/free")
+            Some("anyrouter/free[1m]")
         );
         assert_eq!(
             free.get("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY")
@@ -1492,6 +1624,7 @@ mod tests {
             model: "poolside/laguna-s-2.1",
             effort: None,
             context_window: None,
+            min_context: None,
             model_map: None,
         });
         assert_eq!(
