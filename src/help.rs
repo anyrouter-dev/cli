@@ -440,6 +440,7 @@ Switch channel and update:
 Auto-update is on by default. On startup a background process checks
 GitHub Releases, and while a coding agent is running it rechecks every
 few hours, then installs in place. The next `{bin}` uses the new build.
+Press Ctrl+G in the agent to restart and resume after an auto-upgrade.
 
   auto_update: false     in ~/.anyrouter/config.yaml to turn it off
   channel: beta          follow main (GitHub prereleases)
@@ -458,7 +459,7 @@ While installing, a spinner ticks with the from → to versions and channel:
   ⠋ Updating v0.1.11 -> v0.1.99 (stable channel)
   ✔ Updated to v0.1.99
 
-  Run anyr to start using the new version.
+  Run anyr to start using the new version. Press Ctrl+G in the agent to restart and resume.
 
 --check reports current vs latest without installing.
 --fixture <path> / ANYR_RELEASES_JSON skips the network (tests / dry-run).

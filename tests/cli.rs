@@ -910,6 +910,10 @@ fn upgrade_help_mentions_channel_stable_beta() {
         stdout.contains("Run anyr to start using the new version."),
         "upgrade help should show the post-update hint, got:\n{stdout}"
     );
+    assert!(
+        stdout.contains("Ctrl+G") && stdout.contains("restart and resume"),
+        "upgrade help should mention Ctrl+G restart/resume after auto-upgrade:\n{stdout}"
+    );
 }
 
 #[test]
