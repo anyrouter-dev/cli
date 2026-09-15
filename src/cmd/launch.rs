@@ -10,9 +10,10 @@ use crate::key::{
 };
 use crate::parse::{get_string_flag, ParsedArgs};
 use crate::spawn::{
-    apply_routing_env, build_tool_env, catalog_model_id, default_profile_for_env, effort_args_for,
-    env_command_path, is_auto_model, model_args_for, normalize_effort, prepare_pi_wrapper,
-    provider_args_for, render_dry_run, resolve_tool, spawn_child, BuildToolEnvInput,
+    apply_model_id_routing, apply_routing_env, build_tool_env, catalog_model_id,
+    default_profile_for_env, effort_args_for, env_command_path, is_auto_model, model_args_for,
+    normalize_effort, prepare_pi_wrapper, provider_args_for, render_dry_run, resolve_tool,
+    spawn_child, BuildToolEnvInput,
 };
 use crate::term;
 
@@ -88,12 +89,15 @@ pub(crate) fn run_launch(
     profile.base_url = Some(base.clone());
     let aliases_changed = apply_claude_alias_flags(&mut profile, parsed);
     let tool = resolve_tool(existing.as_ref(), tool_name)?;
-    let requested = catalog_model_id(&resolve_launch_model(
-        &parsed.flags,
-        existing.as_ref(),
-        &profile,
-        tool_name,
-    ));
+    let mut routing = existing
+        .as_ref()
+        .and_then(|c| c.agent_binding(tool_name))
+        .map(|b| b.routing.clone())
+        .unwrap_or_default();
+    let requested = apply_model_id_routing(
+        &resolve_launch_model(&parsed.flags, existing.as_ref(), &profile, tool_name),
+        &mut routing,
+    );
     let resolved = resolve_session_model(&requested, &base, Some(&key), env);
     let model = resolved.id;
     let effort = normalize_effort(get_string_flag(&parsed.flags, "effort").as_deref())?;
@@ -112,20 +116,6 @@ pub(crate) fn run_launch(
         context_window: resolved.context_window,
         model_map: None,
     });
-    let mut routing = existing
-        .as_ref()
-        .and_then(|c| c.agent_binding(tool_name))
-        .map(|b| b.routing.clone())
-        .unwrap_or_default();
-    if let Some(raw) = get_string_flag(&parsed.flags, "model") {
-        routing.apply_model_id_context_suffix(&raw);
-    } else if let Some(raw) = existing
-        .as_ref()
-        .and_then(|c| c.agent_binding(tool_name))
-        .and_then(|b| b.default_model.as_deref())
-    {
-        routing.apply_model_id_context_suffix(raw);
-    }
     apply_routing_env(&mut env_map, &routing, tool_name);
     if tool_name == "pi" {
         let catalog = fetch_models(&base, Some(&key)).unwrap_or_default();
