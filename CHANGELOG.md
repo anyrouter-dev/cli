@@ -4,6 +4,18 @@ This file is maintained automatically by [release-please](https://github.com/goo
 
 GitHub Releases use this file as the release notes (full history through that tag).
 
+## [0.1.14](https://github.com/anyrouter-dev/cli/compare/v0.1.13...v0.1.14) (2026-09-15)
+
+
+### Features
+
+* **cli:** hint Ctrl+G restart after auto-upgrade ([#71](https://github.com/anyrouter-dev/cli/issues/71)) ([0cbd8b1](https://github.com/anyrouter-dev/cli/commit/0cbd8b1fc52e6def51adf98c1c501b428d046b5a))
+
+
+### Bug Fixes
+
+* **cli:** keep [1m]/[500k] on Claude virtual ANTHROPIC_MODEL ([#69](https://github.com/anyrouter-dev/cli/issues/69)) ([9507bef](https://github.com/anyrouter-dev/cli/commit/9507bef908dc96ef849e49d95451f83f0cda39de))
+
 ## [0.1.13](https://github.com/anyrouter-dev/cli/compare/v0.1.12...v0.1.13) (2026-09-15)
 
 
