@@ -4,6 +4,13 @@ This file is maintained automatically by [release-please](https://github.com/goo
 
 GitHub Releases use this file as the release notes (full history through that tag).
 
+## [0.1.16](https://github.com/anyrouter-dev/cli/compare/v0.1.15...v0.1.16) (2026-09-16)
+
+
+### Bug Fixes
+
+* **ci:** always upload checksums.txt; unglue update spinner warnings ([#74](https://github.com/anyrouter-dev/cli/issues/74)) ([3038fb7](https://github.com/anyrouter-dev/cli/commit/3038fb720cdf6e97f1568edb5fff2d205a84bdad))
+
 ## [0.1.15](https://github.com/anyrouter-dev/cli/compare/v0.1.14...v0.1.15) (2026-09-16)
 
 
