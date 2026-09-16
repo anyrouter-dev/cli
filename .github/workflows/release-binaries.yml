@@ -13,6 +13,10 @@ on:
 permissions:
   contents: write
 
+# Upload retry is inlined in each gh release upload step so
+# workflow_dispatch of an older tag still uploads. The tag checkout used
+# to compile binaries may not contain helper scripts added later.
+
 jobs:
   build:
     # release: only non-prerelease; workflow_dispatch: always (tag input)
@@ -42,7 +46,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.sha }}
+          # Compile the tagged source. Scripts used only after this step
+          # (bench.py) exist on historical tags; upload retry is inlined.
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.release.tag_name || github.sha }}
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -63,7 +69,9 @@ jobs:
             bin="target/${{ matrix.target }}/release/anyr.exe"
           fi
           strip "$bin" 2>/dev/null || true
+          test -s "$bin" || { echo "missing built binary $bin" >&2; exit 1; }
           cp "$bin" "${{ matrix.asset }}"
+          test -s "${{ matrix.asset }}" || { echo "empty asset ${{ matrix.asset }}" >&2; exit 1; }
 
       - name: bench
         shell: bash
@@ -77,10 +85,29 @@ jobs:
             --out "bench/${{ matrix.asset }}.json"
 
       - name: upload ${{ matrix.asset }}
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.release.tag_name }}
-        run: gh release upload "${RELEASE_TAG}" "${{ matrix.asset }}" --clobber
+        run: |
+          set -euo pipefail
+          n=1
+          while true; do
+            if out=$(gh release upload "${RELEASE_TAG}" "${{ matrix.asset }}" --clobber 2>&1); then
+              printf '%s\n' "$out"
+              break
+            fi
+            printf '%s\n' "$out" >&2
+            if ! printf '%s\n' "$out" | grep -qi 'release not found'; then
+              exit 1
+            fi
+            if [ "$n" -ge 3 ]; then
+              echo "gh release upload failed: release not found after 3 attempts (${RELEASE_TAG})" >&2
+              exit 1
+            fi
+            sleep $((n * 5))
+            n=$((n + 1))
+          done
 
       - uses: actions/upload-artifact@v4
         with:
@@ -93,7 +120,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.sha }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.release.tag_name || github.sha }}
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -122,36 +149,47 @@ jobs:
             --out bench/anyr.wasm.json
 
       - name: upload wasm assets
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.release.tag_name }}
         run: |
-          gh release upload "${RELEASE_TAG}" \
-            anyr.wasm --clobber
+          set -euo pipefail
+          n=1
+          while true; do
+            if out=$(gh release upload "${RELEASE_TAG}" anyr.wasm --clobber 2>&1); then
+              printf '%s\n' "$out"
+              break
+            fi
+            printf '%s\n' "$out" >&2
+            if ! printf '%s\n' "$out" | grep -qi 'release not found'; then
+              exit 1
+            fi
+            if [ "$n" -ge 3 ]; then
+              echo "gh release upload failed: release not found after 3 attempts (${RELEASE_TAG})" >&2
+              exit 1
+            fi
+            sleep $((n * 5))
+            n=$((n + 1))
+          done
 
       - uses: actions/upload-artifact@v4
         with:
           name: bench-anyr.wasm
           path: bench/anyr.wasm.json
 
-  notes:
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.release.prerelease == false }}
+  # Checksums must ship even when one platform (often Windows upload) fails.
+  checksums:
+    if: ${{ always() && !cancelled() && (github.event_name == 'workflow_dispatch' || github.event.release.prerelease == false) }}
     needs: [build, wasm]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.sha }}
+          # Workflow revision, not the tag: historical tags lack newer scripts.
+          ref: ${{ github.sha }}
 
-      - uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: generate checksums
+      - name: generate and upload checksums.txt
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -159,22 +197,84 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
-          gh release download "${RELEASE_TAG}" --dir dist --pattern 'anyr-*'
+          gh release download "${RELEASE_TAG}" --dir dist --pattern 'anyr-*' || true
+          count="$(find dist -maxdepth 1 -type f -name 'anyr-*' | wc -l | tr -d ' ')"
+          echo "binaries on ${RELEASE_TAG}: ${count}"
+          ls -la dist || true
+          if [ "${count}" = "0" ]; then
+            echo "hard gate: no anyr-* binaries on ${RELEASE_TAG}; cannot write checksums.txt" >&2
+            exit 1
+          fi
           ( cd dist && sha256sum anyr-* > checksums.txt )
-          ls -la dist/checksums.txt
+          test -s dist/checksums.txt
+          cat dist/checksums.txt
+          n=1
+          while true; do
+            if out=$(gh release upload "${RELEASE_TAG}" dist/checksums.txt --clobber 2>&1); then
+              printf '%s\n' "$out"
+              break
+            fi
+            printf '%s\n' "$out" >&2
+            if ! printf '%s\n' "$out" | grep -qi 'release not found'; then
+              exit 1
+            fi
+            if [ "$n" -ge 3 ]; then
+              echo "gh release upload failed: release not found after 3 attempts (${RELEASE_TAG})" >&2
+              exit 1
+            fi
+            sleep $((n * 5))
+            n=$((n + 1))
+          done
+
+  notes:
+    if: ${{ always() && !cancelled() && (github.event_name == 'workflow_dispatch' || github.event.release.prerelease == false) }}
+    needs: [checksums]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+        continue-on-error: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
 
       - name: write changelog + bench to release
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.release.tag_name }}
         run: |
           python scripts/bench.py report artifacts \
             --out bench-report.md --json-out bench-report.json \
-            --title "Binary size and startup (${RELEASE_TAG})"
+            --title "Binary size and startup (${RELEASE_TAG})" || true
           python scripts/release_notes.py github \
             --tag "${RELEASE_TAG}" \
             --bench bench-report.md \
             --out notes.md
           gh release edit "${RELEASE_TAG}" --notes-file notes.md
-          gh release upload "${RELEASE_TAG}" \
-            bench-report.md bench-report.json dist/checksums.txt --clobber
+          if [ -f bench-report.md ]; then
+            n=1
+            while true; do
+              if out=$(gh release upload "${RELEASE_TAG}" \
+                  bench-report.md bench-report.json --clobber 2>&1); then
+                printf '%s\n' "$out"
+                break
+              fi
+              printf '%s\n' "$out" >&2
+              if ! printf '%s\n' "$out" | grep -qi 'release not found'; then
+                exit 1
+              fi
+              if [ "$n" -ge 3 ]; then
+                echo "gh release upload failed: release not found after 3 attempts (${RELEASE_TAG})" >&2
+                exit 1
+              fi
+              sleep $((n * 5))
+              n=$((n + 1))
+            done
+          fi

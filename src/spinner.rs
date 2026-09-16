@@ -1,11 +1,16 @@
 //! In-place CLI spinner. Frames actually advance on a timer so a TTY never
 //! shows a frozen loading glyph. Non-TTY prints a static status line instead.
 
+use std::cell::RefCell;
 use std::io::{self, IsTerminal, Write};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
+
+thread_local! {
+    static ACTIVE_PAUSE: RefCell<Option<Arc<AtomicBool>>> = RefCell::new(None);
+}
 
 use crate::term::{self, BLUE, SUCCESS};
 
@@ -73,6 +78,7 @@ fn paint_ok_mark() -> String {
 /// Live spinner on a TTY; a single status line otherwise.
 pub struct Spinner {
     stop: Arc<AtomicBool>,
+    pause: Arc<AtomicBool>,
     ticks: Arc<AtomicUsize>,
     handle: Option<JoinHandle<()>>,
     out: Arc<Mutex<Box<dyn Write + Send>>>,
@@ -103,12 +109,14 @@ impl Spinner {
         let message = message.into();
         let out: Arc<Mutex<Box<dyn Write + Send>>> = Arc::new(Mutex::new(Box::new(writer)));
         let stop = Arc::new(AtomicBool::new(false));
+        let pause = Arc::new(AtomicBool::new(false));
         let ticks = Arc::new(AtomicUsize::new(0));
         let handle = if tty {
             #[cfg(not(target_arch = "wasm32"))]
             {
                 let out_t = Arc::clone(&out);
                 let stop_t = Arc::clone(&stop);
+                let pause_t = Arc::clone(&pause);
                 let ticks_t = Arc::clone(&ticks);
                 let msg = message.clone();
                 let interval = if interval.is_zero() {
@@ -117,7 +125,7 @@ impl Spinner {
                     interval
                 };
                 Some(thread::spawn(move || {
-                    tick_loop(out_t, stop_t, ticks_t, msg, interval);
+                    tick_loop(out_t, stop_t, pause_t, ticks_t, msg, interval);
                 }))
             }
             #[cfg(target_arch = "wasm32")]
@@ -135,8 +143,9 @@ impl Spinner {
             lock_write(&out, format!("{message}\n").as_bytes());
             None
         };
-        Self {
+        let spinner = Self {
             stop,
+            pause: Arc::clone(&pause),
             ticks,
             handle,
             out,
@@ -144,7 +153,17 @@ impl Spinner {
             interval,
             min_ticks,
             finished: false,
-        }
+        };
+        ACTIVE_PAUSE.with(|slot| {
+            *slot.borrow_mut() = Some(Arc::clone(&spinner.pause));
+        });
+        spinner
+    }
+
+    /// Pause the live glyph, finish the current line, then print `msg`.
+    /// Stops `(stable channel)warning:` glue when stderr shares the TTY.
+    pub fn warn(&self, msg: &str) {
+        warn_beside_spinner_on(&self.out, self.tty, &self.pause, self.interval, msg);
     }
 
     pub fn tick_count(&self) -> usize {
@@ -205,6 +224,9 @@ impl Spinner {
 impl Drop for Spinner {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
+        ACTIVE_PAUSE.with(|slot| {
+            *slot.borrow_mut() = None;
+        });
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
         }
@@ -214,23 +236,69 @@ impl Drop for Spinner {
     }
 }
 
+/// Print an install warning on its own line. Pauses a live spinner first so
+/// the glyph line is not glued to `warning:`.
+pub fn warn_beside_spinner(msg: &str) {
+    let pause = ACTIVE_PAUSE.with(|slot| slot.borrow().clone());
+    let tty = io::stdout().is_terminal();
+    if let Some(pause) = pause.as_ref() {
+        pause.store(true, Ordering::SeqCst);
+        thread::sleep(Duration::from_millis(40));
+    }
+    if tty {
+        let mut out = io::stdout();
+        let _ = out.write_all(format!("\r\x1b[K\n{msg}\n\n").as_bytes());
+        let _ = out.flush();
+    } else {
+        eprintln!("{msg}");
+    }
+    if let Some(pause) = pause.as_ref() {
+        pause.store(false, Ordering::SeqCst);
+    }
+}
+
+fn warn_beside_spinner_on(
+    out: &Mutex<Box<dyn Write + Send>>,
+    tty: bool,
+    pause: &AtomicBool,
+    interval: Duration,
+    msg: &str,
+) {
+    pause.store(true, Ordering::SeqCst);
+    thread::sleep(interval.max(Duration::from_millis(15)));
+    if tty {
+        lock_write(out, format!("\r\x1b[K\n{msg}\n\n").as_bytes());
+    } else {
+        lock_write(out, format!("{msg}\n").as_bytes());
+    }
+    pause.store(false, Ordering::SeqCst);
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn tick_loop(
     out: Arc<Mutex<Box<dyn Write + Send>>>,
     stop: Arc<AtomicBool>,
+    pause: Arc<AtomicBool>,
     ticks: Arc<AtomicUsize>,
     message: String,
     interval: Duration,
 ) {
     let mut index = 0usize;
     while !stop.load(Ordering::Relaxed) {
+        if pause.load(Ordering::Relaxed) {
+            thread::sleep(Duration::from_millis(5).min(interval));
+            continue;
+        }
         let glyph = paint_glyph(frame(index));
         let line = format!("\r{glyph} {message}\x1b[K");
         lock_write(&out, line.as_bytes());
         ticks.fetch_add(1, Ordering::Relaxed);
         index = index.wrapping_add(1);
         let until = Instant::now() + interval;
-        while Instant::now() < until && !stop.load(Ordering::Relaxed) {
+        while Instant::now() < until
+            && !stop.load(Ordering::Relaxed)
+            && !pause.load(Ordering::Relaxed)
+        {
             thread::sleep(Duration::from_millis(5).min(interval));
         }
     }
@@ -317,5 +385,33 @@ mod tests {
         assert!(text.contains(START_USING), "{text}");
         assert!(text.contains(RESTART_RESUME_HINT), "{text}");
         assert!(text.contains("Ctrl+G"), "{text}");
+    }
+
+    #[test]
+    fn warn_starts_on_new_line_not_glued_to_channel() {
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        let spinner = Spinner::start_on(
+            SharedBuf(Arc::clone(&buf)),
+            true,
+            "Updating v0.1.14 -> v0.1.15 (stable channel)",
+            Duration::from_millis(15),
+            2,
+        );
+        spinner.warn("warning: release has no checksums.txt — skipping verification");
+        spinner.succeed("Updated to v0.1.15");
+        let text = String::from_utf8_lossy(&buf.lock().unwrap()).into_owned();
+        assert!(
+            !text.contains("(stable channel)warning:"),
+            "warning must not glue to the spinner line:\n{text:?}"
+        );
+        let n = text
+            .matches("warning: release has no checksums.txt")
+            .count();
+        assert_eq!(n, 1, "warning must print once, got {n} in:\n{text:?}");
+        let stripped = text.replace("\x1b[K", "");
+        assert!(
+            stripped.contains("\nwarning:"),
+            "expected a newline before warning, got {text:?}"
+        );
     }
 }

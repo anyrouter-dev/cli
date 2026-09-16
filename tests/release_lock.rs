@@ -175,6 +175,30 @@ fn workflow_files_exist_and_do_not_auto_merge() {
         "stable releases still ship Intel macOS via macos-13"
     );
     assert!(
+        binaries.contains("checksums:"),
+        "release-binaries must have a dedicated checksums job"
+    );
+    assert!(
+        binaries.contains("always()"),
+        "checksums must run even if a matrix platform fails"
+    );
+    assert!(
+        binaries.contains("release not found"),
+        "uploads must retry release-not-found inline (historical tags lack helper scripts)"
+    );
+    assert!(
+        !binaries.contains("bash scripts/"),
+        "workflow must not call helper scripts from a tag checkout"
+    );
+    assert!(
+        binaries.contains("hard gate"),
+        "checksums job must fail when the release has zero binaries"
+    );
+    assert!(
+        binaries.contains("ref: ${{ github.sha }}"),
+        "checksums/notes must check out the workflow SHA, not the historical tag"
+    );
+    assert!(
         binaries.contains("bench-report.md"),
         "release notes must include the bench report"
     );
@@ -200,6 +224,7 @@ fn workflow_files_exist_and_do_not_auto_merge() {
         "cargo llvm-cov --locked --all-targets",
         "codecov/codecov-action",
         "lcov.info",
+        "test -s dist/checksums.txt",
     ] {
         assert!(ci.contains(needle), "ci.yml must include {needle}");
     }
