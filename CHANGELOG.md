@@ -12,6 +12,8 @@ GitHub Releases use this file as the release notes (full history through that ta
 * **cli:** keep Claude HUD floors on virtual presets end-to-end (ANTHROPIC_MODEL, extra-body min_context, compact window, no catalog remap)
 * **cli:** bare `anyr update` keeps the config channel; only `--beta`/`--stable` persist a switch
 * **cli:** skip a broken latest GitHub release (checksum / missing asset) and install the next good build on that channel
+* **cli:** print update warnings on a new line so they are not glued to the spinner
+* **ci:** upload checksums.txt even when one platform build fails; retry Windows release-not-found uploads
 
 
 ## [0.1.14](https://github.com/anyrouter-dev/cli/compare/v0.1.13...v0.1.14) (2026-09-15)

@@ -461,7 +461,9 @@ fn verify_downloaded_asset(url: &str, tmp: &Path) -> Result<(), String> {
     let checksums = checksums_url(url);
     match fetch_checksums_body(&checksums)? {
         None => {
-            eprintln!("warning: release has no checksums.txt — skipping verification");
+            crate::spinner::warn_beside_spinner(
+                "warning: release has no checksums.txt — skipping verification",
+            );
             Ok(())
         }
         Some(body) => {
@@ -645,9 +647,13 @@ fn run_auto(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, 
         println!("would update {VERSION} -> {}", installable[0].version_str());
         return Ok(0);
     }
-    match try_releases(&installable, os, arch, replace_current_binary, |msg| {
-        eprintln!("{msg}")
-    }) {
+    match try_releases(
+        &installable,
+        os,
+        arch,
+        replace_current_binary,
+        crate::spinner::warn_beside_spinner,
+    ) {
         Ok((rel, _)) => {
             let ver = rel.version_str().to_string();
             write_notice(env, &ver);
@@ -835,19 +841,23 @@ pub fn run(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, S
         return Ok(0);
     }
 
-    match try_releases(&installable, os, arch, replace_current_binary, |msg| {
-        eprintln!("{msg}")
-    }) {
+    match try_releases(
+        &installable,
+        os,
+        arch,
+        replace_current_binary,
+        crate::spinner::warn_beside_spinner,
+    ) {
         Ok((rel, _)) => {
-            spinner.succeed(&updated_line(rel.version_str()));
             if rel.tag_name != installable[0].tag_name {
-                eprintln!(
+                spinner.warn(&format!(
                     "Installed {} after a newer {} {} release failed verification.",
                     rel.tag_name,
                     channel.as_str(),
                     installable[0].tag_name
-                );
+                ));
             }
+            spinner.succeed(&updated_line(rel.version_str()));
             Ok(0)
         }
         Err(err) => {
