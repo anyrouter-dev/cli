@@ -4,6 +4,16 @@ This file is maintained automatically by [release-please](https://github.com/goo
 
 GitHub Releases use this file as the release notes (full history through that tag).
 
+## [0.1.15](https://github.com/anyrouter-dev/cli/compare/v0.1.14...v0.1.15) (2026-09-16)
+
+
+### Bug Fixes
+
+* **cli:** keep Claude HUD floors on virtual presets end-to-end (ANTHROPIC_MODEL, extra-body min_context, compact window, no catalog remap)
+* **cli:** bare `anyr update` keeps the config channel; only `--beta`/`--stable` persist a switch
+* **cli:** skip a broken latest GitHub release (checksum / missing asset) and install the next good build on that channel
+
+
 ## [0.1.14](https://github.com/anyrouter-dev/cli/compare/v0.1.13...v0.1.14) (2026-09-15)
 
 

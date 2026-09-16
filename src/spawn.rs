@@ -403,16 +403,14 @@ pub fn build_tool_env(input: BuildToolEnvInput<'_>) -> BTreeMap<String, String> 
         );
     }
     if input.tool_name == "claude" {
-        env.insert(
-            "ANTHROPIC_MODEL".into(),
-            model_id_for_tool("claude", input.model, input.min_context),
-        );
+        let anthropic_model = model_id_for_tool("claude", input.model, input.min_context);
+        env.insert("ANTHROPIC_MODEL".into(), anthropic_model);
         env.insert(
             "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY".into(),
             // Discovery remaps unknown ids (including virtual `anyrouter/*`)
             // onto a catalog SKU such as Laguna. Keep it off for presets so the
             // gateway still sees the virtual id + extra-body min_context.
-            if input.tool.enable_gateway_model_discovery && !is_virtual_preset(input.model) {
+            if claude_gateway_discovery_enabled(input.tool, input.model) {
                 "1"
             } else {
                 "0"
@@ -449,15 +447,7 @@ pub fn build_tool_env(input: BuildToolEnvInput<'_>) -> BTreeMap<String, String> 
             alias(&input.profile.claude_fable, input.profile.claude_fable()),
         );
         env.insert("CLAUDE_CODE_SUBAGENT_MODEL".into(), haiku);
-        let floor = peel_context_window_suffixes(input.model)
-            .1
-            .or(input.min_context);
-        let wants_compact = if is_virtual_preset(input.model) {
-            floor.is_some_and(|n| n >= MIN_1M_CONTEXT)
-        } else {
-            claude_wants_1m(input.context_window)
-        };
-        if wants_compact {
+        if claude_wants_auto_compact(input.model, input.min_context, input.context_window) {
             env.insert("CLAUDE_CODE_AUTO_COMPACT_WINDOW".into(), "1000000".into());
         }
         // Label each picker entry with its role; otherwise four identical IDs
@@ -559,11 +549,53 @@ pub fn session_model_label(model: &str) -> String {
 pub fn claude_wants_1m(context_window: Option<i64>) -> bool {
     match context_window {
         Some(n) => n >= MIN_1M_CONTEXT,
-        // Unknown: we no longer append `[1m]` for Claude (third-party catalog
-        // ids 404 on the suffix), but this predicate still drives the
-        // `CLAUDE_CODE_AUTO_COMPACT_WINDOW` env var in `build_tool_env`.
+        // Unknown concrete window: still enable compact so a 1M session is not
+        // truncated at Claude's 200k default. Virtual presets use the floor.
         None => true,
     }
+}
+
+fn merged_floor(model: &str, min_context: Option<i64>) -> Option<i64> {
+    match (peel_context_window_suffixes(model).1, min_context) {
+        (Some(a), Some(b)) => Some(a.max(b)),
+        (a, b) => a.or(b),
+    }
+}
+
+/// Compact when the routing floor is ≥ 1M. Concrete ids without a floor still
+/// use catalog `context_length` (unknown counts as yes).
+pub fn claude_wants_auto_compact(
+    model: &str,
+    min_context: Option<i64>,
+    context_window: Option<i64>,
+) -> bool {
+    if merged_floor(model, min_context).is_some_and(|n| n >= MIN_1M_CONTEXT) {
+        return true;
+    }
+    if is_virtual_preset(model) {
+        return false;
+    }
+    claude_wants_1m(context_window)
+}
+
+pub fn claude_gateway_discovery_enabled(tool: &ToolConfig, model: &str) -> bool {
+    tool.enable_gateway_model_discovery && !is_virtual_preset(model)
+}
+
+/// Catalog `context_length` for a concrete id. Virtual `anyrouter/*` must not
+/// inherit auto's 200k listing — that would paint the HUD `[200k]`.
+pub fn catalog_context_window(
+    requested: &str,
+    models: &[crate::http::CatalogModel],
+) -> Option<i64> {
+    let id = catalog_model_id(requested);
+    if is_virtual_preset(&id) {
+        return None;
+    }
+    models
+        .iter()
+        .find(|m| catalog_model_id(&m.id) == id)
+        .and_then(|m| m.context_length)
 }
 
 /// Spell a token floor as `[1m]` / `[500k]` (same as `--model` suffixes).
@@ -580,11 +612,9 @@ pub fn context_floor_suffix(n: i64) -> Option<String> {
     None
 }
 
-/// Agent-specific model id.
-///
-/// Claude + virtual presets (`anyrouter/auto`, `free`, …) keep `[1m]` / `[500k]`
-/// on `ANTHROPIC_MODEL` so Claude Code's HUD does not invent `[200k]` from its
-/// default window. Concrete catalog ids still drop the suffix (they 404).
+/// Peel `[Nm]`/`[Nk]` → catalog id. Claude virtual presets re-attach the floor
+/// so the HUD shows `[1m]`/`[500k]` instead of catalog 200k. Concrete ids never
+/// get an invented suffix (those SKUs 404).
 pub fn model_id_for_tool(tool_name: &str, model: &str, min_context: Option<i64>) -> String {
     let (peeled, peeled_floor) = peel_context_window_suffixes(model);
     let id = catalog_model_id(&peeled);
@@ -594,11 +624,10 @@ pub fn model_id_for_tool(tool_name: &str, model: &str, min_context: Option<i64>)
         id
     };
     if tool_name == "claude" && is_virtual_preset(&catalog) {
-        let floor = match (peeled_floor, min_context) {
+        if let Some(n) = match (peeled_floor, min_context) {
             (Some(a), Some(b)) => Some(a.max(b)),
             (a, b) => a.or(b),
-        };
-        if let Some(n) = floor {
+        } {
             if let Some(sfx) = context_floor_suffix(n) {
                 return format!("{catalog}{sfx}");
             }
@@ -1547,6 +1576,41 @@ mod tests {
                 .map(String::as_str),
             Some("1000000")
         );
+        assert!(!claude_gateway_discovery_enabled(
+            &tool,
+            "anyrouter/auto[1m]"
+        ));
+        let auto_row = crate::http::CatalogModel {
+            id: "anyrouter/auto".into(),
+            name: None,
+            owned_by: None,
+            context_length: Some(200_000),
+        };
+        let ox = crate::http::CatalogModel {
+            id: "stealth/ox-alpha".into(),
+            name: None,
+            owned_by: None,
+            context_length: Some(1_000_000),
+        };
+        assert_eq!(
+            catalog_context_window("anyrouter/auto[1m]", &[auto_row.clone(), ox.clone()]),
+            None,
+            "virtual preset must not inherit catalog 200k"
+        );
+        assert_eq!(
+            catalog_context_window("stealth/ox-alpha", &[auto_row, ox]),
+            Some(1_000_000)
+        );
+        assert!(claude_wants_auto_compact(
+            "anyrouter/auto",
+            Some(1_000_000),
+            Some(200_000)
+        ));
+        assert!(!claude_wants_auto_compact(
+            "anyrouter/auto[500k]",
+            None,
+            Some(200_000)
+        ));
 
         let half = build_tool_env(BuildToolEnvInput {
             tool_name: "claude",

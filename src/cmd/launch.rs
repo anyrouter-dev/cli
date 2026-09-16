@@ -10,10 +10,10 @@ use crate::key::{
 };
 use crate::parse::{get_string_flag, ParsedArgs};
 use crate::spawn::{
-    apply_model_id_routing, apply_routing_env, build_tool_env, catalog_model_id,
-    default_profile_for_env, effort_args_for, env_command_path, is_auto_model, model_args_for,
-    normalize_effort, prepare_pi_wrapper, provider_args_for, render_dry_run, resolve_tool,
-    spawn_child, BuildToolEnvInput,
+    apply_model_id_routing, apply_routing_env, build_tool_env, catalog_context_window,
+    catalog_model_id, default_profile_for_env, display_model_id, effort_args_for, env_command_path,
+    is_auto_model, is_virtual_preset, model_args_for, normalize_effort, prepare_pi_wrapper,
+    provider_args_for, render_dry_run, resolve_tool, spawn_child, BuildToolEnvInput,
 };
 use crate::term;
 
@@ -33,28 +33,26 @@ pub(crate) fn resolve_session_model(
     env: &BTreeMap<String, String>,
 ) -> ResolvedModel {
     let requested = catalog_model_id(requested);
-    if !catalog_lookup_enabled(env) {
+    let id = if is_auto_model(&requested) {
+        display_model_id(&requested)
+    } else {
+        requested
+    };
+    if is_virtual_preset(&id) || !catalog_lookup_enabled(env) {
+        // Virtual anyrouter/* stays the preset + floor suffix. Do not remap
+        // onto a catalog SKU or inherit auto's 200k listing window.
         return ResolvedModel {
-            id: requested,
+            id,
             context_window: None,
         };
     }
     let Ok(models) = fetch_models(base, key) else {
         return ResolvedModel {
-            id: requested,
+            id,
             context_window: None,
         };
     };
-    // Keep `auto` / `anyrouter/auto` as-is so the gateway applies the full
-    // preset failover chain on the first turn — pinning a single concrete model
-    // here would defeat anyrouter/auto's cross-model failover (north star:
-    // "fewer models that work"). The live `/models` lookup still contributes the
-    // context-window probe used for Claude's 1M-context suffix decision below.
-    let id = requested;
-    let context_window = models
-        .iter()
-        .find(|m| is_auto_model(&m.id))
-        .and_then(|m| m.context_length);
+    let context_window = catalog_context_window(&id, &models);
     ResolvedModel { id, context_window }
 }
 

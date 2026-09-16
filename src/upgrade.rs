@@ -13,10 +13,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use sha2::{Digest, Sha256};
 
 use crate::channel::{
-    asset_name, current_arch, current_os, github_token, merge_expanded_assets, parse_checksums,
-    parse_releases, parse_releases_html, release_asset_url, releases_http_error,
-    select_latest_release_with_asset, Channel, Release, GITHUB_EXPANDED_ASSETS_PREFIX,
-    GITHUB_RELEASES_API, GITHUB_RELEASES_HTML,
+    asset_name, channel_update_candidates, current_arch, current_os, github_token,
+    merge_expanded_assets, parse_checksums, parse_releases, parse_releases_html, release_asset_url,
+    releases_http_error, select_latest_release_with_asset, Channel, Release,
+    GITHUB_EXPANDED_ASSETS_PREFIX, GITHUB_RELEASES_API, GITHUB_RELEASES_HTML,
 };
 use crate::config::{resolve_config_path, write_config};
 use crate::http::{http_get_github, http_get_web};
@@ -166,16 +166,18 @@ fn resolve_channel(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Resul
     if let Some(flag) = get_string_flag(&parsed.flags, "channel") {
         return Channel::parse(&flag);
     }
+    // Config wins over ANYR_CHANNEL so bare `anyr update` does not jump tracks
+    // when a stale env is set. Only --beta/--stable persist a switch.
+    let path = resolve_config_path(None, env);
+    if let Some(ch) = load_config_if_present(&path).and_then(|c| c.channel) {
+        return Channel::parse(&ch);
+    }
     if let Some(v) = env
         .get("ANYR_CHANNEL")
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
     {
         return Channel::parse(v);
-    }
-    let path = resolve_config_path(None, env);
-    if let Some(ch) = load_config_if_present(&path).and_then(|c| c.channel) {
-        return Channel::parse(&ch);
     }
     Ok(Channel::Stable)
 }
@@ -338,9 +340,7 @@ fn verify_checksum_file(
     actual_hex: &str,
 ) -> Result<(), String> {
     let Some(expected) = map.get(asset_name) else {
-        return Err(format!(
-            "checksums.txt has no entry for {asset_name}; download aborted"
-        ));
+        return Err(format!("checksums.txt has no entry for {asset_name}"));
     };
     let expected = expected.trim().to_ascii_lowercase();
     let actual = actual_hex.trim().to_ascii_lowercase();
@@ -348,7 +348,7 @@ fn verify_checksum_file(
         Ok(())
     } else {
         Err(format!(
-            "checksum mismatch for {asset_name}: expected {expected}, got {actual}; download aborted"
+            "checksum mismatch for {asset_name}: expected {expected}, got {actual}"
         ))
     }
 }
@@ -409,6 +409,51 @@ fn fetch_checksums_body(url: &str) -> Result<Option<String>, String> {
         }
         Err(err) => Err(format!("checksums download failed: {err}")),
     }
+}
+
+/// Errors that mean this GitHub release is unusable; try the next on the channel.
+pub fn skippable_release_error(err: &str) -> bool {
+    let e = err.to_ascii_lowercase();
+    e.contains("checksum")
+        || e.contains("no entry for")
+        || e.contains("no binary assets")
+        || e.contains("download http")
+        || e.contains("download failed")
+        || e.contains("checksums download")
+        || e.contains("could not save download")
+        || e.contains("could not hash")
+        || e.contains("could not write")
+}
+
+/// Newest-first install: warn and skip a broken latest (checksum / missing
+/// asset / corrupt) rather than aborting the whole update.
+fn try_releases(
+    candidates: &[Release],
+    os: &str,
+    arch: &str,
+    mut install: impl FnMut(&str) -> Result<PathBuf, String>,
+    mut warn: impl FnMut(&str),
+) -> Result<(Release, PathBuf), String> {
+    let mut last = String::from("no installable release on this channel");
+    for (i, rel) in candidates.iter().enumerate() {
+        let url = release_asset_url(rel, os, arch);
+        match install(&url) {
+            Ok(path) => return Ok((rel.clone(), path)),
+            Err(err) if skippable_release_error(&err) => {
+                last = err.clone();
+                let next = candidates.get(i + 1).map(|r| r.tag_name.as_str());
+                match next {
+                    Some(tag) => warn(&format!(
+                        "warning: skipped {} ({err}); trying {tag}",
+                        rel.tag_name
+                    )),
+                    None => warn(&format!("warning: skipped {} ({err})", rel.tag_name)),
+                }
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    Err(last)
 }
 
 /// Verify `tmp` against sibling `checksums.txt`. 404 → warn and skip (legacy).
@@ -571,29 +616,42 @@ fn run_auto(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, 
             return Ok(0);
         }
     };
-    let asset = asset_name(current_os(), current_arch());
-    let latest = match select_latest_release_with_asset(&releases, channel, &asset) {
-        Ok(rel) => rel,
-        Err(_) => {
-            write_stamp(env);
-            return Ok(0);
-        }
+    let os = current_os();
+    let arch = current_arch();
+    let asset = asset_name(os, arch);
+    let candidates = channel_update_candidates(&releases, channel, &asset);
+    let Some(latest) = candidates.first() else {
+        write_stamp(env);
+        return Ok(0);
     };
     let latest_ver = latest.version_str().to_string();
     write_stamp(env);
-    if !needs_upgrade(VERSION, &latest_ver) {
+    if !needs_upgrade(VERSION, &latest_ver)
+        && candidates
+            .iter()
+            .all(|r| !needs_upgrade(VERSION, r.version_str()))
+    {
         return Ok(0);
     }
     let dry = parsed.flag_true("dry-run") || fixture.is_some();
-    if dry {
-        println!("would update {VERSION} -> {latest_ver}");
+    let installable: Vec<Release> = candidates
+        .into_iter()
+        .filter(|r| needs_upgrade(VERSION, r.version_str()))
+        .collect();
+    if installable.is_empty() {
         return Ok(0);
     }
-    let url = release_asset_url(&latest, current_os(), current_arch());
-    match replace_current_binary(&url) {
-        Ok(_) => {
-            write_notice(env, &latest_ver);
-            println!("updated {VERSION} -> {latest_ver}");
+    if dry {
+        println!("would update {VERSION} -> {}", installable[0].version_str());
+        return Ok(0);
+    }
+    match try_releases(&installable, os, arch, replace_current_binary, |msg| {
+        eprintln!("{msg}")
+    }) {
+        Ok((rel, _)) => {
+            let ver = rel.version_str().to_string();
+            write_notice(env, &ver);
+            println!("updated {VERSION} -> {ver}");
             Ok(0)
         }
         Err(_) => Ok(0),
@@ -704,16 +762,23 @@ pub fn run(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, S
     let os = current_os();
     let arch = current_arch();
     let asset = asset_name(os, arch);
-    let latest = select_latest_release_with_asset(&releases, channel, &asset)?;
+    let candidates = channel_update_candidates(&releases, channel, &asset);
+    let latest = candidates
+        .first()
+        .cloned()
+        .ok_or_else(|| select_latest_release_with_asset(&releases, channel, &asset).unwrap_err())?;
     let url = release_asset_url(&latest, os, arch);
     let latest_ver = latest.version_str();
     // Channel switches may need a "downgrade" (beta → older stable). Compare
     // equality instead of semver-newer when --beta/--stable was used.
-    let update = if switch.is_some() {
-        !version_eq(VERSION, latest_ver)
-    } else {
-        needs_upgrade(VERSION, latest_ver)
+    let wants = |ver: &str| {
+        if switch.is_some() {
+            !version_eq(VERSION, ver)
+        } else {
+            needs_upgrade(VERSION, ver)
+        }
     };
+    let update = wants(latest_ver);
     let check = wants_check(parsed);
     let dry = parsed.flag_true("dry-run") || fixture.is_some();
 
@@ -738,7 +803,19 @@ pub fn run(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, S
         return Ok(0);
     }
 
-    if !update {
+    let installable: Vec<Release> = if switch.is_some() {
+        candidates
+            .into_iter()
+            .filter(|r| !version_eq(VERSION, r.version_str()))
+            .collect()
+    } else {
+        candidates
+            .into_iter()
+            .filter(|r| needs_upgrade(VERSION, r.version_str()))
+            .collect()
+    };
+
+    if installable.is_empty() {
         println!(
             "{} Already up to date ({}, {} channel)",
             term::ok("✔"),
@@ -748,18 +825,29 @@ pub fn run(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, S
         return Ok(0);
     }
 
-    let spinner = crate::spinner::Spinner::start(updating_line(VERSION, latest_ver, channel));
+    let target_ver = installable[0].version_str().to_string();
+    let spinner = crate::spinner::Spinner::start(updating_line(VERSION, &target_ver, channel));
     if dry {
-        spinner.succeed(&would_update_line(latest_ver));
+        spinner.succeed(&would_update_line(&target_ver));
         if parsed.flag_true("dry-run") {
             print_redacted_env(env);
         }
         return Ok(0);
     }
 
-    match replace_current_binary(&url) {
-        Ok(_) => {
-            spinner.succeed(&updated_line(latest_ver));
+    match try_releases(&installable, os, arch, replace_current_binary, |msg| {
+        eprintln!("{msg}")
+    }) {
+        Ok((rel, _)) => {
+            spinner.succeed(&updated_line(rel.version_str()));
+            if rel.tag_name != installable[0].tag_name {
+                eprintln!(
+                    "Installed {} after a newer {} {} release failed verification.",
+                    rel.tag_name,
+                    channel.as_str(),
+                    installable[0].tag_name
+                );
+            }
             Ok(0)
         }
         Err(err) => {
@@ -957,7 +1045,14 @@ mod tests {
         env.insert("ANYR_CHANNEL".into(), "stable".into());
         assert_eq!(
             resolve_channel(&parsed_check(), &env).unwrap(),
-            Channel::Stable
+            Channel::Beta,
+            "bare update must keep config channel over ANYR_CHANNEL"
+        );
+        let (mut env, _) = isolated_home();
+        env.insert("ANYR_CHANNEL".into(), "beta".into());
+        assert_eq!(
+            resolve_channel(&parsed_check(), &env).unwrap(),
+            Channel::Beta
         );
     }
 
@@ -1190,8 +1285,7 @@ mod tests {
         fs::write(&tmp, b"downloaded-bytes-must-not-appear-in-error").unwrap();
         let err = abort_download(
             &tmp,
-            "checksum mismatch for anyr-linux-x86_64: expected aaa, got bbb; download aborted"
-                .into(),
+            "checksum mismatch for anyr-linux-x86_64: expected aaa, got bbb".into(),
         )
         .unwrap_err();
         assert!(!tmp.exists(), "temp file must be removed on checksum abort");
@@ -1201,5 +1295,72 @@ mod tests {
             "mismatch must not dump downloaded bytes: {err}"
         );
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn skippable_release_error_covers_checksum_and_missing() {
+        assert!(skippable_release_error(
+            "checksum mismatch for anyr-linux-x86_64: expected 097463, got 330c0ada"
+        ));
+        assert!(skippable_release_error(
+            "checksums.txt has no entry for anyr-linux-x86_64"
+        ));
+        assert!(skippable_release_error(
+            "Release v0.1.11 has no binary assets uploaded yet. Try `anyr update --beta`."
+        ));
+        assert!(skippable_release_error(
+            "download HTTP 500 from https://example"
+        ));
+        assert!(!skippable_release_error(
+            "could not replace /home/me/.local/bin/anyr: permission denied"
+        ));
+    }
+
+    #[test]
+    fn try_releases_skips_checksum_mismatch_and_installs_next() {
+        let rels = vec![
+            Release {
+                tag_name: "v0.1.14".into(),
+                prerelease: false,
+                assets: vec![crate::channel::ReleaseAsset {
+                    name: "anyr-linux-x86_64".into(),
+                    browser_download_url: "https://example/v0.1.14/anyr-linux-x86_64".into(),
+                }],
+            },
+            Release {
+                tag_name: "v0.1.13".into(),
+                prerelease: false,
+                assets: vec![crate::channel::ReleaseAsset {
+                    name: "anyr-linux-x86_64".into(),
+                    browser_download_url: "https://example/v0.1.13/anyr-linux-x86_64".into(),
+                }],
+            },
+        ];
+        let mut warns = Vec::new();
+        let (picked, path) = try_releases(
+            &rels,
+            "linux",
+            "x86_64",
+            |url| {
+                if url.contains("0.1.14") {
+                    Err(
+                        "checksum mismatch for anyr-linux-x86_64: expected 097463, got 330c0ada"
+                            .into(),
+                    )
+                } else {
+                    Ok(PathBuf::from("/tmp/anyr"))
+                }
+            },
+            |w| warns.push(w.to_string()),
+        )
+        .unwrap();
+        assert_eq!(picked.tag_name, "v0.1.13");
+        assert_eq!(path, PathBuf::from("/tmp/anyr"));
+        assert!(
+            warns
+                .iter()
+                .any(|w| w.contains("v0.1.14") && w.contains("trying v0.1.13")),
+            "{warns:?}"
+        );
     }
 }
