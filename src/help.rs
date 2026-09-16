@@ -433,6 +433,9 @@ Usage:
   {bin} upgrade [--check] [--beta|--stable] [--channel stable|beta] [--dry-run]
   {bin} update  [--beta|--stable]   (alias)
 
+Bare `{bin} update` / `{bin} update --check` keep the config channel.
+Only `--beta` or `--stable` switch the channel and persist it.
+
 Switch channel and update:
   {bin} update --beta     follow GitHub prereleases (persist + install)
   {bin} update --stable   follow latest non-prerelease (persist + install)
@@ -463,8 +466,10 @@ While installing, a spinner ticks with the from → to versions and channel:
 
 --check reports current vs latest without installing.
 --fixture <path> / ANYR_RELEASES_JSON skips the network (tests / dry-run).
---channel stable|beta overrides the config file for this run only.
+--channel stable|beta overrides the config file for this run only (does not persist).
 --beta / --stable write channel: into the config, then install that channel.
+If the newest build fails checksum, is missing, or is corrupt, the next
+good release on the same channel is installed instead of aborting.
 ";
 
 const RELAY: &str = "\

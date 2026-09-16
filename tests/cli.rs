@@ -1485,6 +1485,32 @@ fn upgrade_does_not_print_full_sk_ar_key() {
 }
 
 #[test]
+fn update_check_keeps_config_channel_without_switch_flags() {
+    let home = std::env::temp_dir().join(format!("anyr-keep-ch-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&home);
+    std::fs::write(
+        home.join("config.yaml"),
+        "active_profile: default\nchannel: beta\nprofiles:\n  default:\n    api_key: x\n",
+    )
+    .expect("write config");
+    let out = anyr()
+        .args(["update", "--check"])
+        .env("ANYR_RELEASES_JSON", fixture_path())
+        .env("ANYROUTER_HOME", &home)
+        .env("ANYR_CHANNEL", "stable")
+        .output()
+        .expect("update --check keep channel");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code().unwrap_or(1), 0, "{stdout}{stderr}");
+    assert!(stdout.contains("channel: beta"), "{stdout}");
+    assert!(!stdout.contains("channel set to"), "{stdout}");
+    let cfg = std::fs::read_to_string(home.join("config.yaml")).expect("config");
+    assert!(cfg.contains("channel: beta"), "{cfg}");
+    assert!(!cfg.contains("channel: stable"), "{cfg}");
+}
+
+#[test]
 fn upgrade_check_reads_channel_from_config() {
     let home = std::env::temp_dir().join(format!("anyr-ch-{}", std::process::id()));
     let _ = std::fs::create_dir_all(&home);

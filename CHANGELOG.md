@@ -10,7 +10,8 @@ GitHub Releases use this file as the release notes (full history through that ta
 ### Bug Fixes
 
 * **cli:** keep Claude HUD floors on virtual presets end-to-end (ANTHROPIC_MODEL, extra-body min_context, compact window, no catalog remap)
-* **ci:** fail stable release-binaries when native assets are missing
+* **cli:** bare `anyr update` keeps the config channel; only `--beta`/`--stable` persist a switch
+* **cli:** skip a broken latest GitHub release (checksum / missing asset) and install the next good build on that channel
 
 
 ## [0.1.14](https://github.com/anyrouter-dev/cli/compare/v0.1.13...v0.1.14) (2026-09-15)
