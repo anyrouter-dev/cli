@@ -105,7 +105,7 @@ anyr account use work       # switch saved profiles
 anyr onboard impl           # paste-ready prompt for a coding agent
 anyr plan                   # migration plan prompt (no code changes)
 anyr fix                    # repair LLM wiring through AnyRouter
-anyr claude --ok            # launch through the gateway
+anyr claude --ok            # launch through the gateway (model: anyrouter/auto)
 anyr claude --install --ok  # install Claude Code first if missing
 anyr codex --ok
 anyr opencode --ok

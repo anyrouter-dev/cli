@@ -149,6 +149,7 @@ fn demo_launch(tool: &str, parsed: &crate::parse::ParsedArgs) -> Result<String, 
         model: &model,
         effort: effort.as_deref(),
         context_window: None,
+        min_context: None,
         model_map: None,
     });
     let mut args = Vec::new();
@@ -196,7 +197,7 @@ fn demo_usage(json: bool) -> String {
 fn demo_whoami() -> String {
     let _env: BTreeMap<String, String> = BTreeMap::new();
     format!(
-        "active account  default\napi_key         {}\ndefault_model   auto\n{DEMO_HINT}",
+        "active account  default\napi_key         {}\ndefault_model   anyrouter/auto\n{DEMO_HINT}",
         mask_api_key(Some("sk-ar-v1-demo-key-value"))
     )
 }
@@ -211,8 +212,7 @@ mod tests {
         assert!(out.contains("auth"), "{out}");
         assert!(out.contains("anyr claude"), "{out}");
         assert!(out.contains("anyr auth login"), "{out}");
-        assert!(out.contains("▀█████████▄"), "{out}");
-        assert!(!out.contains("setup.sh"), "{out}");
+        assert!(out.contains("point any coding agent"), "{out}");
         assert!(!out.contains("npx @anyr/cli"), "{out}");
     }
 
@@ -220,12 +220,12 @@ mod tests {
     fn help_follows_invoked_name() {
         let ar = run_demo("ar --help");
         assert!(ar.contains("ar claude"), "{ar}");
-        assert!(ar.contains("ar <command>"), "{ar}");
+        assert!(ar.contains("ar auth login"), "{ar}");
         assert!(!ar.contains("npx @anyr/cli"), "{ar}");
 
         let npx = run_demo("npx @anyr/cli --help");
         assert!(npx.contains("npx @anyr/cli claude"), "{npx}");
-        assert!(npx.contains("npx @anyr/cli <command>"), "{npx}");
+        assert!(npx.contains("npx @anyr/cli auth login"), "{npx}");
     }
 
     #[test]

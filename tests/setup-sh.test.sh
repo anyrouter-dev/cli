@@ -13,6 +13,8 @@ SETUP="${ROOT}/setup.sh"
 grep -q 'github.com/anyrouter-dev/cli' "$SETUP"
 grep -q 'stable' "$SETUP"
 grep -q 'beta' "$SETUP"
+grep -q 'auth login' "$SETUP"
+grep -q '${BIN_NAME} claude' "$SETUP"
 grep -q 'releases/latest/download' "$SETUP"
 grep -q 'releases/download' "$SETUP"
 

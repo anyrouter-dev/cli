@@ -287,14 +287,55 @@ pub fn format_models_list(
     let mut out_lines = Vec::new();
     if let Some(auto) = &auto_id {
         out_lines.push(format!(
-            "auto -> {auto} ({})",
+            "PINNED  {auto}  ← auto · {}",
             pinned_preset.unwrap_or("preset")
         ));
+        out_lines.push(String::new());
     }
+    let id_w = models
+        .iter()
+        .map(|m| m.id.chars().count())
+        .max()
+        .unwrap_or(2)
+        .max(2);
+    out_lines.push(format!(
+        "{:<id_w$}  {:<12}  {:<6}  PIN",
+        "ID",
+        "OWNER",
+        "CTX",
+        id_w = id_w
+    ));
     for model in models {
-        out_lines.push(format!("  {}", model.id));
+        let owner = model.owned_by.as_deref().unwrap_or("—");
+        let ctx = fmt_context_length(model.context_length);
+        let pin = if pinned_ids.iter().any(|id| id == &model.id) {
+            "●"
+        } else {
+            ""
+        };
+        let id = if pinned_ids.iter().any(|id| id == &model.id) {
+            crate::term::model_id(&model.id)
+        } else {
+            model.id.clone()
+        };
+        out_lines.push(format!(
+            "{:<id_w$}  {:<12}  {:<6}  {pin}",
+            id,
+            owner,
+            ctx,
+            id_w = id_w
+        ));
     }
     (format!("{}\n", out_lines.join("\n")), String::new())
+}
+
+fn fmt_context_length(n: Option<i64>) -> String {
+    match n {
+        Some(n) if n >= 1_000_000 => format!("{}m", n / 1_000_000),
+        Some(n) if n >= 1_000 => format!("{}k", n / 1_000),
+        Some(n) => n.to_string(),
+        None => "—".into(),
+    }
 }
 
 pub fn fetch_credits(base_url: &str, api_key: &str) -> Result<serde_json::Value, String> {
@@ -616,6 +657,33 @@ mod tests {
     }
 
     #[test]
+    fn format_models_list_is_a_table() {
+        let models = vec![
+            CatalogModel {
+                id: "anthropic/claude-sonnet-4.6".into(),
+                name: Some("Claude Sonnet 4.6".into()),
+                owned_by: Some("anthropic".into()),
+                context_length: Some(200_000),
+            },
+            CatalogModel {
+                id: "openai/gpt-5.4-mini".into(),
+                name: None,
+                owned_by: Some("openai".into()),
+                context_length: Some(128_000),
+            },
+        ];
+        let pinned = vec!["anthropic/claude-sonnet-4.6".into()];
+        let (out, _) = format_models_list(&models, &pinned, Some("@preset/coding-stack"), false);
+        assert!(out.contains("PINNED  anthropic/claude-sonnet-4.6"), "{out}");
+        assert!(out.contains("ID"), "{out}");
+        assert!(out.contains("OWNER"), "{out}");
+        assert!(out.contains("200k"), "{out}");
+        assert!(out.contains("128k"), "{out}");
+        assert!(out.contains('●'), "{out}");
+        assert!(!out.contains("auto ->"), "{out}");
+    }
+
+    #[test]
     fn parse_models_reads_context_and_most_used_is_first() {
         let models = parse_models_body(
             r#"{"data":[
@@ -713,7 +781,7 @@ mod tests {
             Some("sk-ar-v1-DifferentTail00000000000000000000abcd")
         ));
         // A longer-head ASCII-dot mask matches on head AND literal tail.
-        let long = getKeyPrefixStyleMask("sk-ar-v1-abcd", "wxyz");
+        let long = get_key_prefix_style_mask("sk-ar-v1-abcd", "wxyz");
         assert!(is_active_key_row(
             &long,
             Some("sk-ar-v1-abcd-middle-secret-wxyz")
@@ -722,8 +790,7 @@ mod tests {
     }
 
     /// Helper mirroring the server's getKeyPrefix() shape for tests.
-    #[allow(non_snake_case)]
-    fn getKeyPrefixStyleMask(head: &str, tail: &str) -> String {
+    fn get_key_prefix_style_mask(head: &str, tail: &str) -> String {
         format!("{head}...{tail}")
     }
 }

@@ -41,6 +41,8 @@ pub enum KeyCode {
     Up,
     Down,
     Tab,
+    /// Crossterm emits this for Shift-Tab on Linux; it is not Tab+SHIFT.
+    BackTab,
     Backspace,
     Delete,
 }
@@ -51,7 +53,8 @@ pub fn map_key(surface: Surface, key: KeyEvent) -> Action {
             KeyCode::Char('c') | KeyCode::Char('d') => Action::Quit,
             KeyCode::Char('p') => Action::Up,
             KeyCode::Char('n') => Action::Down,
-            _ => Action::Esc,
+            // Unknown chords must not close settings / quit the palette.
+            _ => Action::Resize,
         };
     }
     match key.code {
@@ -59,6 +62,10 @@ pub fn map_key(surface: Surface, key: KeyEvent) -> Action {
         KeyCode::Esc => Action::Esc,
         KeyCode::Up => Action::Up,
         KeyCode::Down => Action::Down,
+        KeyCode::BackTab => match surface {
+            Surface::Settings => Action::PrevTab,
+            _ => Action::Up,
+        },
         KeyCode::Tab => match (surface, key.shift) {
             (Surface::Settings, false) => Action::NextTab,
             (Surface::Settings, true) => Action::PrevTab,
@@ -67,7 +74,7 @@ pub fn map_key(surface: Surface, key: KeyEvent) -> Action {
         KeyCode::Backspace | KeyCode::Delete => Action::Backspace,
         KeyCode::Char(c) => match (surface, c) {
             (Surface::Launcher, 'q' | 'x' | 'Q' | 'X') => Action::Quit,
-            (Surface::Settings, 'q') => Action::Quit,
+            (Surface::Settings, 'q' | 'Q') => Action::Quit,
             (Surface::Settings, 'x' | 'X') => Action::Unset,
             (Surface::Settings, '[') => Action::PrevTab,
             (Surface::Settings, ']') => Action::NextTab,
@@ -197,5 +204,42 @@ mod tests {
             },
         );
         assert_eq!(brack, Action::NextTab);
+        // WHY: Linux terminals send BackTab, not Tab+SHIFT.
+        let back = map_key(
+            Surface::Settings,
+            KeyEvent {
+                code: KeyCode::BackTab,
+                ctrl: false,
+                shift: false,
+            },
+        );
+        assert_eq!(back, Action::PrevTab);
+    }
+
+    #[test]
+    fn settings_shift_q_quits() {
+        let a = map_key(
+            Surface::Settings,
+            KeyEvent {
+                code: KeyCode::Char('Q'),
+                ctrl: false,
+                shift: false,
+            },
+        );
+        assert_eq!(a, Action::Quit);
+    }
+
+    #[test]
+    fn unknown_ctrl_does_not_quit() {
+        let a = map_key(
+            Surface::Settings,
+            KeyEvent {
+                code: KeyCode::Char('w'),
+                ctrl: true,
+                shift: false,
+            },
+        );
+        assert_ne!(a, Action::Quit);
+        assert_ne!(a, Action::Esc);
     }
 }

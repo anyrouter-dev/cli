@@ -1,0 +1,19 @@
+Log in to an AnyRouter account.
+
+USAGE
+  anyr auth login [flags]
+
+Interactive (TTY): opens a login URL with the code already in it (browser
+when one is reachable). Falls back to printing that URL over SSH / CI.
+Force a route with --device or --paste.
+
+Non-interactive: pass --key or set ANYROUTER_API_KEY.
+
+After login, `anyr claude` starts Claude Code (the default agent).
+
+FLAGS
+  --key sk-ar-v1-...       AnyRouter API key (skips the prompt)
+  --device, --device-code  Force the device-code flow (headless / SSH)
+  --paste                  Force the paste-a-key flow
+
+Also available as `anyr login`.

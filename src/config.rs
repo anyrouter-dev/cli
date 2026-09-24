@@ -8,6 +8,8 @@ pub const DEFAULT_BASE_URL: &str = "https://anyrouter.dev/api";
 pub const DEFAULT_TIMEOUT_MS: i64 = 3_000_000;
 pub const DEFAULT_PROFILE: &str = "default";
 pub const DEFAULT_PRESET: &str = "@preset/coding-stack";
+/// Documented gateway auto preset. Never invent a catalog SKU for this slot.
+pub const DEFAULT_MODEL: &str = "anyrouter/auto";
 pub const DEFAULT_CLAUDE_HAIKU: &str = "anthropic/claude-haiku-4.5";
 pub const DEFAULT_CLAUDE_SONNET: &str = "anthropic/claude-sonnet-4.6";
 pub const DEFAULT_CLAUDE_OPUS: &str = "anthropic/claude-opus-4.6";
@@ -78,7 +80,7 @@ impl Profile {
     }
 
     pub fn default_model(&self) -> &str {
-        self.default_model.as_deref().unwrap_or("auto")
+        self.default_model.as_deref().unwrap_or(DEFAULT_MODEL)
     }
 
     pub fn claude_haiku(&self) -> &str {
@@ -158,6 +160,40 @@ pub const ROUTING_SORT_EXACTO: &str = "exacto";
 pub const ROUTING_PARAM_TOOLS: &str = "tools";
 pub const ROUTING_MIN_1M_CONTEXT: i64 = 1_000_000;
 
+/// `[1m]` → 1_000_000, `[500k]` → 500_000. None if the id has no floor suffix.
+pub fn parse_context_window_suffix(model: &str) -> Option<i64> {
+    let s = model.trim();
+    let start = s.rfind('[')?;
+    if !s.ends_with(']') || start + 2 >= s.len() {
+        return None;
+    }
+    let inner = &s[start + 1..s.len() - 1];
+    if inner.len() < 2 {
+        return None;
+    }
+    let (num, unit) = inner.split_at(inner.len() - 1);
+    let n: i64 = num.parse().ok()?;
+    if n <= 0 {
+        return None;
+    }
+    match unit {
+        "k" | "K" => Some(n.saturating_mul(1_000)),
+        "m" | "M" => Some(n.saturating_mul(1_000_000)),
+        _ => None,
+    }
+}
+
+/// Catalog id without a `[<n>k|m]` floor suffix.
+pub fn strip_context_window_suffix(model: &str) -> &str {
+    let s = model.trim();
+    if parse_context_window_suffix(s).is_some() {
+        if let Some(i) = s.rfind('[') {
+            return s[..i].trim_end();
+        }
+    }
+    s
+}
+
 impl RoutingConstraints {
     pub fn is_empty(&self) -> bool {
         self.sort.as_deref().map(str::trim).unwrap_or("").is_empty()
@@ -199,6 +235,24 @@ impl RoutingConstraints {
         self.min_context = on.then_some(ROUTING_MIN_1M_CONTEXT);
     }
 
+    /// Raise the token floor. Higher (stricter) wins.
+    pub fn merge_min_context(&mut self, floor: i64) {
+        if floor <= 0 {
+            return;
+        }
+        self.min_context = Some(match self.min_context {
+            Some(existing) => existing.max(floor),
+            None => floor,
+        });
+    }
+
+    /// Merge `[1m]` / `[500k]` on a model id into `min_context` (higher wins).
+    pub fn apply_model_id_context_suffix(&mut self, model: &str) {
+        if let Some(n) = parse_context_window_suffix(model) {
+            self.merge_min_context(n);
+        }
+    }
+
     /// JSON object merged into the inference request body (Claude
     /// `CLAUDE_CODE_EXTRA_BODY`, printed on dry-run for every agent).
     pub fn extra_body_json(&self) -> Option<String> {
@@ -206,13 +260,20 @@ impl RoutingConstraints {
             return None;
         }
         let mut body = serde_json::Map::new();
+        let mut provider = serde_json::Map::new();
         if let Some(sort) = self
             .sort
             .as_deref()
             .map(str::trim)
             .filter(|s| !s.is_empty())
         {
-            body.insert("provider".into(), serde_json::json!({ "sort": sort }));
+            provider.insert("sort".into(), serde_json::json!(sort));
+        }
+        if let Some(n) = self.min_context {
+            provider.insert("min_context".into(), serde_json::json!(n));
+        }
+        if !provider.is_empty() {
+            body.insert("provider".into(), serde_json::Value::Object(provider));
         }
         if !self.require_params.is_empty() {
             let params: Vec<&str> = self
@@ -224,9 +285,6 @@ impl RoutingConstraints {
             if !params.is_empty() {
                 body.insert("require_params".into(), serde_json::json!(params));
             }
-        }
-        if let Some(n) = self.min_context {
-            body.insert("min_context".into(), serde_json::json!(n));
         }
         if body.is_empty() {
             return None;
@@ -328,7 +386,7 @@ pub fn create_default_profile(input: DefaultProfileInput) -> Profile {
         pinned_preset: Some(normalize_preset(
             input.preset.as_deref().unwrap_or(DEFAULT_PRESET),
         )),
-        default_model: Some(input.default_model.unwrap_or_else(|| "auto".into())),
+        default_model: Some(input.default_model.unwrap_or_else(|| DEFAULT_MODEL.into())),
         timeout_ms: Some(input.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS)),
         ..Profile::default()
     }
@@ -644,7 +702,7 @@ pub fn parse_config(source: &str) -> Config {
                     .get(name)
                     .cloned()
                     .unwrap_or_else(ToolConfig::default);
-                tool.merge(&ToolConfig::from_yaml(tm));
+                tool.apply_yaml(tm);
                 config.tools.insert(name.clone(), tool);
             }
         }
@@ -985,6 +1043,57 @@ agents:
         assert!(claude2.routing.wants_exacto());
         assert!(claude2.routing.requires_tools());
         assert_eq!(claude2.routing.min_context, Some(1_000_000));
+    }
+
+    #[test]
+    fn partial_tools_yaml_keeps_builtin_gateway_discovery() {
+        // WHY: `tools.claude.command` alone must not flip discovery off.
+        let cfg = parse_config(
+            "\
+active_profile: default
+profiles:
+  default:
+    api_key: x
+tools:
+  claude:
+    command: /opt/claude
+",
+        );
+        let claude = cfg.tools.get("claude").expect("claude tool");
+        assert_eq!(claude.command, "/opt/claude");
+        assert!(
+            claude.enable_gateway_model_discovery,
+            "partial overlay wiped gateway discovery"
+        );
+        let yaml = serialize_config(&cfg);
+        let again = parse_config(&yaml);
+        assert!(
+            again
+                .tools
+                .get("claude")
+                .expect("roundtrip")
+                .enable_gateway_model_discovery
+        );
+    }
+
+    #[test]
+    fn model_id_context_suffix_sets_min_context_floor() {
+        assert_eq!(
+            parse_context_window_suffix("anyrouter/auto[1m]"),
+            Some(1_000_000)
+        );
+        assert_eq!(
+            parse_context_window_suffix("anyrouter/auto[500k]"),
+            Some(500_000)
+        );
+        assert_eq!(parse_context_window_suffix("anyrouter/auto"), None);
+        let mut r = RoutingConstraints::default();
+        r.apply_model_id_context_suffix("anyrouter/auto[500k]");
+        r.apply_model_id_context_suffix("anyrouter/auto[1m]");
+        assert_eq!(r.min_context, Some(1_000_000));
+        let body = r.extra_body_json().expect("body");
+        assert!(body.contains("\"min_context\":1000000"), "{body}");
+        assert!(body.contains("\"provider\""), "{body}");
     }
 
     #[test]

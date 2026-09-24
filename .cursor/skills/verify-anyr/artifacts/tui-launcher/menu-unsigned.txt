@@ -1,0 +1,9 @@
+anyr  ○ default  ·  anyrouter/auto  ·  claude  ·  -
+
+What do you want to do?
+  1. Launch claude
+  2. Config
+  3. Models
+  4. Quit
+
+# no fullscreen. works over SSH, scriptable with --ok

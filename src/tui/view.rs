@@ -226,8 +226,9 @@ pub fn render_palette(frame: &mut Frame, state: &PaletteState) {
 /// Number of distinct groups among the first `visible` filtered entries —
 /// each renders one header line inside the result area.
 fn palette_groups(state: &PaletteState, filtered: &[usize], visible: usize) -> usize {
+    let (start, vis) = palette_window(state.cursor, filtered.len(), visible.max(1));
     let mut groups: Vec<&str> = Vec::new();
-    for &entry_i in filtered.iter().take(visible) {
+    for &entry_i in filtered.iter().skip(start).take(vis) {
         let g = state.entries[entry_i].group.as_str();
         if g.is_empty() {
             continue;
@@ -247,10 +248,10 @@ fn palette_rows(
     visible: usize,
     inner_w: usize,
 ) -> Vec<Line<'static>> {
-    let cursor_row = state.cursor.min(visible.saturating_sub(1));
+    let (start, vis) = palette_window(state.cursor, filtered.len(), visible.max(1));
     let mut rows: Vec<Line> = Vec::new();
     let mut last_group: Option<&str> = None;
-    for (row_i, &entry_i) in filtered.iter().take(visible).enumerate() {
+    for (row_i, &entry_i) in filtered.iter().skip(start).take(vis).enumerate() {
         let entry: &PaletteEntry = &state.entries[entry_i];
         if last_group != Some(entry.group.as_str()) {
             if last_group.is_some() {
@@ -264,7 +265,7 @@ fn palette_rows(
             }
             last_group = Some(&entry.group);
         }
-        let selected = row_i == cursor_row;
+        let selected = start + row_i == state.cursor;
         let marker_style = if selected {
             theme::accent()
         } else {
@@ -459,10 +460,28 @@ fn in_rect(r: Rect, col: u16, row: u16) -> bool {
         && row < r.y.saturating_add(r.height)
 }
 
+/// Live palette shows at most this many filtered rows; the window follows
+/// the cursor so Enter never selects a row that is off-screen.
+const PALETTE_LIVE_ROWS: usize = 10;
+
+fn palette_window(cursor: usize, n: usize, max: usize) -> (usize, usize) {
+    if n == 0 {
+        return (0, 0);
+    }
+    let vis = n.min(max.max(1));
+    let cursor = cursor.min(n - 1);
+    let start = if n <= vis {
+        0
+    } else {
+        cursor.saturating_sub(vis - 1).min(n - vis)
+    };
+    (start, vis)
+}
+
 fn palette_card(area: Rect, state: &PaletteState) -> (Rect, Vec<Rect>, usize) {
     let filtered = state.filtered();
     let header_h = palette_header_height(&state.header);
-    let visible = filtered.len().min(10);
+    let (_, visible) = palette_window(state.cursor, filtered.len(), PALETTE_LIVE_ROWS);
     let groups = palette_groups(state, &filtered, visible);
     let between = groups.saturating_sub(1);
     let height = 2
@@ -506,9 +525,10 @@ pub fn hit_palette(area: Rect, state: &PaletteState, col: u16, row: u16) -> Opti
 
 fn palette_hit_map(state: &PaletteState, visible: usize) -> Vec<Option<usize>> {
     let filtered = state.filtered();
+    let (start, vis) = palette_window(state.cursor, filtered.len(), visible.max(1));
     let mut map = Vec::new();
     let mut last_group: Option<&str> = None;
-    for (row_i, &entry_i) in filtered.iter().take(visible).enumerate() {
+    for (row_i, &entry_i) in filtered.iter().skip(start).take(vis).enumerate() {
         let entry = &state.entries[entry_i];
         if last_group != Some(entry.group.as_str()) {
             if last_group.is_some() {
@@ -519,7 +539,7 @@ fn palette_hit_map(state: &PaletteState, visible: usize) -> Vec<Option<usize>> {
             }
             last_group = Some(entry.group.as_str());
         }
-        map.push(Some(row_i));
+        map.push(Some(start + row_i));
     }
     map
 }
@@ -670,13 +690,11 @@ fn render_header(frame: &mut Frame, area: Rect, title: &str, header: &[String]) 
     frame.render_widget(Paragraph::new(lines), area);
 }
 
-/// Icon for a launcher/picker row, derived from its label.
+/// Geometric row prefix (› for launch rows). No emoji.
 pub fn item_icon(label: &str) -> &'static str {
     let l = label.to_ascii_lowercase();
     let stem = l.trim_end_matches('…').trim();
-    if l.contains("onboard") {
-        "📋 "
-    } else if label.starts_with("Launch")
+    if label.starts_with("Launch")
         || matches!(
             stem,
             "claude" | "codex" | "grok" | "opencode" | "pi" | "pool" | "agent"
@@ -684,27 +702,9 @@ pub fn item_icon(label: &str) -> &'static str {
         || l.contains("claude")
         || l.contains("codex")
     {
-        "⚡ "
-    } else if l.contains("config") || l.contains("settings") {
-        "⚙  "
-    } else if l.contains("switch") || l.contains("account") {
-        "⇄  "
-    } else if l.contains("credit") {
-        "¤  "
-    } else if l.contains("logout") || l.contains("log out") {
-        "🚪 "
-    } else if l.contains("login") || l.contains("sign in") || stem == "key" {
-        "🔑 "
-    } else if l.contains("quit") || l.contains("done") {
-        "✕  "
-    } else if l.contains("install") {
-        "⬇  "
-    } else if l.contains("model") {
-        "◆  "
-    } else if l.contains("exacto") || l.contains("1m") || stem == "tools" {
-        "◇  "
+        "› "
     } else {
-        "·  "
+        ""
     }
 }
 
@@ -868,101 +868,69 @@ pub fn plain_menu_frame(state: &MenuState, cols: usize) -> String {
     lines.join("\n")
 }
 
-/// ANSI-free palette frame for `--dump-tui` and unit tests.
+fn header_val<'a>(header: &'a [String], key: &str) -> &'a str {
+    let prefix = format!("{key}  ");
+    header
+        .iter()
+        .find_map(|h| h.strip_prefix(&prefix))
+        .unwrap_or("—")
+}
+
+/// Compact HUD dump: two status lines, then actions. No dialog card.
 pub fn plain_palette_lines(state: &PaletteState, cols: usize) -> Vec<String> {
-    let term_w = cols.max(DIALOG_MIN_WIDTH as usize);
-    let inner = (PALETTE_PREF_WIDTH as usize)
-        .min(term_w.saturating_sub(2))
-        .max(DIALOG_MIN_WIDTH as usize)
-        .min(term_w);
-    let pad = term_w.saturating_sub(inner) / 2;
-    let pad_s = " ".repeat(pad);
-    let content_w = inner.saturating_sub(2);
-
+    let width = cols.max(40);
     let mut lines = Vec::new();
-    let title_raw = " anyr ".to_string();
-    let dash_n = content_w.saturating_sub(title_raw.chars().count());
-    lines.push(format!("{pad_s}╭{title_raw}{}╮", "─".repeat(dash_n)));
-
-    let with_mark = palette_shows_mark(content_w);
-    let header_n = if with_mark {
-        crate::term::TUI_MARK_LINES
-            .len()
-            .max(state.header.len())
-            .max(1)
-    } else {
-        state.header.len().max(1)
-    };
-    for i in 0..header_n {
-        let cap = state.header.get(i).map(String::as_str).unwrap_or("");
-        let row = if with_mark {
-            let mark = padded_mark_line(i);
-            if cap.is_empty() {
-                mark
-            } else {
-                format!("{mark}  {cap}")
-            }
-        } else if cap.is_empty() {
-            "—".into()
-        } else {
-            cap.to_string()
-        };
-        lines.push(format!("{pad_s}│{}│", pad_content(&row, content_w)));
-    }
-    lines.push(format!("{pad_s}├{}┤", "─".repeat(content_w)));
-
-    // Input line with a block cursor.
-    lines.push(format!(
-        "{pad_s}│{}│",
-        pad_content(&format!("❯ {}█", state.query), content_w)
+    let mark = crate::term::TUI_MARK_LINES[0].trim();
+    let account = header_val(&state.header, "account");
+    let credits = header_val(&state.header, "credits");
+    lines.push(truncate(
+        &format!("▲ anyr  {mark}  ·  account  {account}  ·  credits  {credits}"),
+        width,
     ));
-    lines.push(format!("{pad_s}├{}┤", "─".repeat(content_w)));
+    let rest: Vec<&str> = state
+        .header
+        .iter()
+        .map(String::as_str)
+        .filter(|h| !h.starts_with("account  ") && !h.starts_with("credits  "))
+        .collect();
+    if !rest.is_empty() {
+        lines.push(truncate(&rest.join("  ·  "), width));
+    }
+    lines.push(String::new());
 
     let filtered = state.filtered();
+
     if filtered.is_empty() {
-        lines.push(format!("{pad_s}│{}│", pad_content("no matches", content_w)));
+        lines.push(truncate("  (no matches)", width));
     } else {
-        let visible = filtered.len().min(12);
-        let cursor_row = state.cursor.min(visible.saturating_sub(1));
+        // Dump is a full snapshot, not a viewport — CI must see every row.
+        let cursor_row = state.cursor.min(filtered.len().saturating_sub(1));
         let mut last_group: Option<&str> = None;
-        for (row_i, &entry_i) in filtered.iter().take(visible).enumerate() {
+        for (row_i, &entry_i) in filtered.iter().enumerate() {
             let entry = &state.entries[entry_i];
             if last_group != Some(entry.group.as_str()) {
-                if last_group.is_some() {
-                    lines.push(format!("{pad_s}│{}│", pad_content("", content_w)));
-                }
                 if !entry.group.is_empty() {
-                    lines.push(format!(
-                        "{pad_s}│{}│",
-                        pad_content(
-                            &format!("  {}", entry.group.to_ascii_uppercase()),
-                            content_w
-                        )
-                    ));
+                    lines.push(truncate(&entry.group.to_ascii_uppercase(), width));
                 }
                 last_group = Some(&entry.group);
             }
             let selected = row_i == cursor_row;
             let marker = if selected { "◆" } else { " " };
             let icon = item_icon(&entry.label);
-            let used = 3
-                + icon.chars().count()
-                + entry.label.chars().count()
-                + entry.detail.chars().count();
-            let gap = content_w.saturating_sub(used).max(1);
-            let row = format!(
-                "{marker} {icon}{label}{}{detail}",
-                " ".repeat(gap),
-                label = entry.label,
-                detail = entry.detail
-            );
-            lines.push(format!("{pad_s}│{}│", pad_content(&row, content_w)));
+            let row = if entry.detail.is_empty() {
+                format!("{marker} {icon}{label}", label = entry.label)
+            } else {
+                format!(
+                    "{marker} {icon}{label}  {detail}",
+                    label = entry.label,
+                    detail = entry.detail
+                )
+            };
+            lines.push(truncate(&row, width));
         }
     }
 
-    lines.push(format!("{pad_s}├{}┤", "─".repeat(content_w)));
-    lines.push(format!("{pad_s}│{}│", pad_content(state.hint(), content_w)));
-    lines.push(format!("{pad_s}╰{}╯", "─".repeat(content_w)));
+    lines.push(truncate("❯  ↵ launch  ·  esc quit", width));
     lines
 }
 
@@ -1061,6 +1029,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn palette_window_keeps_cursor_visible() {
+        // WHY: Enter must select the highlighted row, not a row below the fold.
+        assert_eq!(palette_window(0, 20, 10), (0, 10));
+        assert_eq!(palette_window(15, 20, 10), (6, 10));
+        assert_eq!(palette_window(19, 20, 10), (10, 10));
+        assert_eq!(palette_window(0, 3, 10), (0, 3));
+        assert_eq!(palette_window(0, 0, 10), (0, 0));
+    }
+
+    #[test]
     fn dump_menu_is_ansi_free() {
         let state = MenuState::new(
             "AnyRouter",
@@ -1103,30 +1081,13 @@ mod tests {
 
     #[test]
     fn icons_cover_launcher_actions() {
-        for (label, icon) in [
-            ("Launch claude", "⚡"),
-            ("Config", "⚙"),
-            ("Settings", "⚙"),
-            ("Switch model", "⇄"),
-            ("Credits", "¤"),
-            ("Login / sign in", "🔑"),
-            ("Log out", "🚪"),
-            ("Agent onboard prompt…", "📋"),
-            ("Quit", "✕"),
-            ("claude", "⚡"),
-            ("grok", "⚡"),
-            ("opencode", "⚡"),
-            ("pi", "⚡"),
-            ("model…", "◆"),
-            ("key…", "🔑"),
-            ("exacto", "◇"),
-            ("tools", "◇"),
-            ("1M ctx", "◇"),
-            ("install…", "⬇"),
-            ("agent…", "⚡"),
-        ] {
-            assert_eq!(item_icon(label).trim(), icon, "icon for {label}");
-        }
+        assert_eq!(item_icon("Launch claude").trim(), "›");
+        assert_eq!(item_icon("claude").trim(), "›");
+        assert_eq!(item_icon("grok").trim(), "›");
+        assert_eq!(item_icon("Config"), "");
+        assert_eq!(item_icon("Quit"), "");
+        assert_eq!(item_icon("model…"), "");
+        assert!(!item_icon("claude").contains("⚡"));
     }
 
     #[test]
@@ -1166,8 +1127,8 @@ mod tests {
         ] {
             assert!(frame.contains(line), "missing {line} in:\n{frame}");
         }
-        assert!(frame.contains("⚡"), "row icons missing:\n{frame}");
-        assert!(frame.contains("◆"), "{frame}");
+        assert!(!frame.contains("⚡"), "emoji icons removed:\n{frame}");
+        assert!(frame.contains("claude"), "{frame}");
         assert!(frame.contains("LAUNCH"), "{frame}");
         assert!(frame.contains("CONFIGURE"), "{frame}");
         assert!(frame.contains('❯'), "{frame}");

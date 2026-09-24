@@ -8,13 +8,12 @@ thread_local! {
 }
 
 const LAUNCH_HELP_BODY: &str = "\
-Running this with no flags opens the launcher (review settings, then start).
-Add --ok to skip the launcher and start with current settings.
+Launches the coding agent through AnyRouter (signs in first if needed).
 
 Options:
-  --ok, --yes           Skip the launcher and start with current settings
-  --no-check            Skip the pre-launch reachability probe
-  --model auto|<id>     Session model. \"auto\" picks the most-used catalog model
+  --yes, --ok           Skip confirmation prompts (login / install)
+  --model auto|<id>     Session model. auto / anyrouter/auto; [1m] and [500k] \
+are min-context floors on auto (not catalog SKUs).
   --haiku <id>          Claude /model haiku and subagents
   --sonnet <id>         Claude /model sonnet
   --opus <id>           Claude /model opus
@@ -24,7 +23,7 @@ Options:
   --hub <slug>          Load a hub: sync ~/.anyrouter/hubs + claude --plugin-dir
   --profile <name>      Use a named profile
   --command-path <path> Explicit path to the agent executable
-  --install             If the agent isn't installed, install it (skip the prompt)
+  --install             Install a missing agent without prompting (implied on a TTY)
   --config <path>       Override the config file path
   --dry-run             Print the child command and env (secrets redacted)
   --device              Force the device-code flow (headless / SSH)
@@ -79,29 +78,59 @@ pub fn resolve_bin(argv0: Option<&str>, display_env: Option<&str>) -> String {
 
 pub fn root_help() -> String {
     let bin = invoked_bin();
-    let header = crate::term::brand_header(&[
+    format!(
+        "\
+{} – point any coding agent at AnyRouter
+
+Start
+  $ curl -fsSL https://anyrouter.dev/setup.sh | bash
+  $ {bin} auth login
+  $ {bin} claude                 # default model: anyrouter/auto
+
+Swap the model, keep the agent
+  $ {bin} claude --model z-ai/glm-4.7-flash
+  $ {bin} claude --yolo --model anyrouter/auto[1m]
+  $ {bin} claude --model anyrouter/free[1m]
+  $ {bin} claude --model anyrouter/auto[500k]
+  $ {bin} claude --model auto --effort high
+
+Same key, other agents
+  $ {bin} codex --model anthropic/claude-sonnet-4.6
+  $ {bin} grok --effort high
+
+Preflight: bare {bin} confirms account / model / agent, then launches.
+{bin} help commands for the full map.
+",
+        crate::term::accent(&bin),
+        bin = bin
+    )
+}
+
+/// Full command map. `--help` stays examples-first; this is the catalog.
+pub fn commands_help() -> String {
+    let bin = invoked_bin();
+    let header = crate::term::brand_chip(&[
         &format!(
             "{}  {}",
             crate::term::bold(&format!("AnyRouter CLI v{VERSION}")),
             crate::term::link("https://anyrouter.dev")
         ),
-        &crate::term::dim("One key. Every coding agent. Interactive TUI by default."),
-        "",
+        &crate::term::dim("One key. Every coding agent."),
     ]);
     format!(
         "\
 {header}
 USAGE
-  {bin}                  Open the interactive TUI (TTY)
+  {bin}                  Confirm account / model / agent, then pick an action
   {bin} <command> [flags]
   {bin} <command> --help
 
 CORE COMMANDS
-  menu:       Interactive TUI launcher (default on a TTY)
+  menu:       Compact HUD launcher (default on a TTY)
   auth:       Authenticate with AnyRouter
-  config:     Interactive settings (key, credits, model)
+  config:     Print current settings (`--pick` for the TUI)
   keys:       Manage API keys
-  models:     List catalog and set the default
+  models:     List catalog and set the default (`--pick` to choose)
   usage:      Credits remaining
   onboard:    Paste-ready prompts for coding agents
   impl|plan|fix|deploy|cp
@@ -117,7 +146,7 @@ LAUNCH
   pool      Poolside
   poolside  Alias of pool
 
-  {bin}                 Sign in if needed, then open the TUI launcher
+  {bin}                 Sign in if needed, then open the HUD
   {bin} auth login      Sign in
   {bin} onboard impl    Agent paste prompt to wire AnyRouter
   {bin} claude          Launch Claude Code
@@ -196,8 +225,9 @@ pub fn command_help(command: &str) -> Option<String> {
         ),
         "menu" => fill(
             &bin,
-            "{bin} menu — open the command-palette launcher (default on a TTY)\n\nUsage:\n  {bin}                 Same as `{bin} menu` on a TTY\n  {bin} menu [--dump-tui]\n\nPick a coding agent first. Model / account / key on the home TUI\napply to that highlighted agent and stay on the same screen — they\ndo not replace the launch list. Each agent row shows its bound\nmodel · account · key. Launch uses those bindings; a per-agent key\ndoes not fall back to the default profile key.\n\nType to filter — \"cla\", \"codex\", \"model\". On terminals that can't\nrun the fullscreen TUI (dumb TERM, restricted hosts) the same\nentries fall back to an inline numbered prompt.\n\nKeys: type to filter · ↑↓ pick agent · ↵ launch / switch · esc quit\n\nConfig opens the grouped settings screen (account, keys, model slots,\nagent, auto-update) with current values on every row.\n`--dump-tui` / ANYR_TUI_DUMP=1 prints one plain frame (for tests and pipes).\n",
+            "{bin} menu — compact HUD launcher (default on a TTY)\n\nUsage:\n  {bin}                 Same as `{bin} menu` on a TTY\n  {bin} menu [--dump-tui]\n\nOne status line (account · model · agent · credits), then\n\"What do you want to do?\" First row is Launch claude.\n↑↓ / j k move, ↵ select (signs in and installs if needed), q/esc quit.\nNo fullscreen unless ANYR_TUI=1.\n\n`--dump-tui` / ANYR_TUI_DUMP=1 prints one plain frame and exits.\n",
         ),
+        "commands" => commands_help(),
         "prompt" => fill(
             &bin,
             "{bin} prompt — hub prompts not yet in the native CLI. Use {bin} onboard for agent paste prompts.\n",
@@ -212,7 +242,8 @@ pub fn command_help(command: &str) -> Option<String> {
         "pi" => launch_help(&bin, "pi", "Pi"),
         "pool" => launch_help(&bin, "pool", "Poolside"),
         "cursor" | "cline" | "windsurf" => format!(
-            "{bin} {canonical} — print the AnyRouter base URL + key to paste into the editor\n"
+            "{bin} {canonical} — not a launch target yet.\n\
+Print a key with `{bin} auth token` and the base URL with `{bin} onboard impl`.\n"
         ),
         _ => return None,
     })
@@ -247,11 +278,12 @@ Force a route with --device or --paste.
 
 Non-interactive: pass --key or set ANYROUTER_API_KEY.
 
+After login, `{bin} claude` starts Claude Code (the default agent).
+
 FLAGS
   --key sk-ar-v1-...       AnyRouter API key (skips the prompt)
   --device, --device-code  Force the device-code flow (headless / SSH)
   --paste                  Force the paste-a-key flow
-  --yes                    Skip the post-login model/agent wizard
 
 Also available as `{bin} login`.
 ";
@@ -354,22 +386,17 @@ Options:
 ";
 
 const CONFIG: &str = "\
-Interactive config: accounts, keys, models, agent, credits, updates.
+Print current settings. Interactive picker only when asked.
 
 USAGE
-  {bin} config                 Open the settings TUI (TTY)
-  {bin} config get [--json]    Print current status
+  {bin} config                 Print account / model / agent / credits
+  {bin} config --pick          Open the settings TUI (TTY)
+  {bin} config get [--json]    Same dump; `--json` for scripts
   {bin} config path            Print the config file path
   {bin} config use <account>   Switch the active account
 
-On a TTY, `{bin} config` opens a grouped settings screen — Account, Model,
-Agent, General — each row showing its current value. ↑↓ / j k navigate,
-↵ edits the focused row (switch / add / re-auth / log out accounts, pick a
-key or model slot, choose the coding agent, toggle exacto / tools / 1M ctx
-routing, toggle auto-update, switch channel), x resets a row to its default,
-q / esc closes.
-Also reachable from the launcher via Config.
-`--dump-tui` prints one plain frame and exits.
+`{bin} models --pick` chooses a model. `--dump-tui` prints one settings
+frame and exits.
 ";
 
 const KEYS: &str = "\
@@ -406,6 +433,9 @@ Usage:
   {bin} upgrade [--check] [--beta|--stable] [--channel stable|beta] [--dry-run]
   {bin} update  [--beta|--stable]   (alias)
 
+Bare `{bin} update` / `{bin} update --check` keep the config channel.
+Only `--beta` or `--stable` switch the channel and persist it.
+
 Switch channel and update:
   {bin} update --beta     follow GitHub prereleases (persist + install)
   {bin} update --stable   follow latest non-prerelease (persist + install)
@@ -413,6 +443,7 @@ Switch channel and update:
 Auto-update is on by default. On startup a background process checks
 GitHub Releases, and while a coding agent is running it rechecks every
 few hours, then installs in place. The next `{bin}` uses the new build.
+Press Ctrl+G in the agent to restart and resume after an auto-upgrade.
 
   auto_update: false     in ~/.anyrouter/config.yaml to turn it off
   channel: beta          follow main (GitHub prereleases)
@@ -431,12 +462,14 @@ While installing, a spinner ticks with the from → to versions and channel:
   ⠋ Updating v0.1.11 -> v0.1.99 (stable channel)
   ✔ Updated to v0.1.99
 
-  Run anyr to start using the new version.
+  Run anyr to start using the new version. Press Ctrl+G in the agent to restart and resume.
 
 --check reports current vs latest without installing.
 --fixture <path> / ANYR_RELEASES_JSON skips the network (tests / dry-run).
---channel stable|beta overrides the config file for this run only.
+--channel stable|beta overrides the config file for this run only (does not persist).
 --beta / --stable write channel: into the config, then install that channel.
+If the newest build fails checksum, is missing, or is corrupt, the next
+good release on the same channel is installed instead of aborting.
 ";
 
 const RELAY: &str = "\
@@ -487,25 +520,27 @@ mod tests {
         set_invoked_bin("ar");
         let out = root_help();
         assert!(out.contains("ar claude"), "{out}");
-        assert!(out.contains("ar <command>"), "{out}");
         assert!(out.contains("ar auth login"), "{out}");
-        assert!(out.contains("Sign in if needed"), "{out}");
-        for heading in ["CORE COMMANDS", "LAUNCH"] {
-            assert!(out.contains(heading), "missing {heading} in:\n{out}");
-        }
+        assert!(out.contains("point any coding agent"), "{out}");
+        assert!(out.contains("ar help commands"), "{out}");
         assert!(!out.contains("npx @anyr/cli"), "{out}");
-        assert!(!out.contains("setup.sh"), "{out}");
         assert!(!out.contains("Install:"), "{out}");
         assert!(!out.contains("anyrouter.dev/docs/cli"), "{out}");
         assert!(
-            out.contains("▀█████████▄"),
-            "help should include the official AR half-block mark, got:\n{out}"
+            !out.contains("CORE COMMANDS"),
+            "examples-first help must not dump the catalog:\n{out}"
         );
+
+        let map = commands_help();
+        assert!(map.contains("CORE COMMANDS"), "{map}");
+        assert!(map.contains("LAUNCH"), "{map}");
+        assert!(map.contains("▀█████████▄"), "{map}");
+        assert!(map.contains("ar claude"), "{map}");
 
         set_invoked_bin("npx @anyr/cli");
         let npx = root_help();
         assert!(npx.contains("npx @anyr/cli claude"), "{npx}");
-        assert!(npx.contains("npx @anyr/cli <command>"), "{npx}");
+        assert!(npx.contains("npx @anyr/cli auth login"), "{npx}");
         set_invoked_bin("anyr");
     }
 
@@ -514,11 +549,23 @@ mod tests {
         set_invoked_bin("ar");
         let login = command_help("login").unwrap();
         assert!(login.contains("ar auth login"), "{login}");
+        assert!(login.contains("ar claude"), "{login}");
+        assert!(
+            !login.to_ascii_lowercase().contains("wizard"),
+            "login must not mention a post-login wizard:\n{login}"
+        );
         assert!(!login.contains("npx @anyr/cli"), "{login}");
         let auth = command_help("auth").unwrap();
         assert!(auth.contains("ar auth <command>"), "{auth}");
         let claude = command_help("claude").unwrap();
         assert!(claude.contains("ar claude"), "{claude}");
+        assert!(!claude.contains("--no-check"), "{claude}");
+        assert!(!claude.contains("opens the launcher"), "{claude}");
+        let cursor = command_help("cursor").unwrap();
+        assert!(
+            cursor.contains("not a launch target") || cursor.contains("auth token"),
+            "{cursor}"
+        );
         set_invoked_bin("anyr");
     }
 

@@ -11,7 +11,9 @@ pub const MAGENTA: &str = "\x1b[38;2;187;154;247m";
 pub const BLUE: &str = "\x1b[38;2;122;162;247m";
 pub const TEAL: &str = "\x1b[38;2;58;149;171m";
 pub const SUCCESS: &str = "\x1b[38;2;158;206;106m";
-pub const ORANGE: &str = "\x1b[38;2;255;158;100m";
+/// Site orange #F6821F — brand accent (help, links, TUI).
+pub const BRAND: &str = "\x1b[38;2;246;130;31m";
+pub const ORANGE: &str = "\x1b[38;2;246;130;31m";
 pub const YELLOW: &str = "\x1b[38;2;224;175;104m";
 pub const DANGER: &str = "\x1b[38;2;247;118;142m";
 pub const WHITE: &str = "\x1b[38;2;225;225;225m";
@@ -41,7 +43,7 @@ pub fn dim(text: &str) -> String {
 }
 
 pub fn accent(text: &str) -> String {
-    paint(MAGENTA, text)
+    paint(BRAND, text)
 }
 
 pub fn ok(text: &str) -> String {
@@ -267,7 +269,29 @@ fn emit_graphics_mark() -> bool {
     true
 }
 
-/// AR mark next to matching caption lines.
+/// One-line chip: ▲ anyr + official half-block mark + captions.
+pub fn brand_chip(captions: &[&str]) -> String {
+    let mut out = String::new();
+    out.push_str(&accent("▲ anyr"));
+    out.push_str("  ");
+    out.push_str(&paint(WHITE, MARK_LINES[0].trim()));
+    let first = captions.first().copied().unwrap_or("").trim();
+    if !first.is_empty() {
+        out.push_str("  ");
+        out.push_str(first);
+    }
+    out.push('\n');
+    for cap in captions.iter().skip(1) {
+        if cap.is_empty() {
+            continue;
+        }
+        out.push_str(cap);
+        out.push('\n');
+    }
+    out
+}
+
+/// AR mark next to matching caption lines (5-row hero).
 pub fn brand_header(captions: &[&str]) -> String {
     let mut out = String::new();
     for (i, mark_line) in MARK_LINES.iter().enumerate() {
@@ -301,7 +325,7 @@ pub fn link(url: &str) -> String {
     if !color_enabled() {
         return url.to_string();
     }
-    format!("\x1b]8;;{url}\x1b\\{MAGENTA}{url}{RESET}\x1b]8;;\x1b\\")
+    format!("\x1b]8;;{url}\x1b\\{BRAND}{url}{RESET}\x1b]8;;\x1b\\")
 }
 
 pub fn tool_color(tool: &str) -> &'static str {
@@ -312,7 +336,7 @@ pub fn tool_color(tool: &str) -> &'static str {
         "opencode" => BLUE,
         "pi" => TEAL,
         "pool" | "poolside" => MAGENTA,
-        _ => MAGENTA,
+        _ => BRAND,
     }
 }
 
@@ -386,6 +410,198 @@ pub fn confirm(question: &str) -> bool {
 #[cfg(feature = "native")]
 pub fn pick(title: &str, items: &[String], current: Option<usize>) -> Result<usize, String> {
     crate::tui::pick(title, items, current)
+}
+
+/// Render a compact on-screen menu (no alt-screen). Used by the HUD dump
+/// and the arrow-key picker.
+pub fn render_inline_menu(
+    header: &[String],
+    question: &str,
+    items: &[String],
+    cursor: usize,
+    footer: &str,
+) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    for h in header {
+        if !h.is_empty() {
+            lines.push(h.clone());
+        }
+    }
+    if !header.is_empty() {
+        lines.push(String::new());
+    }
+    if !question.is_empty() {
+        lines.push(dim(question));
+    }
+    for (i, item) in items.iter().enumerate() {
+        let n = i + 1;
+        if i == cursor {
+            lines.push(format!("  {} {}", accent(&format!("{n}.")), item));
+        } else {
+            lines.push(format!("  {n}. {item}"));
+        }
+    }
+    if !footer.is_empty() {
+        lines.push(String::new());
+        lines.push(dim(footer));
+    }
+    lines.join("\n")
+}
+
+/// Arrow-key picker on the current screen. No alt-screen, no "type a number".
+pub fn pick_inline(
+    header: &[String],
+    question: &str,
+    items: &[String],
+    footer: &str,
+    current: Option<usize>,
+) -> Result<usize, String> {
+    if items.is_empty() {
+        return Err("Nothing to pick.".into());
+    }
+    #[cfg(feature = "native")]
+    if is_interactive() {
+        return pick_inline_raw(header, question, items, footer, current);
+    }
+    pick_numbered("anyr", items, current)
+}
+
+#[cfg(feature = "native")]
+fn pick_inline_raw(
+    header: &[String],
+    question: &str,
+    items: &[String],
+    footer: &str,
+    current: Option<usize>,
+) -> Result<usize, String> {
+    use std::io::{stderr, Write as _};
+
+    use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+    use crossterm::terminal::{self, Clear, ClearType};
+    use crossterm::{cursor, execute, queue};
+
+    terminal::enable_raw_mode().map_err(|e| e.to_string())?;
+    struct Restore;
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let mut out = stderr();
+            let _ = execute!(out, cursor::Show);
+            let _ = terminal::disable_raw_mode();
+        }
+    }
+    let _restore = Restore;
+    let mut out = stderr();
+    let _ = execute!(out, cursor::Hide);
+
+    let mut cursor_i = current.unwrap_or(0).min(items.len() - 1);
+    let mut last_lines: u16 = 0;
+    loop {
+        let frame = render_inline_menu(header, question, items, cursor_i, footer);
+        let n = frame.lines().count().max(1) as u16;
+        if last_lines > 0 {
+            queue!(
+                out,
+                cursor::MoveToColumn(0),
+                cursor::MoveUp(last_lines),
+                Clear(ClearType::FromCursorDown),
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        writeln!(out, "{frame}").map_err(|e| e.to_string())?;
+        out.flush().map_err(|e| e.to_string())?;
+        last_lines = n;
+
+        match event::read().map_err(|e| e.to_string())? {
+            Event::Key(ev) if ev.kind == KeyEventKind::Press => match ev.code {
+                KeyCode::Up | KeyCode::Char('k') => {
+                    cursor_i = if cursor_i == 0 {
+                        items.len() - 1
+                    } else {
+                        cursor_i - 1
+                    };
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    cursor_i = (cursor_i + 1) % items.len();
+                }
+                KeyCode::Enter => return Ok(cursor_i),
+                KeyCode::Esc => return Err("Cancelled.".into()),
+                KeyCode::Char('q') if !ev.modifiers.contains(KeyModifiers::CONTROL) => {
+                    return Err("Cancelled.".into());
+                }
+                KeyCode::Char('c') if ev.modifiers.contains(KeyModifiers::CONTROL) => {
+                    return Err("Cancelled.".into());
+                }
+                _ => {}
+            },
+            Event::Resize(_, _) => {}
+            _ => {}
+        }
+    }
+}
+
+/// Compact HUD prompt on the current screen — no alt-screen.
+pub fn pick_numbered(
+    title: &str,
+    items: &[String],
+    current: Option<usize>,
+) -> Result<usize, String> {
+    const PAGE: usize = 12;
+    if items.is_empty() {
+        return Err("Nothing to pick.".into());
+    }
+    let mut page = current
+        .map(|i| i / PAGE)
+        .unwrap_or(0)
+        .min(items.len().saturating_sub(1) / PAGE);
+
+    loop {
+        let start = page * PAGE;
+        let end = (start + PAGE).min(items.len());
+        let pages = items.len().div_ceil(PAGE);
+        eprintln!("{}", accent(&format!("▲ {title}")));
+        if pages > 1 {
+            eprintln!(
+                "{}",
+                dim(&format!("page {}/{}  ·  n next · p prev", page + 1, pages))
+            );
+        }
+        for (i, item) in items.iter().enumerate().take(end).skip(start) {
+            let marker = if current == Some(i) { "◆" } else { " " };
+            eprintln!("{marker} {item}");
+        }
+        let hint = current
+            .map(|i| format!("Enter = {} · ", i + 1))
+            .unwrap_or_default();
+        let ans = prompt(&format!(
+            "{} {hint}1-{}  ·  q quit: ",
+            accent("❯"),
+            items.len()
+        ))?;
+        let t = ans.trim();
+        if t.is_empty() {
+            if let Some(i) = current {
+                return Ok(i);
+            }
+            continue;
+        }
+        if t.eq_ignore_ascii_case("q") || t.eq_ignore_ascii_case("quit") {
+            return Err("Cancelled.".into());
+        }
+        if t.eq_ignore_ascii_case("n") && page + 1 < pages {
+            page += 1;
+            continue;
+        }
+        if t.eq_ignore_ascii_case("p") && page > 0 {
+            page -= 1;
+            continue;
+        }
+        if let Ok(n) = t.parse::<usize>() {
+            if n >= 1 && n <= items.len() {
+                return Ok(n - 1);
+            }
+        }
+        eprintln!("{}", dim("  type a number in range, or q"));
+    }
 }
 
 /// Fallback readline picker when the native TUI feature is off.
@@ -583,6 +799,36 @@ mod tests {
     fn rank_ids_keeps_order_on_empty_query() {
         let ids = vec!["b".into(), "a".into()];
         assert_eq!(rank_ids("", &ids), ids);
+    }
+
+    #[test]
+    fn inline_menu_highlights_cursor_and_numbers_rows() {
+        let frame = render_inline_menu(
+            &["anyr  ● duyet  ·  claude".into()],
+            "What do you want to do?",
+            &["Launch claude".into(), "Config".into(), "Quit".into()],
+            0,
+            "# no fullscreen",
+        );
+        assert!(frame.contains("1."), "{frame}");
+        assert!(frame.contains("Launch claude"), "{frame}");
+        assert!(frame.contains("What do you want to do?"), "{frame}");
+        assert!(frame.contains("# no fullscreen"), "{frame}");
+        assert!(!frame.contains("type a number"), "{frame}");
+    }
+
+    #[test]
+    fn brand_chip_is_one_line_mark_plus_caption() {
+        let out = brand_chip(&["AnyRouter CLI v0.1.x", "One key."]);
+        assert!(out.contains("▲ anyr"), "{out}");
+        assert!(out.contains("▀█████████▄"), "{out}");
+        assert!(out.contains("AnyRouter CLI v0.1.x"), "{out}");
+        assert!(out.contains("One key."), "{out}");
+        assert!(out.lines().count() >= 2, "{out}");
+        assert!(
+            !out.contains(MARK_LINES[1].trim()),
+            "chip must not print the 5-row hero:\n{out}"
+        );
     }
 
     #[test]

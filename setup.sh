@@ -130,6 +130,9 @@ install_bin() {
       echo "  export PATH=\"${BIN_DIR}:\$PATH\""
       ;;
   esac
+  echo "Next:"
+  echo "  ${BIN_NAME} auth login"
+  echo "  ${BIN_NAME} claude"
 }
 
 # Local test mode: copy ANYR_SETUP_BIN, never hit the network.

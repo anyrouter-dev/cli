@@ -1,22 +1,9 @@
-    ╭ anyr ────────────────────────────────────────────────────────────────╮
-    │    ▄▄ ▄▄▄   account  default                                         │
-    │  ▄█▀▀█▄▄█▀  credits  -                                               │
-    │ ▀▀    ▀▀▀▀                                                           │
-    ├──────────────────────────────────────────────────────────────────────┤
-    │❯ █                                                                   │
-    ├──────────────────────────────────────────────────────────────────────┤
-    │  LAUNCH                                                              │
-    │◆ ⬇  install an agent…                          none detected on PATH │
-    │                                                                      │
-    │  CONFIGURE · CLAUDE                                                  │
-    │  ◆  model…                                                for claude │
-    │  ⇄  account…                                              for claude │
-    │  🔑 key…                                                   for claude │
-    │                                                                      │
-    │  MORE                                                                │
-    │  ⬇  install…                                  install a coding agent │
-    │  ⚙  config…                                  accounts · keys · agent │
-    │  ✕  quit                                               esc works too │
-    ├──────────────────────────────────────────────────────────────────────┤
-    │type to filter    ↑↓  pick agent    ↵  launch / switch    esc  quit   │
-    ╰──────────────────────────────────────────────────────────────────────╯
+anyr  ● default  ·  anyrouter/auto  ·  claude  ·  -
+
+What do you want to do?
+  1. Launch claude
+  2. Config
+  3. Models
+  4. Quit
+
+# no fullscreen. works over SSH, scriptable with --ok

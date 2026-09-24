@@ -98,6 +98,21 @@ pub fn resolve_launch_api_key(
         .map(str::to_string)
 }
 
+/// Keep `[1m]` / `[500k]` on virtual presets (`anyrouter/auto`, `free`, `byok`, …)
+/// so launch can peel them into `provider.min_context`. Concrete ids still drop
+/// Claude's `[1m]` tag.
+fn launch_model_id(raw: &str) -> String {
+    let raw = raw.trim();
+    if crate::config::parse_context_window_suffix(raw).is_some()
+        && crate::spawn::is_virtual_preset(raw)
+    {
+        let stem = crate::config::strip_context_window_suffix(raw);
+        let suffix = &raw[stem.len()..];
+        return format!("{}{}", crate::spawn::display_model_id(stem), suffix);
+    }
+    crate::spawn::display_model_id(raw)
+}
+
 /// Launch model for `tool`: `--model`, then the agent's bound id, then the
 /// profile default. Does not invent catalog ids.
 pub fn resolve_launch_model(
@@ -107,7 +122,7 @@ pub fn resolve_launch_model(
     tool: &str,
 ) -> String {
     if let Some(m) = get_string_flag(flags, "model") {
-        return crate::spawn::catalog_model_id(&m);
+        return launch_model_id(&m);
     }
     let id = canonical_tool(tool);
     if let Some(m) = config
@@ -116,9 +131,9 @@ pub fn resolve_launch_model(
         .map(str::trim)
         .filter(|s| !s.is_empty())
     {
-        return crate::spawn::catalog_model_id(m);
+        return launch_model_id(m);
     }
-    profile.default_model().to_string()
+    launch_model_id(profile.default_model())
 }
 
 pub fn resolve_base_url(
@@ -315,6 +330,35 @@ agents:
         assert_eq!(
             resolve_launch_model(&with_flag, Some(&cfg), claude_profile, "claude"),
             "stealth/ox-alpha"
+        );
+        let mut auto_flag = HashMap::new();
+        auto_flag.insert("model".into(), FlagValue::Value("auto".into()));
+        assert_eq!(
+            resolve_launch_model(&auto_flag, Some(&cfg), claude_profile, "claude"),
+            "anyrouter/auto"
+        );
+        let mut auto_1m = HashMap::new();
+        auto_1m.insert(
+            "model".into(),
+            FlagValue::Value("anyrouter/auto[1m]".into()),
+        );
+        assert_eq!(
+            resolve_launch_model(&auto_1m, Some(&cfg), claude_profile, "claude"),
+            "anyrouter/auto[1m]"
+        );
+        let mut free_1m = HashMap::new();
+        free_1m.insert(
+            "model".into(),
+            FlagValue::Value("anyrouter/free[1m]".into()),
+        );
+        assert_eq!(
+            resolve_launch_model(&free_1m, Some(&cfg), claude_profile, "claude"),
+            "anyrouter/free[1m]"
+        );
+        let empty = Profile::default();
+        assert_eq!(
+            resolve_launch_model(&flags, None, &empty, "claude"),
+            "anyrouter/auto"
         );
     }
 }

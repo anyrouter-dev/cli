@@ -67,51 +67,35 @@ fn exit_zero_stub() -> std::path::PathBuf {
 fn help_lists_login_claude_account_and_spawn_targets() {
     let (code, stdout, stderr) = run(&["--help"]);
     assert_eq!(code, 0, "stderr={stderr}");
-    for word in ["auth", "claude", "keys", "usage", "models", "onboard"] {
-        assert!(stdout.contains(word), "missing {word} in:\n{stdout}");
-    }
-    for target in [
-        "claude", "cc", "codex", "grok", "opencode", "pi", "pool", "poolside",
-    ] {
-        assert!(
-            stdout.lines().any(|l| l.trim_start().starts_with(target)),
-            "missing spawn target {target} in:\n{stdout}"
-        );
-    }
+    assert!(stdout.contains("point any coding agent"), "{stdout}");
+    assert!(stdout.contains("auth login"), "{stdout}");
+    assert!(stdout.contains("anyr claude"), "{stdout}");
+    assert!(stdout.contains("anyr help commands"), "{stdout}");
     assert!(
-        !stdout.contains("setup.sh") && !stdout.contains("Install:"),
-        "help must not tell an already-installed binary how to install, got:\n{stdout}"
+        !stdout.contains("Install:"),
+        "help must not dump an Install: heading, got:\n{stdout}"
     );
     assert!(
         !stdout.contains("anyrouter.dev/docs/cli"),
         "help must not end with a docs URL, got:\n{stdout}"
     );
     assert!(
-        stdout.contains("anyr claude") || stdout.contains("anyr <command>"),
-        "binary --help should name itself anyr, got:\n{stdout}"
-    );
-    assert!(
         !stdout.contains("npx @anyr/cli"),
         "native anyr --help must not tell people to type npx, got:\n{stdout}"
     );
+    assert!(
+        !stdout.contains("CORE COMMANDS"),
+        "examples-first --help must not dump the catalog:\n{stdout}"
+    );
+    let (code, map, map_err) = run(&["help", "commands"]);
+    assert_eq!(code, 0, "{map}{map_err}");
     for heading in ["CORE COMMANDS", "LAUNCH"] {
-        assert!(
-            stdout.contains(heading),
-            "help should group commands under {heading}, got:\n{stdout}"
-        );
+        assert!(map.contains(heading), "missing {heading} in:\n{map}");
     }
-    assert!(
-        stdout.contains("Sign in if needed") && stdout.contains("auth login"),
-        "bare-command help should describe login-then-launcher, got:\n{stdout}"
-    );
-    assert!(
-        stdout.contains("Open the interactive TUI") && stdout.contains("menu:"),
-        "help should present the TUI as the default entry, got:\n{stdout}"
-    );
-    assert!(
-        stdout.contains("▀█████████▄"),
-        "help should render the official AR half-block mark, got:\n{stdout}"
-    );
+    for target in ["claude", "codex", "grok", "opencode", "pi", "pool"] {
+        assert!(map.contains(target), "missing {target} in:\n{map}");
+    }
+    assert!(map.contains("▀█████████▄"), "{map}");
 }
 
 #[test]
@@ -119,8 +103,8 @@ fn no_args_non_tty_prints_grouped_help() {
     let (code, stdout, stderr) = run(&[]);
     assert_eq!(code, 0, "stderr={stderr}");
     assert!(
-        stdout.contains("Sign in if needed") && stdout.contains("CORE COMMANDS"),
-        "no-args should print grouped help when not a TTY, got:\n{stdout}"
+        stdout.contains("point any coding agent") && stdout.contains("auth login"),
+        "no-args should print examples-first help when not a TTY, got:\n{stdout}"
     );
 }
 
@@ -143,8 +127,8 @@ fn help_follows_anyr_display_bin() {
             "ANYR_DISPLAY_BIN={name} missing {needle:?} in:\n{stdout}"
         );
         assert!(
-            stdout.contains(&format!("{name} <command>"))
-                || stdout.contains(&format!("{name}                  Open the interactive TUI")),
+            stdout.contains(&format!("{name} help commands"))
+                || stdout.contains(&format!("{name} auth login")),
             "ANYR_DISPLAY_BIN={name} missing usage line in:\n{stdout}"
         );
     }
@@ -412,6 +396,120 @@ fn pi_dry_run_uses_anyrouter_provider() {
 }
 
 #[test]
+fn claude_dry_run_omitted_model_uses_anyrouter_auto() {
+    let key = "sk-ar-v1-fixture-key-0001";
+    let (code, stdout, stderr) = {
+        let out = anyr()
+            .args(["claude", "--dry-run", "--yes", "--key", key])
+            .env("ANYROUTER_HOME", temp_home())
+            .env_remove("ANYROUTER_API_KEY")
+            .output()
+            .expect("dry-run");
+        (
+            out.status.code().unwrap_or(1),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+    assert_eq!(code, 0, "stderr={stderr}");
+    assert!(
+        stdout.contains("ANTHROPIC_MODEL=anyrouter/auto"),
+        "omitted --model must send the documented auto preset:\n{stdout}"
+    );
+    assert!(stdout.contains("ANYROUTER_MODEL_MODE=auto"), "{stdout}");
+    assert!(
+        !stdout.to_ascii_lowercase().contains("most used"),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn claude_dry_run_model_auto_1m_sets_min_context_in_extra_body() {
+    let key = "sk-ar-v1-fixture-key-0001";
+    let out = anyr()
+        .args([
+            "claude",
+            "--dry-run",
+            "--yes",
+            "--key",
+            key,
+            "--model",
+            "anyrouter/auto[1m]",
+        ])
+        .env("ANYROUTER_HOME", temp_home())
+        .env_remove("ANYROUTER_API_KEY")
+        .output()
+        .expect("dry-run");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code().unwrap_or(1), 0, "{stdout}{stderr}");
+    assert!(
+        stdout.contains("ANTHROPIC_MODEL=anyrouter/auto[1m]"),
+        "Claude HUD needs the [1m] suffix on virtual auto:\n{stdout}"
+    );
+    // The floor is carried into CLAUDE_CODE_EXTRA_BODY under provider.min_context.
+    assert!(stdout.contains("CLAUDE_CODE_EXTRA_BODY="), "{stdout}");
+    assert!(
+        stdout.contains("\"min_context\":1000000"),
+        "expected min_context 1_000_000 in extra body:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("\"provider\""),
+        "expected provider object in extra body:\n{stdout}"
+    );
+}
+
+#[test]
+fn claude_dry_run_model_auto_500k_sets_min_context_in_extra_body() {
+    let key = "sk-ar-v1-fixture-key-0001";
+    let out = anyr()
+        .args([
+            "claude",
+            "--dry-run",
+            "--yes",
+            "--key",
+            key,
+            "--model",
+            "anyrouter/auto[500k]",
+        ])
+        .env("ANYROUTER_HOME", temp_home())
+        .env_remove("ANYROUTER_API_KEY")
+        .output()
+        .expect("dry-run");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code().unwrap_or(1), 0, "{stdout}{stderr}");
+    assert!(
+        stdout.contains("ANTHROPIC_MODEL=anyrouter/auto[500k]"),
+        "Claude HUD needs the [500k] suffix on virtual auto:\n{stdout}"
+    );
+    // The floor is carried into CLAUDE_CODE_EXTRA_BODY under provider.min_context.
+    assert!(stdout.contains("CLAUDE_CODE_EXTRA_BODY="), "{stdout}");
+    assert!(
+        stdout.contains("\"min_context\":500000"),
+        "expected min_context 500_000 in extra body:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("\"provider\""),
+        "expected provider object in extra body:\n{stdout}"
+    );
+}
+
+#[test]
+fn claude_help_documents_anyrouter_auto_not_invented_skus() {
+    let (code, stdout, stderr) = run(&["claude", "--help"]);
+    assert_eq!(code, 0, "{stdout}{stderr}");
+    assert!(stdout.contains("anyrouter/auto"), "{stdout}");
+    assert!(
+        !stdout.to_ascii_lowercase().contains("most-used"),
+        "help must not claim auto invents a usage SKU:\n{stdout}"
+    );
+    // Help documents the min-context floor suffixes.
+    assert!(stdout.contains("[1m]"), "{stdout}");
+    assert!(stdout.contains("[500k]"), "{stdout}");
+}
+
+#[test]
 fn claude_dry_run_with_key_prints_base_and_redacts_secret() {
     let key = "sk-ar-v1-fixture-key-0001";
     let (code, stdout, stderr) = {
@@ -482,16 +580,20 @@ fn claude_dry_run_pinned_model_collapses_aliases() {
     };
     assert_eq!(code, 0, "stderr={stderr}");
     assert!(
-        stdout.contains("ANTHROPIC_MODEL=stealth/ox-alpha[1m]"),
+        stdout.contains("ANTHROPIC_MODEL=stealth/ox-alpha"),
+        "{stdout}"
+    );
+    assert!(
+        !stdout.contains("ANTHROPIC_MODEL=stealth/ox-alpha[1m]"),
         "{stdout}"
     );
     // Unset alias slots follow the pinned model so nothing falls back to
     // haiku/sonnet/opus behind the user's back.
     for key_line in [
-        "ANTHROPIC_DEFAULT_HAIKU_MODEL=stealth/ox-alpha[1m]",
-        "ANTHROPIC_DEFAULT_SONNET_MODEL=stealth/ox-alpha[1m]",
-        "ANTHROPIC_DEFAULT_OPUS_MODEL=stealth/ox-alpha[1m]",
-        "CLAUDE_CODE_SUBAGENT_MODEL=stealth/ox-alpha[1m]",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL=stealth/ox-alpha",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL=stealth/ox-alpha",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL=stealth/ox-alpha",
+        "CLAUDE_CODE_SUBAGENT_MODEL=stealth/ox-alpha",
     ] {
         assert!(stdout.contains(key_line), "missing {key_line}:\n{stdout}");
     }
@@ -525,11 +627,11 @@ fn claude_dry_run_haiku_flag_beats_pinned_model() {
     };
     assert_eq!(code, 0, "stderr={stderr}");
     assert!(
-        stdout.contains("ANTHROPIC_DEFAULT_HAIKU_MODEL=z-ai/glm-4.7-flash[1m]"),
+        stdout.contains("ANTHROPIC_DEFAULT_HAIKU_MODEL=z-ai/glm-4.7-flash"),
         "{stdout}"
     );
     assert!(
-        stdout.contains("ANTHROPIC_DEFAULT_SONNET_MODEL=stealth/ox-alpha[1m]"),
+        stdout.contains("ANTHROPIC_DEFAULT_SONNET_MODEL=stealth/ox-alpha"),
         "{stdout}"
     );
 }
@@ -584,7 +686,11 @@ fn claude_yolo_with_ox_alpha_1m_still_works() {
     };
     assert_eq!(code, 0, "stderr={stderr}");
     assert!(
-        stdout.contains("ANTHROPIC_MODEL=stealth/ox-alpha[1m]"),
+        stdout.contains("ANTHROPIC_MODEL=stealth/ox-alpha"),
+        "{stdout}"
+    );
+    assert!(
+        !stdout.contains("ANTHROPIC_MODEL=stealth/ox-alpha[1m]"),
         "{stdout}"
     );
     assert!(
@@ -645,13 +751,13 @@ fn claude_dry_run_fable_flag_beats_pinned_model() {
     assert_eq!(code, 0, "stderr={stderr}");
     // Explicit --fable wins over the pinned session model...
     assert!(
-        stdout.contains("ANTHROPIC_DEFAULT_FABLE_MODEL=anthropic/claude-fable-5[1m]"),
+        stdout.contains("ANTHROPIC_DEFAULT_FABLE_MODEL=anthropic/claude-fable-5"),
         "{stdout}"
     );
     // ...while every other unset slot still follows the pin.
     for key_line in [
-        "ANTHROPIC_DEFAULT_SONNET_MODEL=stealth/ox-alpha[1m]",
-        "ANTHROPIC_DEFAULT_OPUS_MODEL=stealth/ox-alpha[1m]",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL=stealth/ox-alpha",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL=stealth/ox-alpha",
     ] {
         assert!(stdout.contains(key_line), "missing {key_line}:\n{stdout}");
     }
@@ -687,7 +793,7 @@ fn claude_dry_run_haiku_flag_overrides_alias() {
     };
     assert_eq!(code, 0, "stderr={stderr}");
     assert!(
-        stdout.contains("ANTHROPIC_DEFAULT_HAIKU_MODEL=z-ai/glm-4.7-flash[1m]"),
+        stdout.contains("ANTHROPIC_DEFAULT_HAIKU_MODEL=z-ai/glm-4.7-flash"),
         "{stdout}"
     );
     assert!(
@@ -772,7 +878,7 @@ fn launch_remembers_explicit_model_as_session_default() {
         .expect("relaunch");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains("ANTHROPIC_MODEL=z-ai/glm-4.7-flash[1m]"),
+        stdout.contains("ANTHROPIC_MODEL=z-ai/glm-4.7-flash"),
         "session default not remembered:\n{stdout}"
     );
 
@@ -803,6 +909,10 @@ fn upgrade_help_mentions_channel_stable_beta() {
     assert!(
         stdout.contains("Run anyr to start using the new version."),
         "upgrade help should show the post-update hint, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("Ctrl+G") && stdout.contains("restart and resume"),
+        "upgrade help should mention Ctrl+G restart/resume after auto-upgrade:\n{stdout}"
     );
 }
 
@@ -1033,6 +1143,32 @@ fn login_help_describes_device_and_paste() {
     assert!(combined.contains("--device"), "{combined}");
     assert!(combined.contains("--paste"), "{combined}");
     assert!(combined.contains("device"), "{combined}");
+    assert!(
+        combined.contains("claude"),
+        "login help must point at anyr claude:\n{combined}"
+    );
+    assert!(
+        !combined.to_ascii_lowercase().contains("wizard"),
+        "login must not mention a post-login wizard:\n{combined}"
+    );
+}
+
+#[test]
+fn claude_help_starts_immediately() {
+    // WHY: `anyr claude` is the post-install path. Help must not send the
+    // user through a settings launcher first.
+    let (code, stdout, stderr) = run(&["claude", "--help"]);
+    assert_eq!(code, 0, "{stdout}{stderr}");
+    let combined = format!("{stdout}{stderr}");
+    assert!(combined.contains("--dry-run"), "{combined}");
+    assert!(
+        !combined.contains("opens the launcher"),
+        "named launch must start, not open a picker:\n{combined}"
+    );
+    assert!(
+        combined.to_ascii_lowercase().contains("sign in"),
+        "first run signs in if needed:\n{combined}"
+    );
 }
 
 #[test]
@@ -1041,11 +1177,17 @@ fn config_help_describes_tui() {
     assert_eq!(code, 0, "{stdout}{stderr}");
     let combined = format!("{stdout}{stderr}");
     assert!(
-        combined.contains("TUI") || combined.contains("Interactive"),
+        combined.contains("--pick") || combined.contains("Interactive"),
         "{combined}"
     );
-    assert!(combined.contains("key"), "{combined}");
-    assert!(combined.contains("credits"), "{combined}");
+    assert!(
+        combined.contains("credits") || combined.contains("account"),
+        "{combined}"
+    );
+    assert!(
+        combined.contains("models --pick") || combined.contains("json"),
+        "{combined}"
+    );
 }
 
 #[test]
@@ -1079,7 +1221,8 @@ profiles:
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(out.status.code().unwrap_or(1), 0, "{stdout}{stderr}");
     assert!(stdout.contains("default"), "{stdout}");
-    assert!(stdout.contains("api_key"), "{stdout}");
+    assert!(stdout.contains("key"), "{stdout}");
+    assert!(stdout.contains("account"), "{stdout}");
     assert!(
         !stdout.contains("sk-ar-v1-config-secret-value"),
         "full key leaked:\n{stdout}"
@@ -1089,7 +1232,7 @@ profiles:
         "non-TTY must not open picker:\n{stderr}"
     );
     assert!(
-        stdout.contains("terminal") || stdout.contains("config"),
+        stdout.contains("config get --json") || stdout.contains("models --pick"),
         "{stdout}"
     );
     let path_out = anyr()
@@ -1342,6 +1485,32 @@ fn upgrade_does_not_print_full_sk_ar_key() {
 }
 
 #[test]
+fn update_check_keeps_config_channel_without_switch_flags() {
+    let home = std::env::temp_dir().join(format!("anyr-keep-ch-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&home);
+    std::fs::write(
+        home.join("config.yaml"),
+        "active_profile: default\nchannel: beta\nprofiles:\n  default:\n    api_key: x\n",
+    )
+    .expect("write config");
+    let out = anyr()
+        .args(["update", "--check"])
+        .env("ANYR_RELEASES_JSON", fixture_path())
+        .env("ANYROUTER_HOME", &home)
+        .env("ANYR_CHANNEL", "stable")
+        .output()
+        .expect("update --check keep channel");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code().unwrap_or(1), 0, "{stdout}{stderr}");
+    assert!(stdout.contains("channel: beta"), "{stdout}");
+    assert!(!stdout.contains("channel set to"), "{stdout}");
+    let cfg = std::fs::read_to_string(home.join("config.yaml")).expect("config");
+    assert!(cfg.contains("channel: beta"), "{cfg}");
+    assert!(!cfg.contains("channel: stable"), "{cfg}");
+}
+
+#[test]
 fn upgrade_check_reads_channel_from_config() {
     let home = std::env::temp_dir().join(format!("anyr-ch-{}", std::process::id()));
     let _ = std::fs::create_dir_all(&home);
@@ -1567,54 +1736,21 @@ agents:
         !stdout.contains('\u{1b}'),
         "dump must be ANSI-free: {stdout}"
     );
-    // Palette frame: AR mark, auth/defaults, input, grouped rows.
     assert!(stdout.contains("anyr"), "{stdout}");
+    assert!(stdout.contains("What do you want to do?"), "{stdout}");
+    assert!(stdout.contains("Launch claude"), "{stdout}");
+    assert!(stdout.contains("Launch codex"), "{stdout}");
+    assert!(stdout.contains("Config"), "{stdout}");
+    assert!(stdout.contains("Models"), "{stdout}");
+    assert!(stdout.contains("Quit"), "{stdout}");
+    assert!(stdout.contains("1."), "{stdout}");
     assert!(
-        stdout.contains("▄▄") || stdout.contains("▄█▀") || stdout.contains("████"),
-        "small AR mark missing:\n{stdout}"
-    );
-    assert!(stdout.contains("account"), "{stdout}");
-    assert!(stdout.contains("key"), "{stdout}");
-    assert!(stdout.contains("model"), "{stdout}");
-    assert!(stdout.contains("agent"), "{stdout}");
-    assert!(stdout.contains("credits"), "{stdout}");
-    assert!(stdout.contains("LAUNCH"), "{stdout}");
-    assert!(stdout.contains("claude"), "{stdout}");
-    assert!(stdout.contains("CONFIGURE"), "{stdout}");
-    assert!(stdout.contains("MORE"), "{stdout}");
-    assert!(stdout.contains("config…"), "{stdout}");
-    assert!(stdout.contains("account…"), "{stdout}");
-    assert!(stdout.contains("key…"), "{stdout}");
-    assert!(stdout.contains("model…"), "{stdout}");
-    assert!(stdout.contains("install…"), "{stdout}");
-    assert!(stdout.contains("quit"), "{stdout}");
-    assert!(
-        stdout.contains("for claude") || stdout.contains("for codex"),
-        "configure rows must target a highlighted agent:\n{stdout}"
+        stdout.contains("no fullscreen"),
+        "HUD footer missing:\n{stdout}"
     );
     assert!(
-        stdout.contains(" · "),
-        "agent rows must show model · account · key:\n{stdout}"
-    );
-    assert!(
-        stdout.contains("⚡") || stdout.contains("◆"),
-        "row icons missing:\n{stdout}"
-    );
-    assert!(
-        stdout.contains('❯'),
-        "palette must show the input line: {stdout}"
-    );
-    assert!(
-        stdout.contains('╭') && stdout.contains('╯'),
-        "dump should look like a dialog card: {stdout}"
-    );
-    assert!(
-        stdout.contains("stealth/ox-alpha"),
-        "claude's bound model should be visible:\n{stdout}"
-    );
-    assert!(
-        stdout.contains("LAUNCH") && stdout.contains("CONFIGURE"),
-        "configure must not replace launch:\n{stdout}"
+        !stdout.contains("type a number"),
+        "dump must not ask to type a number:\n{stdout}"
     );
     assert!(
         !stdout.contains("menu-dump-secret-value"),
@@ -1664,7 +1800,7 @@ agents:
 }
 
 #[test]
-fn menu_dump_tui_empty_agents_shows_install() {
+fn menu_dump_tui_empty_agents_still_offers_launch_claude() {
     let dir = std::env::temp_dir().join(format!("anyr-cli-menu-empty-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("config.yaml");
@@ -1687,9 +1823,11 @@ profiles:
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(out.status.code().unwrap_or(1), 0, "{stdout}{stderr}");
-    assert!(stdout.contains("install an agent…"), "{stdout}");
-    assert!(stdout.contains("none detected"), "{stdout}");
-    assert!(!stdout.contains("◆ claude"), "{stdout}");
+    assert!(
+        stdout.contains("Launch claude"),
+        "empty PATH must still offer Launch claude:\n{stdout}"
+    );
+    assert!(stdout.contains("Config"), "{stdout}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1967,7 +2105,7 @@ agents:
         String::from_utf8_lossy(&grok.stderr)
     );
     assert!(
-        claude_out.contains("ANTHROPIC_MODEL=stealth/ox-alpha[1m]"),
+        claude_out.contains("ANTHROPIC_MODEL=stealth/ox-alpha"),
         "{claude_out}"
     );
     assert!(
@@ -2039,18 +2177,9 @@ agents:
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(out.status.code().unwrap_or(1), 0, "{stdout}{stderr}");
-    assert!(stdout.contains("LAUNCH"), "{stdout}");
-    assert!(stdout.contains("CONFIGURE"), "{stdout}");
-    assert!(
-        stdout.contains("for claude") || stdout.contains("configure · claude"),
-        "{stdout}"
-    );
-    assert!(stdout.contains("stealth/ox-alpha"), "{stdout}");
-    assert!(stdout.contains("grok-4"), "{stdout}");
-    assert!(
-        !stdout.contains("switch session default"),
-        "CONFIGURE must not describe a session-only switch:\n{stdout}"
-    );
+    assert!(stdout.contains("Launch claude"), "{stdout}");
+    assert!(stdout.contains("Launch grok"), "{stdout}");
+    assert!(stdout.contains("What do you want to do?"), "{stdout}");
     assert!(
         !stdout.contains("menu-agent-secret"),
         "dump must not leak full secret: {stdout}"
@@ -2072,7 +2201,11 @@ fn claude_model_1m_flag_still_launches() {
     ]);
     assert_eq!(code, 0, "{stdout}{stderr}");
     assert!(
-        stdout.contains("ANTHROPIC_MODEL=stealth/ox-alpha[1m]"),
+        stdout.contains("ANTHROPIC_MODEL=stealth/ox-alpha"),
+        "{stdout}"
+    );
+    assert!(
+        !stdout.contains("ANTHROPIC_MODEL=stealth/ox-alpha[1m]"),
         "{stdout}"
     );
     assert!(
@@ -2115,22 +2248,9 @@ agents:
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(out.status.code().unwrap_or(1), 0, "{stdout}{stderr}");
-    assert!(stdout.contains("LAUNCH"), "{stdout}");
-    assert!(stdout.contains("CONFIGURE"), "{stdout}");
-    let launch_at = stdout.find("LAUNCH").expect("LAUNCH");
-    let configure_at = stdout.find("CONFIGURE").expect("CONFIGURE");
-    assert!(
-        launch_at < configure_at,
-        "CONFIGURE must not flash over LAUNCH:\n{stdout}"
-    );
-    assert!(stdout.contains("exacto"), "{stdout}");
-    assert!(stdout.contains("tools"), "{stdout}");
-    assert!(
-        stdout.contains("1M ctx") || stdout.contains("1M"),
-        "{stdout}"
-    );
-    assert!(stdout.contains("anyrouter/auto"), "{stdout}");
-    assert!(stdout.contains("anyrouter/free"), "{stdout}");
+    assert!(stdout.contains("Launch claude"), "{stdout}");
+    assert!(stdout.contains("Launch grok"), "{stdout}");
+    assert!(stdout.contains("What do you want to do?"), "{stdout}");
     assert!(
         !stdout.to_ascii_lowercase().contains("most used"),
         "picker/catalog must not dump most-used:\n{stdout}"
@@ -2182,9 +2302,14 @@ agents:
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert_eq!(out.status.code().unwrap_or(1), 0, "{stdout}{stderr}");
         assert!(stdout.contains("command:"), "{stdout}");
+        let expected = if model == "anyrouter/auto" {
+            "ANTHROPIC_MODEL=anyrouter/auto[1m]"
+        } else {
+            "ANTHROPIC_MODEL=anyrouter/free[1m]"
+        };
         assert!(
-            stdout.contains(&format!("ANTHROPIC_MODEL={model}")),
-            "{stdout}"
+            stdout.contains(expected),
+            "yaml min_context 1M must re-apply the HUD suffix:\n{stdout}"
         );
         assert!(
             stdout.contains("CLAUDE_CODE_EXTRA_BODY="),
@@ -2202,6 +2327,146 @@ agents:
 }
 
 #[test]
+fn claude_dry_run_peels_auto_1m_into_extra_body_not_laguna() {
+    let dir = std::env::temp_dir().join(format!("anyr-cli-auto-1m-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("config.yaml");
+    std::fs::write(
+        &path,
+        "\
+active_profile: default
+profiles:
+  default:
+    api_key: sk-ar-v1-fixture-key-0001
+    default_model: auto
+",
+    )
+    .unwrap();
+    let out = anyr()
+        .args([
+            "claude",
+            "--dry-run",
+            "--yes",
+            "--config",
+            path.to_str().unwrap(),
+            "--model",
+            "anyrouter/auto[1m]",
+        ])
+        .output()
+        .expect("claude dry-run auto[1m]");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code().unwrap_or(1), 0, "{stdout}{stderr}");
+    assert!(
+        stdout.contains("ANTHROPIC_MODEL=anyrouter/auto[1m]"),
+        "must keep virtual auto[1m] for the Claude HUD, not a concrete SKU:\n{stdout}"
+    );
+    assert!(!stdout.to_ascii_lowercase().contains("laguna"), "{stdout}");
+    assert!(stdout.contains("CLAUDE_CODE_EXTRA_BODY="), "{stdout}");
+    assert!(stdout.contains("\"min_context\":1000000"), "{stdout}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn claude_dry_run_peels_virtual_preset_1m_into_extra_body() {
+    let dir = std::env::temp_dir().join(format!("anyr-cli-virtual-1m-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("config.yaml");
+    std::fs::write(
+        &path,
+        "\
+active_profile: default
+profiles:
+  default:
+    api_key: sk-ar-v1-fixture-key-0001
+    default_model: auto
+",
+    )
+    .unwrap();
+    for (flag, expected) in [
+        ("anyrouter/free[1m]", "anyrouter/free[1m]"),
+        ("anyrouter/byok[1m]", "anyrouter/byok[1m]"),
+        ("anyrouter/hermes[500k]", "anyrouter/hermes[500k]"),
+    ] {
+        let out = anyr()
+            .args([
+                "claude",
+                "--dry-run",
+                "--yes",
+                "--config",
+                path.to_str().unwrap(),
+                "--model",
+                flag,
+            ])
+            .output()
+            .expect("claude dry-run virtual[1m]");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(
+            out.status.code().unwrap_or(1),
+            0,
+            "{flag}\n{stdout}{stderr}"
+        );
+        assert!(
+            stdout.contains(&format!("ANTHROPIC_MODEL={expected}")),
+            "{flag} must keep virtual id:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=0"),
+            "{flag}\n{stdout}"
+        );
+        assert!(
+            stdout.contains("CLAUDE_CODE_EXTRA_BODY="),
+            "{flag}\n{stdout}"
+        );
+        if flag.contains("[1m]") {
+            assert!(
+                stdout.contains("\"min_context\":1000000"),
+                "{flag}\n{stdout}"
+            );
+        } else {
+            assert!(
+                stdout.contains("\"min_context\":500000"),
+                "{flag}\n{stdout}"
+            );
+        }
+        assert!(
+            !stdout.to_ascii_lowercase().contains("laguna"),
+            "{flag}\n{stdout}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn unsigned_hud_dump_offers_launch_claude() {
+    // WHY: right after install there is no key yet. Enter on the HUD
+    // should still be "Launch claude" (login happens inside launch).
+    let dir = temp_home();
+    let path = dir.join("config.yaml");
+    let out = anyr()
+        .args(["menu", "--dump-tui", "--config", path.to_str().unwrap()])
+        .env("ANYROUTER_HOME", &dir)
+        .env("ANYR_AGENTS", "none")
+        .env_remove("ANYROUTER_API_KEY")
+        .output()
+        .expect("unsigned hud");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code().unwrap_or(1), 0, "{stdout}{stderr}");
+    assert!(stdout.contains("Launch claude"), "{stdout}");
+    assert!(stdout.contains("What do you want to do?"), "{stdout}");
+    assert!(stdout.contains("Config"), "{stdout}");
+    assert!(stdout.contains("Quit"), "{stdout}");
+    assert!(!stdout.contains("Login"), "{stdout}");
+    assert!(
+        !stdout.contains("Install an agent"),
+        "unsigned first-run must not hide Launch behind install:\n{stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn models_dump_tui_pins_anyrouter_auto_without_most_used() {
     let (code, stdout, stderr) = run(&["models", "--dump-tui"]);
     assert_eq!(code, 0, "{stdout}{stderr}");
@@ -2210,4 +2475,205 @@ fn models_dump_tui_pins_anyrouter_auto_without_most_used() {
         !stdout.to_ascii_lowercase().contains("most used"),
         "{stdout}"
     );
+}
+
+// --- PR #52 bug-fix coverage ---
+#[test]
+fn claude_yolo_extra_in_config_expands_like_flag() {
+    // WHY: tools.claude.yolo must survive serialize and launch like --yolo.
+    let dir = temp_home();
+    std::fs::write(
+        dir.join("config.yaml"),
+        "\
+active_profile: default
+profiles:
+  default:
+    api_key: sk-ar-v1-fixture-key-0001
+    default_model: auto
+tools:
+  claude:
+    yolo: true
+",
+    )
+    .unwrap();
+    let out = anyr()
+        .args(["claude", "--dry-run", "--yes"])
+        .env("ANYROUTER_HOME", &dir)
+        .env_remove("ANYROUTER_API_KEY")
+        .output()
+        .expect("yolo extra dry-run");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code().unwrap_or(1), 0, "{stdout}{stderr}");
+    assert!(
+        stdout.contains("--dangerously-skip-permissions"),
+        "config yolo must expand:\n{stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn config_dump_tui_claude_tab_shows_agent_rows() {
+    let dir = temp_home();
+    let path = dir.join("config.yaml");
+    std::fs::write(
+        &path,
+        "\
+active_profile: default
+profiles:
+  default:
+    api_key: sk-ar-v1-tab-dump-secret-abcdef
+    default_model: auto
+",
+    )
+    .unwrap();
+    let out = anyr()
+        .args(["config", "--dump-tui", "--config", path.to_str().unwrap()])
+        .env("ANYR_TUI_TAB", "claude")
+        .env("ANYROUTER_HOME", &dir)
+        .output()
+        .expect("config claude tab");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code().unwrap_or(1), 0, "{stdout}{stderr}");
+    assert!(stdout.contains("[claude]"), "{stdout}");
+    for row in ["command", "install", "gateway discovery", "haiku"] {
+        assert!(stdout.contains(row), "missing {row} in:\n{stdout}");
+    }
+    assert!(
+        !stdout.contains("tab-dump-secret"),
+        "dump must not leak secret: {stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn config_dump_tui_grok_tab_omits_claude_aliases() {
+    let dir = temp_home();
+    let path = dir.join("config.yaml");
+    std::fs::write(
+        &path,
+        "\
+active_profile: default
+profiles:
+  default:
+    api_key: sk-ar-v1-grok-tab-secret-abcdef
+    default_model: auto
+",
+    )
+    .unwrap();
+    let out = anyr()
+        .args(["config", "--dump-tui", "--config", path.to_str().unwrap()])
+        .env("ANYR_TUI_TAB", "grok")
+        .env("ANYROUTER_HOME", &dir)
+        .output()
+        .expect("config grok tab");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code().unwrap_or(1), 0, "{stdout}{stderr}");
+    assert!(stdout.contains("[grok]"), "{stdout}");
+    assert!(
+        stdout.contains("GROK_MODELS_BASE_URL") || stdout.contains("base URL env"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("haiku"), "{stdout}");
+    assert!(!stdout.contains("gateway discovery"), "{stdout}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn cursor_is_honest_stub_not_silent_success() {
+    let (code, stdout, stderr) = run(&["cursor"]);
+    assert_ne!(code, 0, "{stdout}{stderr}");
+    let combined = format!("{stdout}{stderr}");
+    assert!(
+        combined.contains("not yet") || combined.contains("not a launch"),
+        "{combined}"
+    );
+}
+
+#[test]
+fn launch_rejects_unknown_flag() {
+    let (code, _stdout, stderr) = run(&["claude", "--bogus"]);
+    assert_eq!(code, 1);
+    assert!(
+        stderr.contains("Unknown") || stderr.contains("bogus"),
+        "{stderr}"
+    );
+}
+#[test]
+fn whoami_and_keys_fail_loud_without_config() {
+    let dir = temp_home();
+    for args in [vec!["whoami"], vec!["keys", "list"]] {
+        let out = anyr()
+            .args(&args)
+            .env("ANYROUTER_HOME", &dir)
+            .env_remove("ANYROUTER_API_KEY")
+            .output()
+            .expect("missing key");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_ne!(out.status.code().unwrap_or(1), 0, "{args:?} {stderr}");
+        assert!(
+            stderr.contains("No AnyRouter config") || stderr.contains("no key"),
+            "{args:?} {stderr}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn yes_equals_true_skips_confirm_parse() {
+    let (code, stdout, stderr) = run(&["claude", "--help"]);
+    assert_eq!(code, 0, "{stdout}{stderr}");
+    assert!(!stdout.contains("Skip the launcher"), "{stdout}");
+    assert!(!stdout.contains("--no-check"), "{stdout}");
+    assert!(
+        stdout.contains("--yes") && stdout.contains("--ok"),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn menu_non_tty_prints_status_before_actions() {
+    // WHY: a piped `anyr menu` can't be driven, but the status line is the
+    // preflight payoff — account · model · agent · credits. It must lead so
+    // scripts/CI see state, not just a bare action list.
+    let dir = temp_home();
+    std::fs::write(
+        dir.join("config.yaml"),
+        "\
+active_profile: default
+profiles:
+  default:
+    api_key: sk-ar-v1-menu-status-secret-abcdef
+    default_model: auto
+",
+    )
+    .unwrap();
+    let out = anyr()
+        .arg("menu")
+        .env("ANYROUTER_HOME", &dir)
+        .output()
+        .expect("menu non-tty");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code().unwrap_or(1), 0, "{stdout}{stderr}");
+    // First line is the status, not an action: it names the binary and the
+    // signed-in dot, and never leaks the full secret.
+    let first = stdout.lines().next().unwrap_or("");
+    assert!(first.contains("anyr"), "status must name anyr: {first}");
+    assert!(
+        first.contains("auto") || first.contains("claude"),
+        "status must show model/agent: {first}"
+    );
+    assert!(
+        !stdout.contains("menu-status-secret"),
+        "leaked secret: {stdout}"
+    );
+    // Actions follow the status line.
+    assert!(
+        stdout.contains("Config") && stdout.contains("Quit"),
+        "{stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }

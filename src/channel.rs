@@ -281,6 +281,39 @@ pub fn select_latest_release(releases: &[Release], channel: Channel) -> Result<R
     })
 }
 
+fn channel_matches(rel: &Release, channel: Channel) -> bool {
+    match channel {
+        Channel::Stable => !rel.prerelease,
+        Channel::Beta => rel.prerelease,
+    }
+}
+
+/// Newest-first releases on `channel` that look installable.
+/// Prefers rows that list `asset`; otherwise any non-empty asset list.
+/// Empty-asset stables such as v0.1.11 are omitted so we do not 404 `/latest`.
+pub fn channel_update_candidates(
+    releases: &[Release],
+    channel: Channel,
+    asset: &str,
+) -> Vec<Release> {
+    let mut named: Vec<(Version, Release)> = releases
+        .iter()
+        .filter(|rel| channel_matches(rel, channel))
+        .filter(|rel| rel.assets.iter().any(|a| a.name == asset))
+        .filter_map(|rel| parse_version(&rel.tag_name).map(|v| (v, rel.clone())))
+        .collect();
+    if named.is_empty() {
+        named = releases
+            .iter()
+            .filter(|rel| channel_matches(rel, channel))
+            .filter(|rel| !rel.assets.is_empty())
+            .filter_map(|rel| parse_version(&rel.tag_name).map(|v| (v, rel.clone())))
+            .collect();
+    }
+    named.sort_by(|a, b| b.0.cmp(&a.0));
+    named.into_iter().map(|(_, r)| r).collect()
+}
+
 /// Latest release on `channel` that has binaries.
 /// Prefers a release that lists `asset`; otherwise any non-empty asset list.
 /// Empty-asset stables such as v0.1.11 are skipped so we do not 404 `/latest`.
@@ -289,29 +322,16 @@ pub fn select_latest_release_with_asset(
     channel: Channel,
     asset: &str,
 ) -> Result<Release, String> {
-    let named: Vec<Release> = releases
-        .iter()
-        .filter(|rel| rel.assets.iter().any(|a| a.name == asset))
-        .cloned()
-        .collect();
-    if let Ok(rel) = select_latest_release(&named, channel) {
-        return Ok(rel);
-    }
-    let nonempty: Vec<Release> = releases
-        .iter()
-        .filter(|rel| !rel.assets.is_empty())
-        .cloned()
-        .collect();
-    match select_latest_release(&nonempty, channel) {
-        Ok(rel) => Ok(rel),
-        Err(_) => match channel {
-            Channel::Stable => Err(format!(
+    channel_update_candidates(releases, channel, asset)
+        .into_iter()
+        .next()
+        .ok_or_else(|| match channel {
+            Channel::Stable => format!(
                 "No stable GitHub release has {asset} (latest non-prerelease may be empty). \
 Try `anyr update --beta`."
-            )),
-            Channel::Beta => Err(format!("No beta (prerelease) has {asset}.")),
-        },
-    }
+            ),
+            Channel::Beta => format!("No beta (prerelease) has {asset}."),
+        })
 }
 
 fn href_end(s: &str) -> usize {
@@ -449,6 +469,19 @@ pub fn latest_stable_download_url(os: &str, arch: &str) -> String {
     format!("{GITHUB_LATEST_DOWNLOAD}/{}", asset_name(os, arch))
 }
 
+/// One line per asset: `"<64 lowercase hex>  <name>"` (sha256sum format).
+pub fn parse_checksums(body: &str) -> BTreeMap<String, String> {
+    body.lines()
+        .filter_map(|line| {
+            let (hex, name) = line.split_once("  ")?;
+            let hex = hex.trim();
+            let name = name.trim();
+            (hex.len() == 64 && hex.chars().all(|c| c.is_ascii_hexdigit()))
+                .then(|| (name.to_string(), hex.to_ascii_lowercase()))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -492,6 +525,37 @@ mod tests {
             "https://github.com/anyrouter-dev/cli/releases/latest/download/anyr-linux-x86_64"
         );
         assert!(!url.contains("duyet/anyrouter"));
+    }
+
+    #[test]
+    fn parse_checksums_valid_line() {
+        let map = parse_checksums(
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef  anyr-linux-x86_64\n",
+        );
+        assert_eq!(
+            map.get("anyr-linux-x86_64").map(String::as_str),
+            Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+        );
+    }
+
+    #[test]
+    fn parse_checksums_skips_garbage() {
+        let map = parse_checksums(
+            "# comment\nnot a checksum\n0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef  anyr-linux-x86_64\nshort  name\n",
+        );
+        assert_eq!(map.len(), 1);
+        assert!(map.contains_key("anyr-linux-x86_64"));
+    }
+
+    #[test]
+    fn parse_checksums_normalizes_uppercase_hex() {
+        let map = parse_checksums(
+            "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF  anyr-linux-x86_64\n",
+        );
+        assert_eq!(
+            map.get("anyr-linux-x86_64").map(String::as_str),
+            Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+        );
     }
 
     #[test]
@@ -580,6 +644,22 @@ mod tests {
   {"tag_name":"v0.1.11","prerelease":false,"assets":[]},
   {"tag_name":"v0.1.12-beta.98","prerelease":true,"assets":[{"name":"anyr-linux-x86_64","browser_download_url":"https://github.com/anyrouter-dev/cli/releases/download/v0.1.12-beta.98/anyr-linux-x86_64"}]}
 ]"#;
+
+    #[test]
+    fn channel_update_candidates_newest_first_skips_empty() {
+        let json = r#"[
+  {"tag_name":"v0.1.14","prerelease":false,"assets":[{"name":"anyr-linux-x86_64","browser_download_url":"https://example/0.1.14"}]},
+  {"tag_name":"v0.1.13","prerelease":false,"assets":[{"name":"anyr-linux-x86_64","browser_download_url":"https://example/0.1.13"}]},
+  {"tag_name":"v0.1.12","prerelease":false,"assets":[]},
+  {"tag_name":"v0.1.15-beta.1","prerelease":true,"assets":[{"name":"anyr-linux-x86_64","browser_download_url":"https://example/beta"}]}
+]"#;
+        let rels = parse_releases(json).unwrap();
+        let tags: Vec<_> = channel_update_candidates(&rels, Channel::Stable, "anyr-linux-x86_64")
+            .into_iter()
+            .map(|r| r.tag_name)
+            .collect();
+        assert_eq!(tags, vec!["v0.1.14".to_string(), "v0.1.13".to_string()]);
+    }
 
     #[test]
     fn select_latest_with_asset_skips_empty_stable() {

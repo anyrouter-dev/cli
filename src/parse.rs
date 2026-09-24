@@ -56,6 +56,11 @@ impl ParsedArgs {
     pub fn flag_true(&self, name: &str) -> bool {
         matches!(self.flags.get(name), Some(FlagValue::Bool(true)))
     }
+
+    /// `--yes` or `--ok` skip confirmation prompts (login / install / revoke).
+    pub fn skip_confirm(&self) -> bool {
+        self.flag_true("yes") || self.flag_true("ok")
+    }
 }
 
 pub fn parse_cli_args<I, S>(argv: I) -> Result<ParsedArgs, String>
@@ -99,10 +104,17 @@ where
         if let Some(eq) = arg.find('=') {
             let eq_name = arg[2..eq].to_string();
             let eq_value = arg[eq + 1..].to_string();
-            if VALUE_FLAGS.contains(eq_name.as_str()) && eq_value.is_empty() {
-                return Err(format!("Flag --{eq_name} requires a value."));
+            if VALUE_FLAGS.contains(eq_name.as_str()) {
+                if eq_value.is_empty() {
+                    return Err(format!("Flag --{eq_name} requires a value."));
+                }
+                flags.insert(eq_name, FlagValue::Value(eq_value));
+            } else {
+                flags.insert(
+                    eq_name.clone(),
+                    FlagValue::Bool(parse_bool_flag(&eq_name, &eq_value)?),
+                );
             }
-            flags.insert(eq_name, FlagValue::Value(eq_value));
             i += 1;
             continue;
         }
@@ -128,6 +140,26 @@ where
         flags,
         passthrough,
     })
+}
+
+fn parse_bool_flag(name: &str, raw: &str) -> Result<bool, String> {
+    let t = raw.trim();
+    if t.is_empty()
+        || t == "1"
+        || t.eq_ignore_ascii_case("true")
+        || t.eq_ignore_ascii_case("yes")
+        || t.eq_ignore_ascii_case("on")
+    {
+        return Ok(true);
+    }
+    if t == "0"
+        || t.eq_ignore_ascii_case("false")
+        || t.eq_ignore_ascii_case("no")
+        || t.eq_ignore_ascii_case("off")
+    {
+        return Ok(false);
+    }
+    Err(format!("Flag --{name} does not take a value ({raw})."))
 }
 
 pub fn get_string_flag(flags: &HashMap<String, FlagValue>, name: &str) -> Option<String> {
@@ -176,5 +208,24 @@ mod tests {
     fn separator_starts_passthrough() {
         let parsed = parse_cli_args(["claude", "--yes", "--", "--print"]).unwrap();
         assert_eq!(parsed.passthrough, vec!["--print"]);
+    }
+
+    #[test]
+    fn bool_flag_equals_form_is_still_true() {
+        // WHY: `--yes=true` used to land as FlagValue::Value, so flag_true missed it.
+        let parsed = parse_cli_args(["login", "--yes=true"]).unwrap();
+        assert!(parsed.flag_true("yes"));
+        assert!(parsed.skip_confirm());
+        let device = parse_cli_args(["login", "--device=1"]).unwrap();
+        assert!(device.flag_true("device"));
+        let off = parse_cli_args(["login", "--yes=false"]).unwrap();
+        assert!(!off.flag_true("yes"));
+    }
+
+    #[test]
+    fn ok_is_confirm_alias() {
+        let parsed = parse_cli_args(["claude", "--ok"]).unwrap();
+        assert!(parsed.skip_confirm());
+        assert!(parsed.flag_true("ok"));
     }
 }

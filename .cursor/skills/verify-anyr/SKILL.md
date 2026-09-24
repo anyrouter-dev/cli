@@ -7,7 +7,7 @@ description: Drive the AnyRouter CLI (`anyr`) the way a user does — isolated A
 
 Project-local control skill for agents. Read cold: this is how you launch, doctor, drive, capture evidence, and clean up without guessing.
 
-The primary surface is the **`anyr` CLI** (native Rust binary in this repo). On a TTY, bare `anyr` / `anyr menu` opens the Ratatui launcher; pipes and CI get `--help`. Secondary surfaces (npm wrapper `scripts/npx-anyr.js`, wasm demo, `setup.sh` installer) are out of scope unless a feature file names them.
+The primary surface is the **`anyr` CLI** (native Rust binary in this repo). On a TTY, bare `anyr` / `anyr menu` opens the compact HUD (Launch claude first); pipes and CI get `--help`. Secondary surfaces (npm wrapper `scripts/npx-anyr.js`, wasm demo, `setup.sh` installer) are out of scope unless a feature file names them.
 
 There is no long-lived server. Launch builds the binary once, then each drive is a short-lived `anyr` process (or a PTY/tmux session) against a disposable `ANYROUTER_HOME`.
 
@@ -24,7 +24,7 @@ From the repo root:
 .cursor/skills/verify-anyr/control-anyr doctor
 ```
 
-Launch is ready when it prints `ready: anyr --help lists CORE COMMANDS` and doctor prints only `ok` lines.
+Launch is ready when it prints `ready: anyr --help is examples-first` and doctor prints only `ok` lines.
 
 What launch does:
 
@@ -53,7 +53,7 @@ Doctor must report:
 
 - `binary` — executable `target/debug/anyr` from this checkout.
 - `version` — `anyr --version` starts with `0.1.` (this line stays 0.1.x).
-- `help` — `anyr --help` contains `CORE COMMANDS`, `LAUNCH`, `auth`, `claude`, and the AR half-block mark `▀█████████▄`.
+- `help` — `anyr --help` contains `point any coding agent`, `auth login`, `claude`, and `help commands`.
 - `isolated` — `ANYROUTER_HOME` is under `anyr-verify-` and is not `~/.anyrouter`.
 - `config` / `config_path` — `anyr config path` prints that isolated `config.yaml`.
 - `whoami` — active account `default`, key masked, fixture secret not printed in full.
@@ -96,7 +96,7 @@ Stable handles. Match these strings, not column layout or ANSI color.
 
 | Action | Command | Observable |
 | --- | --- | --- |
-| Help | `cli -- --help` | `CORE COMMANDS`, `LAUNCH`, `auth`, `claude`, `▀█████████▄`, exit `0`. Must not contain `setup.sh`, `Install:`, or `npx @anyr/cli` |
+| Help | `cli -- --help` | `point any coding agent`, `auth login`, `claude`, `help commands`, exit `0`. Must not contain `Install:` or `npx @anyr/cli` |
 | Version | `cli -- --version` | stdout starts with `0.1.`, exit `0` |
 | Command help | `cli -- auth --help` / `cli -- claude --help` | subcommands or `--dry-run`; exit `0`; not `Unknown command` |
 | Onboard impl | `cli -- onboard impl` | `ANYROUTER_API_KEY`, `https://anyrouter.dev/api/v1`, `https://anyrouter.dev/api` |
@@ -104,7 +104,7 @@ Stable handles. Match these strings, not column layout or ANSI color.
 | Whoami | `cli -- whoami` | `active account` `default`; full fixture key absent |
 | Config path | `cli -- config path` | isolated `config.yaml` |
 | Account switch | `cli -- account use work` | stdout contains `work`; follow with `whoami` |
-| Menu dump | `cli -- menu --dump-tui` | ANSI-free frame with `LAUNCH`, `claude`, `CONFIGURE`, `for claude`, `❯`, box corners `╭`/`╯`; secret absent |
+| Menu dump | `cli -- menu --dump-tui` | ANSI-free HUD dump with `What do you want to do?`, `Launch claude`, `Config`, `Models`, `Quit`; secret absent |
 | Config dump | `cli -- config --dump-tui` | sections `ACCOUNT`, `MODEL`, `AGENT`, `GENERAL` |
 | Agent dry-run | `cli -- claude --dry-run --yes --key sk-ar-v1-fixture-key-0001` | `command:`, `ANTHROPIC_BASE_URL`, key redacted. **Does not spawn Claude** |
 | Upgrade check | `ANYR_RELEASES_JSON=$(control-anyr path RELEASES_FIXTURE)` then `cli -- upgrade --check --dry-run` | no install; no live GitHub required |
@@ -120,7 +120,7 @@ Interactive TUI (only when dump is not enough):
 .cursor/skills/verify-anyr/control-anyr pty stop
 ```
 
-Keys on the launcher/palette: type to filter · ↑↓ move · ↵ run · `q` / esc quit. Settings (`anyr config`): ↑↓ / j k, ↵ edit, `x` reset row, `q` / esc close. One-shot PTY without tmux:
+Keys on the HUD: ↑↓ / j k move · ↵ select · `q` / esc quit. First row is Launch claude (signs in and installs if needed). Settings (`anyr config --pick`): ↑↓ / j k, ↵ edit, `x` reset row, `q` / esc close. One-shot PTY without tmux:
 
 ```bash
 .cursor/skills/verify-anyr/control-anyr pty run --wait 'CORE COMMANDS' --out artifacts/help-and-version/help-pty.txt -- --help
@@ -137,7 +137,7 @@ Standards:
 - Drive the shipped `anyr` binary through `control-anyr`, not by calling `anyr_cli::run` from a unit test and calling that the user path.
 - Capture the command of the action and a second read-only view of the resulting state (`whoami`, `config path`, `menu --dump-tui`, or the isolated `config.yaml`).
 - CLI proof is stdout, stderr, and exit code (`$out`, `$out.err`, `$out.exit`).
-- TUI proof is either `--dump-tui` (preferred) or a PTY pane that shows the AR mark or `LAUNCH` plus the action result.
+- TUI proof is either `--dump-tui` (preferred) or a PTY pane that shows `Launch claude` / `What do you want to do?` plus the action result.
 - Mutation proof includes the isolated `config.yaml` after the write (`account use`, `logout`, `models use`).
 - `--dry-run` is the safe spawn path. Prove it skipped the child by observing no new agent process and stdout that starts with `command:` / `env:`. Do not trust the flag name alone.
 - Do not hit `https://anyrouter.dev` for usage, models, keys, login validation, or live `anyr claude`. Onboard prompts and `--help` are offline. Upgrade checks use `tests/fixtures/releases.json`.

@@ -221,6 +221,7 @@ pub fn start_device_flow(base_url: &str, tool: Option<&str>) -> Result<DeviceSta
 
 /// What the poll loop should do next, derived from one server response or
 /// transport outcome plus the running clock budget. Pure — unit-testable.
+#[derive(Debug)]
 enum PollAction {
     Continue,
     SlowDown,
@@ -544,10 +545,15 @@ mod tests {
             poll_action(&Ok(DevicePoll::Denied), 10, 0, 600),
             PollAction::GiveUp(_)
         ));
-        assert!(matches!(
-            poll_action(&Ok(DevicePoll::Expired), 10, 0, 600),
-            PollAction::GiveUp(_)
-        ));
+        match poll_action(&Ok(DevicePoll::Expired), 10, 0, 600) {
+            PollAction::GiveUp(msg) => {
+                assert!(
+                    msg.contains("expired"),
+                    "user-visible expiry text missing: {msg}"
+                );
+            }
+            other => panic!("expected GiveUp, got {other:?}"),
+        }
         assert!(matches!(
             poll_action(&Ok(DevicePoll::SlowDown), 10, 0, 600),
             PollAction::SlowDown
