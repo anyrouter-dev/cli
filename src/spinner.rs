@@ -9,7 +9,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 thread_local! {
-    static ACTIVE_PAUSE: RefCell<Option<Arc<AtomicBool>>> = RefCell::new(None);
+    static ACTIVE_PAUSE: RefCell<Option<Arc<AtomicBool>>> = const { RefCell::new(None) };
 }
 
 use crate::term::{self, BLUE, SUCCESS};

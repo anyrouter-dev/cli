@@ -20,11 +20,13 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, llvm-tools-preview
+          components: rustfmt, clippy, llvm-tools-preview
 
-      - name: cargo fmt --check (optional)
+      - name: cargo fmt --check
         run: cargo fmt --check
-        continue-on-error: true
+
+      - name: cargo clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
 
       - uses: taiki-e/install-action@v2
         with:

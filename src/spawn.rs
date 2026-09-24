@@ -528,7 +528,7 @@ pub fn is_virtual_preset(model: &str) -> bool {
     }
     let id = catalog_model_id(model);
     let id = crate::config::strip_context_window_suffix(&id);
-    VIRTUAL_PRESETS.iter().any(|p| *p == id)
+    VIRTUAL_PRESETS.contains(&id)
 }
 
 /// Catalog id for display and config. Auto is `anyrouter/auto`.
@@ -647,10 +647,7 @@ pub fn sanitize_model_id(model: &str) -> String {
 pub fn peel_context_window_suffixes(model: &str) -> (String, Option<i64>) {
     let mut s = model.trim().to_string();
     let mut min_context: Option<i64> = None;
-    loop {
-        let Some(open) = s.rfind('[') else {
-            break;
-        };
+    while let Some(open) = s.rfind('[') {
         if !s.ends_with(']') || open + 2 >= s.len() {
             break;
         }
@@ -1627,7 +1624,7 @@ mod tests {
             half.get("ANTHROPIC_MODEL").map(String::as_str),
             Some("anyrouter/auto[500k]")
         );
-        assert!(half.get("CLAUDE_CODE_AUTO_COMPACT_WINDOW").is_none());
+        assert!(!half.contains_key("CLAUDE_CODE_AUTO_COMPACT_WINDOW"));
     }
 
     #[test]
