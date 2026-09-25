@@ -8,6 +8,7 @@ use crate::VERSION;
 use crate::cmd::account::{run_account, run_logout};
 use crate::cmd::auth::run_auth;
 use crate::cmd::config_tui::run_config;
+use crate::cmd::decision::run_decision;
 use crate::cmd::dispatch::{
     allowed_flags, assert_known_flags, canonical_command, help_topic, known_command,
     should_open_launcher, stub, tui_wants_dump, wants_help,
@@ -122,6 +123,7 @@ fn dispatch(
     env: &BTreeMap<String, String>,
 ) -> Result<i32, String> {
     match command {
+        "decision" => run_decision(parsed, env),
         "auth" => run_auth(parsed, env),
         "login" | "setup" => run_login(parsed, env),
         "logout" => run_logout(parsed, env),

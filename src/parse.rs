@@ -4,6 +4,8 @@ use std::sync::LazyLock;
 pub static VALUE_FLAGS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     HashSet::from([
         "model",
+        "state",
+        "questions",
         "effort",
         "preset",
         "key",

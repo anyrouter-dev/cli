@@ -99,6 +99,20 @@ fn help_lists_login_claude_account_and_spawn_targets() {
 }
 
 #[test]
+fn decision_help_describes_native_decision_contract() {
+    let (code, stdout, stderr) = run(&["decision", "--help"]);
+    assert_eq!(code, 0, "stderr={stderr}");
+    assert!(stdout.contains("anyr decision"), "{stdout}");
+    assert!(stdout.contains("/api/v1/decisions"), "{stdout}");
+    assert!(stdout.contains("--questions"), "{stdout}");
+    assert!(stdout.contains("--stdin"), "{stdout}");
+    assert!(
+        stdout.contains("never launches a chat coding agent"),
+        "{stdout}"
+    );
+}
+
+#[test]
 fn no_args_non_tty_prints_grouped_help() {
     let (code, stdout, stderr) = run(&[]);
     assert_eq!(code, 0, "stderr={stderr}");

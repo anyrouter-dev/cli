@@ -131,6 +131,7 @@ CORE COMMANDS
   config:     Print current settings (`--pick` for the TUI)
   keys:       Manage API keys
   models:     List catalog and set the default (`--pick` to choose)
+  decision:   Send a native System One decision request
   usage:      Credits remaining
   onboard:    Paste-ready prompts for coding agents
   impl|plan|fix|deploy|cp
@@ -190,6 +191,7 @@ pub fn command_help(command: &str) -> Option<String> {
             "{bin} logs — not yet in the native CLI (coming later).\n",
         ),
         "models" => fill(&bin, MODELS),
+        "decision" => fill(&bin, DECISION),
         "config" => fill(&bin, CONFIG),
         "chat" => fill(
             &bin,
@@ -383,6 +385,27 @@ Options:
   --opus <id>       Persist Claude opus alias
   --fable <id>      Persist Claude fable alias (auto-fallback target)
   --key sk-ar-v1-…  Optional inference key
+";
+
+const DECISION: &str = "\
+{bin} decision — send a structured System One decision request
+
+Usage:
+  {bin} decision --model <id> --questions <json> [--state <json>] [options]
+  cat request.json | {bin} decision --model <id> --stdin
+
+Options:
+  --model <id>          Concrete Decisions model id (required)
+  --state <json>        Application state JSON (default: empty string)
+  --questions <json>    Non-empty object-map of typed questions
+  --stdin               Read the complete request JSON from stdin
+  --json                Pretty-print the response JSON
+  --key sk-ar-v1-...    Use this key instead of the saved profile
+  --profile <name>      Use a named profile
+  --base-url <url>      Override the AnyRouter API base URL
+
+This command never launches a chat coding agent. It POSTs the native
+`/api/v1/decisions` contract and prints the structured response.
 ";
 
 const CONFIG: &str = "\
