@@ -98,6 +98,9 @@ Same key, other agents
   $ {bin} codex --model anthropic/claude-sonnet-4.6
   $ {bin} grok --effort high
 
+Structured decisions (not chat)
+  $ {bin} decision --model typesafe/jev --state 'A payout is failing' --questions '{{\"urgent\":{{\"type\":\"noul\"}}}}'
+
 Preflight: bare {bin} confirms account / model / agent, then launches.
 {bin} help commands for the full map.
 ",
@@ -136,6 +139,9 @@ CORE COMMANDS
   impl|plan|fix|deploy|cp
               Shortcuts for onboard modes
 
+STRUCTURED DECISIONS
+  decision:   POST typed decisions (not chat); aliases: decisions, systemone
+
 LAUNCH
   claude    Claude Code
   cc        Alias of claude
@@ -149,6 +155,7 @@ LAUNCH
   {bin}                 Sign in if needed, then open the HUD
   {bin} auth login      Sign in
   {bin} onboard impl    Agent paste prompt to wire AnyRouter
+  {bin} decision        Typed decisions via POST /api/v1/decisions
   {bin} claude          Launch Claude Code
 ",
         header = header,
@@ -175,6 +182,7 @@ pub fn command_help(command: &str) -> Option<String> {
         "update" => "upgrade",
         "setup" => "login",
         "implement" => "impl",
+        "decisions" | "systemone" => "decision",
         other => other,
     };
     Some(match canonical {
@@ -183,6 +191,7 @@ pub fn command_help(command: &str) -> Option<String> {
         "token" => fill(&bin, TOKEN),
         "switch" => fill(&bin, SWITCH),
         "usage" => fill(&bin, USAGE),
+        "decision" => fill(&bin, DECISION),
         "whoami" => fill(&bin, WHOAMI),
         "account" => fill(&bin, ACCOUNT),
         "logs" => fill(
@@ -323,6 +332,38 @@ Options:
   --json            Print as JSON
   --key sk-ar-v1-…  Use this key instead of the saved profile
   --profile <name>  Use a named profile
+";
+
+const DECISION: &str = "\
+{bin} decision — call the typed Decisions API (not chat)
+
+USAGE
+  {bin} decision --model <id> --state <text|json> --questions <json> [flags]
+  cat request.json | {bin} decision [flags]
+
+Sends a POST request to `/api/v1/decisions` with `model`, `state`, and a
+question object map. Responses contain structured `answers`, not chat text.
+Decision models such as `typesafe/jev`, `fastino/gliner2.5-multi-v1`, and
+`anyrouter/decision` cannot be launched through the chat-agent commands.
+
+FLAGS
+  --model <id>         Decision model id (required unless stdin supplies it)
+  --state <text|json>  Application state; plain text or JSON object/array
+  --questions <json>   Non-empty question map (noul / choice / score)
+  --stdin              Read and merge a JSON object from stdin
+  --json               Print compact JSON (default: pretty JSON)
+  --key sk-ar-v1-…     Use this key instead of the saved profile
+  --profile <name>     Use a named account/profile
+  --base-url <url>     Override the configured API base URL
+  --config <path>      Override the config file path
+
+EXAMPLE
+  {bin} decision --model typesafe/jev \\
+    --state 'Help! My payouts have been failing for 3 days.' \\
+    --questions '{\"is_urgent\":{\"type\":\"noul\",\"instructions\":\"Is this urgent?\"}}'
+
+ALIASES
+  decisions, systemone
 ";
 
 const WHOAMI: &str = "\

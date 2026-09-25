@@ -1,4 +1,7 @@
-use std::process::Command;
+use std::io::{Read, Write};
+use std::net::TcpListener;
+use std::process::{Command, Stdio};
+use std::thread;
 
 fn anyr() -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_anyr"));
@@ -30,6 +33,58 @@ fn run(args: &[&str]) -> (i32, String, String) {
         String::from_utf8_lossy(&out.stdout).into_owned(),
         String::from_utf8_lossy(&out.stderr).into_owned(),
     )
+}
+
+fn decision_server() -> (String, thread::JoinHandle<(String, String)>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind decision test server");
+    let address = listener.local_addr().expect("decision test address");
+    let handle = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept decision request");
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .expect("set decision test timeout");
+        let mut request = Vec::new();
+        let mut buffer = [0_u8; 4096];
+        let (header_end, content_length) = loop {
+            let count = stream.read(&mut buffer).expect("read decision request");
+            assert!(count > 0, "decision request closed before headers");
+            request.extend_from_slice(&buffer[..count]);
+            if let Some(end) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+                let header_end = end + 4;
+                let headers = String::from_utf8_lossy(&request[..header_end]);
+                let length = headers
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.trim()
+                            .eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().ok())?
+                    })
+                    .unwrap_or(0);
+                if request.len() >= header_end + length {
+                    break (header_end, length);
+                }
+            }
+        };
+        let body = String::from_utf8(request[header_end..header_end + content_length].to_vec())
+            .expect("decision request body utf8");
+        let response = br#"{"model":"typesafe/jev","answers":{"urgent":{"type":"noul","noul":0.9}},"usage":{"input_tokens":4,"output_tokens":1}}"#;
+        stream
+            .write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    response.len()
+                )
+                .as_bytes(),
+            )
+            .expect("write decision response headers");
+        stream.write_all(response).expect("write decision response");
+        (
+            String::from_utf8_lossy(&request[..header_end]).into_owned(),
+            body,
+        )
+    });
+    (format!("http://{address}/api"), handle)
 }
 
 /// Write a stand-in "claude" executable that exits 0 whatever args it receives
@@ -96,6 +151,117 @@ fn help_lists_login_claude_account_and_spawn_targets() {
         assert!(map.contains(target), "missing {target} in:\n{map}");
     }
     assert!(map.contains("▀█████████▄"), "{map}");
+}
+
+#[test]
+fn decision_help_and_aliases_are_documented() {
+    for command in ["decision", "decisions", "systemone"] {
+        let (code, stdout, stderr) = run(&[command, "--help"]);
+        assert_eq!(code, 0, "{command} --help failed: {stdout}{stderr}");
+        for needle in ["/api/v1/decisions", "--model", "--state", "--questions"] {
+            assert!(
+                stdout.contains(needle),
+                "{command} help missing {needle}: {stdout}"
+            );
+        }
+    }
+}
+
+#[test]
+fn decision_posts_native_envelope_with_configured_auth() {
+    let (base_url, server) = decision_server();
+    let key = "sk-ar-v1-local-decision-key-1234";
+    let (code, stdout, stderr) = {
+        let out = anyr()
+            .args([
+                "decision",
+                "--model",
+                "typesafe/jev",
+                "--state",
+                "Help! My payouts have been failing for 3 days.",
+                "--questions",
+                r#"{"is_urgent":{"type":"noul","instructions":"Does this convey urgency?"}}"#,
+                "--key",
+                key,
+                "--base-url",
+                base_url.as_str(),
+            ])
+            .env("ANYROUTER_HOME", temp_home())
+            .env_remove("ANYROUTER_API_KEY")
+            .output()
+            .expect("decision request");
+        (
+            out.status.code().unwrap_or(1),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+    let (headers, body) = server.join().expect("decision server");
+    assert_eq!(code, 0, "stderr={stderr} stdout={stdout}");
+    assert!(stdout.contains("\"answers\""), "{stdout}");
+    assert!(
+        !stdout.contains(key),
+        "decision output leaked the API key: {stdout}"
+    );
+    assert!(headers.starts_with("POST /api/v1/decisions "), "{headers}");
+    assert!(
+        headers
+            .to_ascii_lowercase()
+            .contains(&format!("authorization: bearer {key}")),
+        "missing authorization header: {headers}"
+    );
+    let payload: serde_json::Value = serde_json::from_str(&body).expect("decision request JSON");
+    assert_eq!(payload["model"], "typesafe/jev");
+    assert_eq!(
+        payload["state"],
+        "Help! My payouts have been failing for 3 days."
+    );
+    assert_eq!(payload["questions"]["is_urgent"]["type"], "noul");
+    assert_eq!(payload.as_object().unwrap().len(), 3);
+}
+
+#[test]
+fn decision_accepts_a_complete_json_object_on_stdin() {
+    let (base_url, server) = decision_server();
+    let key = "sk-ar-v1-local-decision-key-5678";
+    let mut child = anyr()
+        .args(["decision", "--key", key, "--base-url", base_url.as_str()])
+        .env("ANYROUTER_HOME", temp_home())
+        .env_remove("ANYROUTER_API_KEY")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn stdin decision");
+    child
+        .stdin
+        .take()
+        .expect("decision stdin")
+        .write_all(
+            br#"{"model":"anyrouter/decision","state":{"order":"failed"},"questions":{"urgent":{"type":"noul"}}}"#,
+        )
+        .expect("write decision stdin");
+    let output = child.wait_with_output().expect("wait for stdin decision");
+    let (headers, body) = server.join().expect("decision stdin server");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(headers.starts_with("POST /api/v1/decisions "), "{headers}");
+    let payload: serde_json::Value = serde_json::from_str(&body).expect("stdin request JSON");
+    assert_eq!(payload["model"], "anyrouter/decision");
+    assert_eq!(payload["state"]["order"], "failed");
+    assert_eq!(payload["questions"]["urgent"]["type"], "noul");
+}
+
+#[test]
+fn chat_launch_refuses_systemone_models_before_login() {
+    let (code, _stdout, stderr) = run(&["claude", "--model", "typesafe/jev", "--dry-run"]);
+    assert_ne!(code, 0);
+    assert!(stderr.contains("Decisions model"), "{stderr}");
+    assert!(stderr.contains("anyr decision"), "{stderr}");
 }
 
 #[test]
