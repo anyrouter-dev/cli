@@ -4,6 +4,12 @@ This file is maintained automatically by [release-please](https://github.com/goo
 
 GitHub Releases use this file as the release notes (full history through that tag).
 
+## Unreleased
+
+### Features
+
+* **cli:** add `anyr decision` for typed `POST /api/v1/decisions` requests with flag or stdin JSON input. Known Decisions models are refused by chat-agent launchers. ([duyet/anyrouter#3550](https://github.com/duyet/anyrouter/issues/3550))
+
 ## [0.1.15](https://github.com/anyrouter-dev/cli/compare/v0.1.14...v0.1.15) (2026-09-16)
 
 

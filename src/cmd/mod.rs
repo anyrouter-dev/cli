@@ -3,6 +3,7 @@
 pub(crate) mod account;
 pub(crate) mod auth;
 pub(crate) mod config_tui;
+pub(crate) mod decision;
 pub(crate) mod dispatch;
 pub(crate) mod keys;
 pub(crate) mod launch;

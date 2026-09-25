@@ -214,7 +214,7 @@ pub(crate) fn cmd_kind(command: &str) -> Option<CmdKind> {
         "setup" | "login" | "auth" | "menu" | "models" | "config" | "keys" | "whoami"
         | "status" | "logout" | "account" | "usage" | "claude" | "codex" | "grok" | "opencode"
         | "pool" | "pi" | "upgrade" | "onboard" | "impl" | "plan" | "fix" | "deploy" | "cp"
-        | "relay" | "commands" => CmdKind::Implemented,
+        | "relay" | "decision" | "commands" => CmdKind::Implemented,
         "cursor" | "cline" | "windsurf" => CmdKind::HelpOnly,
         "chat" | "task" | "delegate" | "audit" | "logs" | "transactions" | "skills" | "prompt"
         | "byok" => CmdKind::Stub,
@@ -230,6 +230,7 @@ pub(crate) fn canonical_command(command: &str) -> &str {
     match command {
         "update" => "upgrade",
         "implement" => "impl",
+        "decisions" | "systemone" => "decision",
         other => canonical_tool(other),
     }
 }
@@ -255,6 +256,17 @@ pub(crate) fn allowed_flags(command: &str) -> Option<&'static [&'static str]> {
             "fable", "agent", "dump-tui",
         ],
         "usage" => &["profile", "base-url", "config", "json", "key", "no-detail"],
+        "decision" => &[
+            "model",
+            "state",
+            "questions",
+            "stdin",
+            "json",
+            "key",
+            "profile",
+            "base-url",
+            "config",
+        ],
         "whoami" => &["profile", "config", "json"],
         "config" => &[
             "config", "json", "key", "base-url", "profile", "dump-tui", "pick",

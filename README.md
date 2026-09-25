@@ -110,7 +110,30 @@ anyr claude --install --ok  # install Claude Code first if missing
 anyr codex --ok
 anyr opencode --ok
 anyr pi --ok
+anyr decision --model typesafe/jev \
+  --state 'Help! My payouts have been failing for 3 days.' \
+  --questions '{"is_urgent":{"type":"noul","instructions":"Does this convey urgency?"}}'
 ```
+
+### Structured decisions
+
+Decision models use AnyRouter's typed `POST /api/v1/decisions` endpoint, not a
+chat completion. Pass the fields as flags, or pipe a JSON object containing
+`model`, `state`, and `questions`:
+
+```bash
+anyr decision --model typesafe/jev \
+  --state 'Help! My payouts have been failing for 3 days.' \
+  --questions '{"is_urgent":{"type":"noul","instructions":"Does this convey urgency?"}}'
+
+echo '{"model":"typesafe/jev","state":"A payout is failing","questions":{"urgent":{"type":"noul"}}}' \
+  | anyr decision
+```
+
+The command uses the active AnyRouter profile (or `--key`, `--profile`, and
+`--base-url`) and prints structured answers. `anyr claude`, `codex`, and other
+chat-agent launchers refuse known Decisions models; use `anyr decision` for
+`typesafe/jev`, `fastino/gliner2.5-multi-v1`, and `anyrouter/decision`.
 
 On a terminal, bare `anyr` / `anyr menu` opens the Ratatui launcher by default.
 Pipes and CI still get `--help` (or `anyr menu --dump-tui` for a plain frame).

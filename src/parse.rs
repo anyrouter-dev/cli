@@ -36,6 +36,8 @@ pub static VALUE_FLAGS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
         "url",
         "name",
         "max-concurrency",
+        "state",
+        "questions",
     ])
 });
 
@@ -188,6 +190,32 @@ mod tests {
         assert!(parse_cli_args(["claude", "--model="])
             .unwrap_err()
             .contains("--model requires a value"));
+    }
+
+    #[test]
+    fn decision_state_and_questions_require_values() {
+        assert!(parse_cli_args(["decision", "--state"])
+            .unwrap_err()
+            .contains("--state requires a value"));
+        assert!(parse_cli_args(["decision", "--questions"])
+            .unwrap_err()
+            .contains("--questions requires a value"));
+        let parsed = parse_cli_args([
+            "decision",
+            "--state",
+            "hello",
+            "--questions",
+            "{\"urgent\":{\"type\":\"noul\"}}",
+        ])
+        .unwrap();
+        assert_eq!(
+            get_string_flag(&parsed.flags, "state").as_deref(),
+            Some("hello")
+        );
+        assert_eq!(
+            get_string_flag(&parsed.flags, "questions").as_deref(),
+            Some("{\"urgent\":{\"type\":\"noul\"}}")
+        );
     }
 
     #[test]

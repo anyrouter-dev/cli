@@ -8,6 +8,7 @@ use crate::VERSION;
 use crate::cmd::account::{run_account, run_logout};
 use crate::cmd::auth::run_auth;
 use crate::cmd::config_tui::run_config;
+use crate::cmd::decision::run_decision;
 use crate::cmd::dispatch::{
     allowed_flags, assert_known_flags, canonical_command, help_topic, known_command,
     should_open_launcher, stub, tui_wants_dump, wants_help,
@@ -129,6 +130,7 @@ fn dispatch(
         "usage" => run_usage(parsed, env),
         "whoami" | "status" => run_whoami(parsed, env),
         "config" => run_config(parsed, env),
+        "decision" => run_decision(parsed, env),
         "account" => run_account(parsed, env),
         "keys" => run_keys(parsed, env),
         "menu" => run_menu(parsed, env),

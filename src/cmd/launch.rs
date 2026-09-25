@@ -17,6 +17,7 @@ use crate::spawn::{
 };
 use crate::term;
 
+use crate::cmd::decision::{chat_model_error, is_systemone_model};
 use crate::cmd::dispatch::{catalog_lookup_enabled, config_path};
 use crate::cmd::login::persist_login;
 use crate::cmd::models::apply_claude_alias_flags;
@@ -66,6 +67,17 @@ pub(crate) fn run_launch(
     let stored = existing
         .as_ref()
         .and_then(|c| profile_for_agent(c, &parsed.flags, env, tool_name));
+    // Reject a known Decisions model before acquiring a key or spawning a chat
+    // agent. The explicit flag path is important for non-interactive callers:
+    // they should get the routing error, not a login prompt first.
+    let guard_profile = stored.cloned().unwrap_or_else(|| {
+        default_profile_for_env(Some(&resolve_base_url(&parsed.flags, None)), None)
+    });
+    let guard_model =
+        resolve_launch_model(&parsed.flags, existing.as_ref(), &guard_profile, tool_name);
+    if is_systemone_model(&guard_model) {
+        return Err(chat_model_error(&guard_model, tool_name));
+    }
     let key = if let Some(key) =
         resolve_launch_api_key(&parsed.flags, env, existing.as_ref(), tool_name)
     {
@@ -98,6 +110,9 @@ pub(crate) fn run_launch(
     );
     let resolved = resolve_session_model(&requested, &base, Some(&key), env);
     let model = resolved.id;
+    if is_systemone_model(&model) {
+        return Err(chat_model_error(&model, tool_name));
+    }
     let effort = normalize_effort(get_string_flag(&parsed.flags, "effort").as_deref())?;
     let model_mode = if is_auto_model(&model) {
         "auto"

@@ -119,6 +119,24 @@ pub fn http_patch(
     into_status_body(req.send_string(json_body.unwrap_or("{}")))
 }
 
+/// POST the native Decisions envelope and return the structured response.
+/// The endpoint is intentionally `/v1/decisions`; `/v1/systemone` is an API
+/// alias, not a chat-completions fallback.
+pub fn create_decision(
+    base_url: &str,
+    api_key: &str,
+    body: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let url = join_api(base_url, "/v1/decisions");
+    let json = serde_json::to_string(body)
+        .map_err(|err| format!("Could not encode decision request: {err}"))?;
+    let (status, response) = http_post(&url, Some(api_key), Some(&json))?;
+    if !(200..300).contains(&status) {
+        return Err(format!("Decision request failed (HTTP {status})."));
+    }
+    serde_json::from_str(&response).map_err(|err| format!("Invalid decision response: {err}"))
+}
+
 #[cfg(not(feature = "native"))]
 fn no_network() -> Result<(u16, String), String> {
     Err("network is not available in the browser demo".into())
