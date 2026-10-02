@@ -7,6 +7,7 @@ use crate::VERSION;
 
 use crate::cmd::account::{run_account, run_logout};
 use crate::cmd::auth::run_auth;
+use crate::cmd::byok::run_byok;
 use crate::cmd::config_tui::run_config;
 use crate::cmd::decision::run_decision;
 use crate::cmd::dispatch::{
@@ -143,6 +144,7 @@ fn dispatch(
         "decision" => run_decision(parsed, env),
         "account" => run_account(parsed, env),
         "keys" => run_keys(parsed, env),
+        "byok" => run_byok(parsed, env),
         "menu" => run_menu(parsed, env),
         "commands" => {
             print!("{}", commands_help());

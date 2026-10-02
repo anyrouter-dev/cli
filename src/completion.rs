@@ -48,6 +48,13 @@ pub fn subcommands(command: &str) -> &'static [(&'static str, &'static str)] {
             ("ls", "Alias of list"),
             ("use", "Set the default model"),
         ],
+        "byok" => &[
+            ("list", "List provider keys with BYOK / DONATED badges"),
+            (
+                "add",
+                "Add a provider key (--donate shares it with the pool)",
+            ),
+        ],
         "api" => crate::api::RESOURCES,
         _ => &[],
     }

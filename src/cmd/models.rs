@@ -347,21 +347,12 @@ pub(crate) fn toggle_agent_routing_field(
     Ok(0)
 }
 
-/// Prefix for usage errors; `run_models_cli` strips it and exits 2.
-pub(crate) const MODELS_USAGE: &str = "\u{0}usage\u{0}";
-
 /// Dispatch entry: usage errors exit 2, matching `anyr api`.
 pub(crate) fn run_models_cli(
     parsed: &ParsedArgs,
     env: &BTreeMap<String, String>,
 ) -> Result<i32, String> {
-    match run_models(parsed, env) {
-        Err(e) if e.starts_with(MODELS_USAGE) => {
-            eprintln!("{}", &e[MODELS_USAGE.len()..]);
-            Ok(2)
-        }
-        other => other,
-    }
+    crate::cmd::dispatch::usage_exit(run_models(parsed, env))
 }
 
 pub(crate) fn run_models(
@@ -376,7 +367,8 @@ pub(crate) fn run_models(
     let sub = parsed.passthrough.first().map(String::as_str);
     if let Some(verb) = sub.filter(|v| !matches!(*v, "list" | "ls" | "use")) {
         return Err(format!(
-            "{MODELS_USAGE}{}",
+            "{}{}",
+            crate::cmd::dispatch::USAGE,
             hint(&format!(
                 "Unknown models command \"{verb}\". Use: {{bin}} models [list|ls|use <id>]"
             ))

@@ -214,10 +214,11 @@ pub(crate) fn cmd_kind(command: &str) -> Option<CmdKind> {
         "setup" | "login" | "auth" | "menu" | "models" | "config" | "keys" | "whoami"
         | "status" | "logout" | "account" | "usage" | "claude" | "codex" | "grok" | "opencode"
         | "pool" | "pi" | "upgrade" | "onboard" | "impl" | "plan" | "fix" | "deploy" | "cp"
-        | "relay" | "decision" | "commands" | "api" | "completion" => CmdKind::Implemented,
+        | "relay" | "decision" | "commands" | "api" | "completion" | "byok" => CmdKind::Implemented,
         "cursor" | "cline" | "windsurf" => CmdKind::HelpOnly,
-        "chat" | "task" | "delegate" | "audit" | "logs" | "transactions" | "skills" | "prompt"
-        | "byok" => CmdKind::Stub,
+        "chat" | "task" | "delegate" | "audit" | "logs" | "transactions" | "skills" | "prompt" => {
+            CmdKind::Stub
+        }
         _ => return None,
     })
 }
@@ -260,6 +261,7 @@ pub(crate) const COMMANDS: &[(&str, &str)] = &[
     ("model", "Alias of models"),
     ("usage", "Credits remaining"),
     ("keys", "Manage API keys"),
+    ("byok", "Provider keys: list, add, --donate to the pool"),
     ("account", "Manage multiple accounts"),
     ("auth", "Authenticate with AnyRouter"),
     ("config", "Print current settings"),
@@ -450,7 +452,7 @@ pub(crate) fn allowed_flags(command: &str) -> Option<&'static [&'static str]> {
         ],
         "claude" | "codex" | "grok" | "opencode" | "pool" | "pi" => LAUNCH_FLAGS,
         "cursor" | "cline" | "windsurf" => &["profile", "key", "base-url", "config", "yes"],
-        "byok" => return None,
+        "byok" => &["profile", "config", "base-url", "json", "yes", "donate"],
         _ => return None,
     })
 }
@@ -469,6 +471,20 @@ pub(crate) fn assert_known_flags(
         }
     }
     Ok(())
+}
+
+/// Usage errors carry this prefix so `usage_exit` exits 2 instead of 1.
+pub(crate) const USAGE: &str = "\u{0}usage\u{0}";
+
+/// Map a `USAGE`-prefixed error to exit 2 (printed without the prefix).
+pub(crate) fn usage_exit(result: Result<i32, String>) -> Result<i32, String> {
+    match result {
+        Err(e) if e.starts_with(USAGE) => {
+            eprintln!("{}", &e[USAGE.len()..]);
+            Ok(2)
+        }
+        other => other,
+    }
 }
 
 pub(crate) fn wants_help(parsed: &ParsedArgs) -> bool {
@@ -735,6 +751,7 @@ mod tests {
             "models",
             "usage",
             "keys",
+            "byok",
             "account",
             "auth",
             "config",
