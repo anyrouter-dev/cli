@@ -290,11 +290,11 @@ pub(crate) fn value_choices(flag: &str, env: &BTreeMap<String, String>) -> Vec<S
         }
         "channel" => owned(&["stable", "beta"]),
         "model" | "haiku" | "sonnet" | "opus" | "fable" => owned(&["auto"]),
-        "profile" => crate::key::load_config_if_present(&crate::config::resolve_config_path(
-            None, env,
-        ))
-        .map(|c| c.profiles.keys().cloned().collect())
-        .unwrap_or_default(),
+        "profile" => {
+            crate::key::load_config_if_present(&crate::config::resolve_config_path(None, env))
+                .map(|c| c.profiles.keys().cloned().collect())
+                .unwrap_or_default()
+        }
         _ => Vec::new(),
     }
 }
