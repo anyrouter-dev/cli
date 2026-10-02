@@ -99,12 +99,8 @@ fn run(mut cmd: Command, args: &[&str], stdin: Option<&str>) -> (i32, String, St
     });
     let mut child = cmd.spawn().expect("spawn anyr");
     if let Some(input) = stdin {
-        child
-            .stdin
-            .take()
-            .unwrap()
-            .write_all(input.as_bytes())
-            .unwrap();
+        // The child may exit before reading (usage errors); ignore EPIPE.
+        let _ = child.stdin.take().unwrap().write_all(input.as_bytes());
     }
     let out = child.wait_with_output().unwrap();
     (
@@ -227,6 +223,7 @@ fn donate_rejected_names_the_private_key_left_behind() {
         err.contains("byok_new1") && err.contains("private"),
         "{err}"
     );
+    assert!(!err.contains("login"), "misleading login hint:\n{err}");
     assert_no_secret(&out, &err);
 }
 

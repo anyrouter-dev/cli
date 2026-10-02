@@ -293,9 +293,11 @@ Pipe it on stdin, set {KEY_ENV}, or enter it at the prompt."
             );
             Ok(0)
         }
+        // Keep only the status line: the generic `login` hint is wrong
+        // here, since no CLI credential can donate yet.
         Err(e) => Err(format!(
             "{}\n{} the key was saved as a private BYOK key ({id}) but not donated. Donate it from {DASHBOARD_BYOK}",
-            redact(e, &secret),
+            redact(e, &secret).lines().next().unwrap_or_default(),
             term::dim("note:")
         )),
     }

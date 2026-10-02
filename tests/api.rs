@@ -285,3 +285,32 @@ fn model_help_and_completion_resolve_to_models() {
     assert_eq!(code, 2);
     assert!(err.contains("did you mean"), "{err}");
 }
+
+#[test]
+fn model_use_under_alias_persists_default() {
+    // WHY: `model` must be a full alias, not just a listing shortcut.
+    let home = std::env::temp_dir().join(format!("anyr-model-use-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(
+        home.join("config.yaml"),
+        "active_profile: default\nprofiles:\n  default:\n    api_key: sk-ar-v1-test\n    default_model: openai/gpt-5.4-mini\n",
+    )
+    .unwrap();
+    let out = anyr()
+        .env("ANYROUTER_HOME", &home)
+        .args(["model", "use", "anyrouter/auto"])
+        .output()
+        .expect("model use");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // `anyrouter/auto` is the built-in default, so it is stored by dropping
+    // the previous pin.
+    assert!(String::from_utf8_lossy(&out.stdout).contains("anyrouter/auto"));
+    let cfg = std::fs::read_to_string(home.join("config.yaml")).expect("config");
+    assert!(!cfg.contains("openai/gpt-5.4-mini"), "{cfg}");
+}
