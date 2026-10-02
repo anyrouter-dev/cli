@@ -121,7 +121,7 @@ pub(crate) fn tui_palette_select(
 
 #[cfg(feature = "native")]
 pub(crate) fn launcher_uses_palette(env: &BTreeMap<String, String>) -> bool {
-    crate::tui::env_flag(env, "ANYR_TUI") && crate::tui::can_use_fullscreen()
+    crate::tui::bool_env("ANYR_TUI", env, crate::tui::can_use_fullscreen())
 }
 
 #[cfg(not(feature = "native"))]
@@ -214,7 +214,7 @@ pub(crate) fn cmd_kind(command: &str) -> Option<CmdKind> {
         "setup" | "login" | "auth" | "menu" | "models" | "config" | "keys" | "whoami"
         | "status" | "logout" | "account" | "usage" | "claude" | "codex" | "grok" | "opencode"
         | "pool" | "pi" | "upgrade" | "onboard" | "impl" | "plan" | "fix" | "deploy" | "cp"
-        | "relay" | "decision" | "commands" => CmdKind::Implemented,
+        | "relay" | "decision" | "commands" | "api" | "completion" => CmdKind::Implemented,
         "cursor" | "cline" | "windsurf" => CmdKind::HelpOnly,
         "chat" | "task" | "delegate" | "audit" | "logs" | "transactions" | "skills" | "prompt"
         | "byok" => CmdKind::Stub,
@@ -233,6 +233,99 @@ pub(crate) fn canonical_command(command: &str) -> &str {
         "decisions" | "systemone" => "decision",
         other => canonical_tool(other),
     }
+}
+
+/// Public command surface (name, one-line description). Drives shell
+/// completion; a test keeps it in sync with `cmd_kind`.
+pub(crate) const COMMANDS: &[(&str, &str)] = &[
+    ("login", "Sign in to AnyRouter"),
+    ("logout", "Remove the stored key"),
+    ("whoami", "Show the signed-in account"),
+    ("status", "Alias of whoami"),
+    ("claude", "Launch Claude Code"),
+    ("cc", "Alias of claude"),
+    ("codex", "Launch Codex"),
+    ("grok", "Launch Grok Build"),
+    ("opencode", "Launch OpenCode"),
+    ("pi", "Launch Pi"),
+    ("pool", "Launch Poolside"),
+    ("poolside", "Alias of pool"),
+    (
+        "api",
+        "Dashboard from the terminal: keys, credits, presets…",
+    ),
+    ("decision", "Structured decisions (Decisions API)"),
+    ("models", "List catalog and set the default"),
+    ("usage", "Credits remaining"),
+    ("keys", "Manage API keys"),
+    ("account", "Manage multiple accounts"),
+    ("auth", "Authenticate with AnyRouter"),
+    ("config", "Print current settings"),
+    ("menu", "Launcher"),
+    ("onboard", "Paste-ready prompts for coding agents"),
+    ("impl", "Onboard: implement"),
+    ("plan", "Onboard: plan"),
+    ("fix", "Onboard: fix"),
+    ("deploy", "Onboard: deploy"),
+    ("cp", "Onboard: commit and push"),
+    ("relay", "Pair this machine as a relay"),
+    ("upgrade", "Update anyr"),
+    ("update", "Alias of upgrade"),
+    ("completion", "Shell completion script"),
+    ("commands", "Full command map"),
+    ("help", "Show help"),
+];
+
+pub(crate) fn canonical_name(command: &str) -> &str {
+    canonical_command(command)
+}
+
+/// Known values for a value-taking flag (completion only; never networked).
+pub(crate) fn value_choices(flag: &str, env: &BTreeMap<String, String>) -> Vec<String> {
+    let owned = |xs: &[&str]| xs.iter().map(|s| s.to_string()).collect();
+    match flag {
+        "effort" => owned(crate::spawn::REASONING_LEVELS),
+        "agent" | "tool" | "to" | "from" => {
+            owned(&["claude", "codex", "grok", "opencode", "pi", "pool"])
+        }
+        "channel" => owned(&["stable", "beta"]),
+        "model" | "haiku" | "sonnet" | "opus" | "fable" => owned(&["auto"]),
+        "profile" => {
+            crate::key::load_config_if_present(&crate::config::resolve_config_path(None, env))
+                .map(|c| c.profiles.keys().cloned().collect())
+                .unwrap_or_default()
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Closest known command for a typo (edit distance ≤ 2, or a unique prefix).
+pub(crate) fn suggest_command(input: &str) -> Option<&'static str> {
+    fn dist(a: &str, b: &str) -> usize {
+        let b: Vec<char> = b.chars().collect();
+        let mut prev: Vec<usize> = (0..=b.len()).collect();
+        for (i, ca) in a.chars().enumerate() {
+            let mut cur = vec![i + 1];
+            for (j, cb) in b.iter().enumerate() {
+                let cost = usize::from(ca != *cb);
+                cur.push((prev[j] + cost).min(prev[j + 1] + 1).min(cur[j] + 1));
+            }
+            prev = cur;
+        }
+        prev[b.len()]
+    }
+    let names = COMMANDS.iter().map(|(n, _)| *n);
+    let mut prefix = names
+        .clone()
+        .filter(|n| n.starts_with(input) && input.len() >= 2);
+    if let (Some(only), None) = (prefix.next(), prefix.next()) {
+        return Some(only);
+    }
+    names
+        .map(|n| (dist(input, n), n))
+        .filter(|(d, _)| *d <= 2)
+        .min_by_key(|(d, _)| *d)
+        .map(|(_, n)| n)
 }
 
 pub(crate) fn allowed_flags(command: &str) -> Option<&'static [&'static str]> {
@@ -347,6 +440,8 @@ pub(crate) fn allowed_flags(command: &str) -> Option<&'static [&'static str]> {
         ],
         "prompt" => &["base-url", "json"],
         "menu" => &["dump-tui", "config", "profile", "key", "base-url"],
+        "api" => crate::api::FLAGS,
+        "completion" => &[],
         "onboard" | "impl" | "plan" | "fix" | "deploy" | "cp" => &["json", "copy"],
         "upgrade" => &[
             "check", "channel", "fixture", "dry-run", "yes", "auto", "force", "beta", "stable",
@@ -609,5 +704,58 @@ mod tests {
         assert!(!should_open_launcher(&["help".into()], true, false));
         assert!(!should_open_launcher(&["--help".into()], true, false));
         assert!(!should_open_launcher(&["config".into()], true, false));
+    }
+
+    #[test]
+    fn completion_table_matches_dispatch() {
+        // WHY: completion is generated from COMMANDS; a command added to
+        // dispatch but not the table would silently never complete.
+        use super::{cmd_kind, CmdKind, COMMANDS};
+        for (name, _) in COMMANDS {
+            assert!(
+                *name == "help" || cmd_kind(name).is_some(),
+                "{name} is not dispatchable"
+            );
+        }
+        let implemented = [
+            "login",
+            "logout",
+            "whoami",
+            "claude",
+            "codex",
+            "grok",
+            "opencode",
+            "pi",
+            "pool",
+            "api",
+            "decision",
+            "models",
+            "usage",
+            "keys",
+            "account",
+            "auth",
+            "config",
+            "menu",
+            "onboard",
+            "relay",
+            "upgrade",
+            "completion",
+            "commands",
+        ];
+        for name in implemented {
+            assert_eq!(cmd_kind(name), Some(CmdKind::Implemented), "{name}");
+            assert!(
+                COMMANDS.iter().any(|(n, _)| *n == name),
+                "{name} missing from COMMANDS"
+            );
+        }
+    }
+
+    #[test]
+    fn typo_suggests_nearest_command() {
+        assert_eq!(super::suggest_command("cluade"), Some("claude"));
+        assert_eq!(super::suggest_command("logn"), Some("login"));
+        assert_eq!(super::suggest_command("comp"), Some("completion"));
+        assert_eq!(super::suggest_command("zzzzzz"), None);
     }
 }

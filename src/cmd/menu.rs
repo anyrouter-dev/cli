@@ -325,7 +325,7 @@ pub(crate) fn run_menu(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> R
         return Ok(0);
     }
 
-    // Compact HUD by default. ANYR_TUI=1 restores the fullscreen palette.
+    // Fullscreen palette by default. ANYR_TUI=0 forces inline HUD.
     let cache = Arc::new(Mutex::new(CreditsCache::fresh()));
     #[cfg(feature = "native")]
     if term::is_interactive() {

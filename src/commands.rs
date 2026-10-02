@@ -11,7 +11,7 @@ use crate::cmd::config_tui::run_config;
 use crate::cmd::decision::run_decision;
 use crate::cmd::dispatch::{
     allowed_flags, assert_known_flags, canonical_command, help_topic, known_command,
-    should_open_launcher, stub, tui_wants_dump, wants_help,
+    should_open_launcher, stub, suggest_command, tui_wants_dump, wants_help,
 };
 use crate::cmd::keys::run_keys;
 use crate::cmd::launch::run_launch;
@@ -27,6 +27,14 @@ pub fn run(argv: Vec<String>, env: HashMap<String, String>) -> i32 {
         argv
     };
     let env: BTreeMap<String, String> = env.into_iter().collect();
+    // Completion callback runs before parsing: partial words like `--model`
+    // with no value must not error, and nothing may hit the network.
+    if raw.first().map(String::as_str) == Some("__complete") {
+        for line in crate::completion::complete(&raw[1..], &env) {
+            println!("{line}");
+        }
+        return 0;
+    }
     #[cfg(not(target_arch = "wasm32"))]
     let argv0 = std::env::args().next();
     #[cfg(target_arch = "wasm32")]
@@ -83,11 +91,13 @@ pub fn run(argv: Vec<String>, env: HashMap<String, String>) -> i32 {
         return 0;
     }
     if !known_command(command) {
-        eprintln!(
-            "Unknown command \"{command}\". Run \"{} --help\".",
-            crate::help::invoked_bin()
-        );
-        return 1;
+        let bin = crate::help::invoked_bin();
+        eprintln!("{} unknown command \"{command}\"", term::err("error:"));
+        match suggest_command(command) {
+            Some(near) => eprintln!("{} did you mean `{bin} {near}`?", term::dim("hint:")),
+            None => eprintln!("{} run `{bin} --help`", term::dim("hint:")),
+        }
+        return 2;
     }
     if wants_help(&parsed) {
         let topic = help_topic(&parsed);
@@ -154,9 +164,26 @@ fn dispatch(
         }
         "cursor" | "cline" | "windsurf" => stub(command),
         "upgrade" | "update" => crate::upgrade::run(parsed, env),
+        "api" => crate::api::run(parsed, env),
+        "completion" => run_completion(parsed),
         "onboard" | "impl" | "plan" | "fix" | "deploy" | "cp" => {
             crate::onboard::run(command, parsed)
         }
         _ => stub(command),
+    }
+}
+
+fn run_completion(parsed: &ParsedArgs) -> Result<i32, String> {
+    let bin = crate::help::invoked_bin();
+    let shell = parsed.passthrough.first().map(String::as_str).unwrap_or("");
+    match crate::completion::script(shell, &bin) {
+        Some(script) => {
+            print!("{script}");
+            Ok(0)
+        }
+        None => Err(format!(
+            "Usage: {bin} completion <{}>",
+            crate::completion::SHELLS.join("|")
+        )),
     }
 }

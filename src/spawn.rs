@@ -16,7 +16,7 @@ pub const PI_DEFAULT_MODEL: &str = "anthropic/claude-sonnet-4.6";
 pub const CLAUDE_1M_SUFFIX: &str = "[1m]";
 const MIN_1M_CONTEXT: i64 = 1_000_000;
 
-const REASONING_LEVELS: &[&str] = &["minimal", "low", "medium", "high", "xhigh", "max"];
+pub const REASONING_LEVELS: &[&str] = &["minimal", "low", "medium", "high", "xhigh", "max"];
 const CLAUDE_LEVELS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
 const CODEX_LEVELS: &[&str] = &["minimal", "low", "medium", "high"];
 const CLAUDE_EFFORT_TOKENS: &[(&str, i64)] = &[
