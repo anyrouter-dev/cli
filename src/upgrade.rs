@@ -323,8 +323,71 @@ fn download_binary(url: &str, dest: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Only official release assets may replace the binary.
+const RELEASE_DOWNLOAD_PREFIX: &str = "https://github.com/anyrouter-dev/cli/releases/download/";
+
+/// First release that always ships `checksums.txt`. Older tags are legacy and
+/// may install unverified (with a warning); newer ones fail closed.
+const CHECKSUMS_REQUIRED_FROM: &str = "0.1.14";
+
+fn validate_download_url(url: &str) -> Result<(), String> {
+    if url.starts_with(RELEASE_DOWNLOAD_PREFIX) {
+        Ok(())
+    } else {
+        Err(format!(
+            "refusing to install from {url}: updates must come from {RELEASE_DOWNLOAD_PREFIX}"
+        ))
+    }
+}
+
+fn release_tag_from_url(url: &str) -> Option<&str> {
+    url.split_once("/releases/download/")
+        .and_then(|(_, rest)| rest.split('/').next())
+        .filter(|tag| !tag.is_empty())
+}
+
+/// Unknown or unparseable tags require checksums (fail closed).
+fn checksums_required(url: &str) -> bool {
+    match release_tag_from_url(url).and_then(crate::channel::parse_version) {
+        Some(ver) => match crate::channel::parse_version(CHECKSUMS_REQUIRED_FROM) {
+            Some(cutoff) => ver >= cutoff,
+            None => true,
+        },
+        None => true,
+    }
+}
+
+/// A binary under a cargo `target/{debug,release}` dir is a dev build; the
+/// updater must never overwrite it.
+fn is_cargo_target_build(exe: &Path) -> bool {
+    let parts: Vec<String> = exe
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    parts.iter().enumerate().any(|(i, p)| {
+        p == "target"
+            && parts[i + 1..]
+                .iter()
+                .take(2)
+                .any(|n| n == "debug" || n == "release")
+    })
+}
+
+fn running_from_cargo_target() -> bool {
+    std::env::current_exe()
+        .map(|exe| is_cargo_target_build(&exe))
+        .unwrap_or(false)
+}
+
 fn replace_current_binary(url: &str) -> Result<PathBuf, String> {
+    validate_download_url(url)?;
     let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
+    if is_cargo_target_build(&exe) {
+        return Err(format!(
+            "refusing to self-update a cargo build at {}; rebuild with cargo instead",
+            exe.display()
+        ));
+    }
     let dest = match fs::read_link(&exe) {
         Ok(target) => {
             if target.is_absolute() {
@@ -507,9 +570,13 @@ fn try_releases(
 fn verify_downloaded_asset(url: &str, tmp: &Path) -> Result<(), String> {
     let checksums = checksums_url(url);
     match fetch_checksums_body(&checksums)? {
+        None if checksums_required(url) => Err(format!(
+            "release {} has no checksums.txt; refusing to install an unverified binary",
+            release_tag_from_url(url).unwrap_or("?")
+        )),
         None => {
             crate::spinner::warn_beside_spinner(
-                "warning: release has no checksums.txt — skipping verification",
+                "warning: legacy release has no checksums.txt — skipping verification",
             );
             Ok(())
         }
@@ -745,7 +812,7 @@ pub fn on_startup(command: &str, parsed: &ParsedArgs, env: &BTreeMap<String, Str
     if !auto_update_enabled(env) {
         return;
     }
-    if stamp_is_fresh(env) {
+    if stamp_is_fresh(env) || running_from_cargo_target() {
         return;
     }
     spawn_detached_auto(env);
@@ -756,7 +823,10 @@ pub fn on_startup(command: &str, parsed: &ParsedArgs, env: &BTreeMap<String, Str
 pub fn start_session_checker(
     env: &BTreeMap<String, String>,
 ) -> Option<std::thread::JoinHandle<()>> {
-    if !auto_update_enabled(env) || env.get("ANYR_AUTO_CHILD").is_some() {
+    if !auto_update_enabled(env)
+        || env.get("ANYR_AUTO_CHILD").is_some()
+        || running_from_cargo_target()
+    {
         return None;
     }
     let env = env.clone();
@@ -1032,6 +1102,48 @@ mod tests {
             plan_update("0.1.15", Vec::new(), false),
             UpdatePlan::UpToDate
         );
+    }
+
+    #[test]
+    fn download_url_must_be_official_https_release() {
+        // WHY: a tampered releases listing must not point the updater at an
+        // arbitrary host or plain http.
+        let ok = "https://github.com/anyrouter-dev/cli/releases/download/v0.1.15/anyr-linux-x86_64";
+        assert!(validate_download_url(ok).is_ok());
+        for bad in [
+            "http://github.com/anyrouter-dev/cli/releases/download/v0.1.15/anyr-linux-x86_64",
+            "https://evil.example/anyrouter-dev/cli/releases/download/v0.1.15/anyr",
+            "https://github.com/someone-else/cli/releases/download/v0.1.15/anyr",
+            "file:///tmp/anyr",
+        ] {
+            assert!(validate_download_url(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn checksums_required_for_current_tags_only() {
+        // WHY: every release since v0.1.14 ships checksums.txt, so a missing
+        // file there means tampering or a broken upload, not a legacy tag.
+        let url = |tag: &str| {
+            format!(
+                "https://github.com/anyrouter-dev/cli/releases/download/{tag}/anyr-linux-x86_64"
+            )
+        };
+        assert!(checksums_required(&url("v0.1.14")));
+        assert!(checksums_required(&url("v0.1.16-beta.221")));
+        assert!(!checksums_required(&url("v0.1.12")));
+        assert!(checksums_required("https://example.com/no-tag"));
+    }
+
+    #[test]
+    fn cargo_target_builds_are_never_self_updated() {
+        // WHY: auto-update replaced a dev build in target/ with a release.
+        assert!(is_cargo_target_build(Path::new("/w/cli/target/debug/anyr")));
+        assert!(is_cargo_target_build(Path::new(
+            "/w/cli/target/x86_64-unknown-linux-gnu/release/anyr"
+        )));
+        assert!(!is_cargo_target_build(Path::new("/home/u/.local/bin/anyr")));
+        assert!(!is_cargo_target_build(Path::new("/opt/target/bin/anyr")));
     }
 
     #[test]
