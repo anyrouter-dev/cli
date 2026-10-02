@@ -370,4 +370,54 @@ if head -c 16 "$tmp" | grep -q '<'; then
   die "download did not look like a binary (got HTML?): $url"
 fi
 
+# Verify against the release's checksums.txt. Mirrors `anyr upgrade`: tags
+# older than CHECKSUMS_REQUIRED_FROM never shipped one, so a 404 there only
+# warns; anywhere else a missing or mismatched file aborts the install.
+CHECKSUMS_REQUIRED_FROM_PATCH=14 # 0.1.14
+
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | cut -d' ' -f1
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | cut -d' ' -f1
+  else
+    return 1
+  fi
+}
+
+# Legacy only when the URL names a 0.1.<patch> tag below the cutoff. The
+# /releases/latest/ form has no tag, so it fails closed.
+checksums_optional() {
+  local tag patch
+  tag="$(printf '%s' "$1" | sed -n 's#.*/releases/download/v\([^/]*\)/.*#\1#p')"
+  case "$tag" in
+    0.1.*) ;;
+    *) return 1 ;;
+  esac
+  patch="${tag#0.1.}"
+  patch="${patch%%[!0-9]*}"
+  [ -n "$patch" ] && [ "$patch" -lt "$CHECKSUMS_REQUIRED_FROM_PATCH" ]
+}
+
+verify_checksum() {
+  local url="$1" file="$2" sums code expected actual
+  sums="$(mktemp)"
+  code="$(curl_ua -sL -o "$sums" -w '%{http_code}' "${url%/*}/checksums.txt" || true)"
+  if [ "$code" != "200" ]; then
+    rm -f "$sums"
+    if [ "$code" = "404" ] && checksums_optional "$url"; then
+      echo "setup.sh: warning: legacy release has no checksums.txt; installing unverified" >&2
+      return 0
+    fi
+    die "could not fetch checksums.txt (HTTP ${code:-none}); refusing to install unverified binary"
+  fi
+  expected="$(awk -v a="$asset" '$2 == a || $2 == "*" a { print tolower($1); exit }' "$sums")"
+  rm -f "$sums"
+  [ -n "$expected" ] || die "checksums.txt has no entry for ${asset}; refusing to install"
+  actual="$(sha256_of "$file")" || die "need sha256sum or shasum to verify the download"
+  [ "$actual" = "$expected" ] || die "checksum mismatch for ${asset} (expected ${expected}, got ${actual}); refusing to install"
+  echo "Verified sha256 ${actual}"
+}
+
+verify_checksum "$url" "$tmp"
 install_bin "$tmp"

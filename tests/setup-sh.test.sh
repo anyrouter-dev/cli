@@ -160,4 +160,33 @@ else
   exit 1
 fi
 
+# --- checksum verification (tags >= 0.1.14 fail closed) ---
+os_name="$(uname -s | tr '[:upper:]' '[:lower:]')"
+case "$(uname -m)" in x86_64 | amd64) arch_name=x86_64 ;; *) arch_name=arm64 ;; esac
+for mode in good bad missing noentry; do
+  d="${tmpdir}/bin-sums-${mode}"
+  mkdir -p "$d"
+  set +e
+  env -u GH_TOKEN -u GITHUB_TOKEN \
+    FAKE_CURL_SUMS="$mode" FAKE_CURL_ASSET="${os_name}-${arch_name}" \
+    ANYR_CURL="$FAKE_CURL" ANYR_VERSION=0.1.20 ANYR_BIN_DIR="$d" \
+    bash "$SETUP" >"${tmpdir}/sums-${mode}.log" 2>&1
+  rc=$?
+  set -e
+  if [ "$mode" = good ]; then
+    [ "$rc" -eq 0 ] && [ -x "${d}/anyr" ] || {
+      echo "matching checksum must install:" >&2
+      cat "${tmpdir}/sums-${mode}.log" >&2
+      exit 1
+    }
+  else
+    # A tampered or unverifiable binary must never land on PATH.
+    [ "$rc" -ne 0 ] && [ ! -e "${d}/anyr" ] || {
+      echo "checksums mode=${mode} must abort without installing (rc=${rc}):" >&2
+      cat "${tmpdir}/sums-${mode}.log" >&2
+      exit 1
+    }
+  fi
+done
+
 echo "setup-sh.test.sh ok"
