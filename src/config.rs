@@ -829,31 +829,62 @@ pub fn read_config(path: &Path) -> Result<Config, String> {
     Ok(parse_config(&src))
 }
 
-pub fn write_config(config: &Config, path: &Path) -> Result<(), String> {
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir).map_err(|e| format!("Could not create config dir: {e}"))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = fs::metadata(dir)
-                .map_err(|e| format!("could not stat {}: {e}", dir.display()))?
-                .permissions();
-            perms.set_mode(0o700);
-            fs::set_permissions(dir, perms)
-                .map_err(|e| format!("could not secure config dir: {e}"))?;
-        }
-    }
-    let body = serialize_config(config);
-    let tmp = path.with_extension("yaml.tmp");
-    fs::write(&tmp, &body).map_err(|e| format!("Could not write config: {e}"))?;
+/// Create `dir` (and parents) and make it owner-only (0700) on unix.
+pub(crate) fn ensure_private_dir(dir: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(dir)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(&tmp)
-            .map_err(|e| format!("Could not write config: {e}"))?
-            .permissions();
-        perms.set_mode(0o600);
-        fs::set_permissions(&tmp, perms).map_err(|e| format!("Could not secure config: {e}"))?;
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
+/// Open `path` for writing, created owner-only (0600) on unix so the file is
+/// never readable by others, not even briefly. `exclusive` fails if it exists.
+pub(crate) fn open_private(path: &Path, exclusive: bool) -> std::io::Result<fs::File> {
+    let mut opts = fs::OpenOptions::new();
+    opts.write(true);
+    if exclusive {
+        opts.create_new(true);
+    } else {
+        opts.create(true).truncate(true);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    opts.open(path)
+}
+
+/// Write `body` to `path` as an owner-only file, fixing up a looser existing mode.
+pub(crate) fn write_private(path: &Path, body: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut file = open_private(path, false)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    }
+    file.write_all(body)
+}
+
+pub fn write_config(config: &Config, path: &Path) -> Result<(), String> {
+    if let Some(dir) = path.parent() {
+        ensure_private_dir(dir).map_err(|e| format!("could not secure config dir: {e}"))?;
+    }
+    let body = serialize_config(config);
+    let tmp = path.with_extension("yaml.tmp");
+    // A stale tmp from a crashed run could carry a looser mode; start clean.
+    let _ = fs::remove_file(&tmp);
+    let written = open_private(&tmp, true).and_then(|mut f| {
+        use std::io::Write;
+        f.write_all(body.as_bytes())
+    });
+    if let Err(e) = written {
+        let _ = fs::remove_file(&tmp);
+        return Err(format!("Could not write config: {e}"));
     }
     fs::rename(&tmp, path).map_err(|e| {
         let _ = fs::remove_file(&tmp);
@@ -1173,6 +1204,26 @@ tools:
                 .as_deref(),
             Some("sk-ar-v1-test")
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // WHY: chmod-after-write leaves a window where the key is world-readable;
+    // a stale tmp with a loose mode must not leak into the final config either.
+    #[cfg(unix)]
+    #[test]
+    fn write_config_ignores_loose_stale_tmp() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("anyr-cfg-stale-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.yaml");
+        let tmp = dir.join("config.yaml.tmp");
+        std::fs::write(&tmp, "stale").unwrap();
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o666)).unwrap();
+        let cfg = parse_config("active_profile: default\nprofiles:\n  default:\n    api_key: x\n");
+        write_config(&cfg, &path).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("stale"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

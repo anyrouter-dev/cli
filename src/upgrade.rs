@@ -3,7 +3,6 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::fs::OpenOptions;
 #[cfg(feature = "native")]
 use std::io;
 use std::io::{Read, Write};
@@ -693,14 +692,20 @@ fn stamp_is_fresh(env: &BTreeMap<String, String>) -> bool {
 
 fn write_stamp(env: &BTreeMap<String, String>) {
     let dir = state_dir(env);
-    let _ = fs::create_dir_all(&dir);
-    let _ = fs::write(dir.join("update.stamp"), format!("{}\n", now_secs()));
+    let _ = crate::config::ensure_private_dir(&dir);
+    let _ = crate::config::write_private(
+        &dir.join("update.stamp"),
+        format!("{}\n", now_secs()).as_bytes(),
+    );
 }
 
 fn write_notice(env: &BTreeMap<String, String>, version: &str) {
     let dir = state_dir(env);
-    let _ = fs::create_dir_all(&dir);
-    let _ = fs::write(dir.join("update.notice"), format!("{version}\n"));
+    let _ = crate::config::ensure_private_dir(&dir);
+    let _ = crate::config::write_private(
+        &dir.join("update.notice"),
+        format!("{version}\n").as_bytes(),
+    );
 }
 
 struct UpdateLock {
@@ -715,7 +720,7 @@ impl Drop for UpdateLock {
 
 fn try_lock(env: &BTreeMap<String, String>) -> Option<UpdateLock> {
     let dir = state_dir(env);
-    let _ = fs::create_dir_all(&dir);
+    let _ = crate::config::ensure_private_dir(&dir);
     let path = dir.join("update.lock");
     if let Ok(meta) = fs::metadata(&path) {
         if let Ok(modified) = meta.modified() {
@@ -729,7 +734,7 @@ fn try_lock(env: &BTreeMap<String, String>) -> Option<UpdateLock> {
             }
         }
     }
-    match OpenOptions::new().write(true).create_new(true).open(&path) {
+    match crate::config::open_private(&path, true) {
         Ok(mut file) => {
             let _ = writeln!(file, "{}", std::process::id());
             Some(UpdateLock { path })
@@ -1240,6 +1245,31 @@ mod tests {
         let redacted = redact_printed_value("ANYROUTER_API_KEY", "sk-ar-v1-secret-value");
         assert!(!redacted.contains("sk-ar-v1-secret-value"));
         assert!(redacted.contains("sk-ar-"));
+    }
+
+    // WHY: the state dir sits beside the config holding the API key, so the
+    // update bookkeeping must not leave it (or its files) readable by others.
+    #[cfg(unix)]
+    #[test]
+    fn update_state_dir_and_files_are_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let (env, dir) = isolated_home();
+        // Dir exists with the default loose mode, and a stale notice is world-readable.
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::write(dir.join("update.notice"), "0.0.1\n").unwrap();
+        fs::set_permissions(dir.join("update.notice"), fs::Permissions::from_mode(0o644)).unwrap();
+
+        write_stamp(&env);
+        write_notice(&env, "9.9.9");
+        let lock = try_lock(&env).expect("lock");
+
+        assert_eq!(mode(&dir), 0o700);
+        for name in ["update.stamp", "update.notice", "update.lock"] {
+            assert_eq!(mode(&dir.join(name)), 0o600, "{name}");
+        }
+        drop(lock);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     fn isolated_home() -> (BTreeMap<String, String>, PathBuf) {
