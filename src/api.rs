@@ -87,7 +87,20 @@ impl Ctx {
     }
 }
 
+/// Usage errors carry this prefix so `run` can exit 2 instead of 1.
+const USAGE: &str = "\u{0}usage\u{0}";
+
 pub fn run(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, String> {
+    match run_inner(parsed, env) {
+        Err(e) if e.starts_with(USAGE) => {
+            eprintln!("{}", &e[USAGE.len()..]);
+            Ok(2)
+        }
+        other => other,
+    }
+}
+
+fn run_inner(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, String> {
     let args: Vec<&str> = parsed.passthrough.iter().map(String::as_str).collect();
     if args.is_empty() {
         print!("{}", help());
@@ -155,6 +168,7 @@ pub fn run(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, S
         "ls" => "list",
         "show" => "get",
         "rm" | "delete" if resource == "keys" => "revoke",
+        "rm" | "revoke" if resource == "presets" => "delete",
         "rm" => "delete",
         "new" | "add" => "create",
         other => other,
@@ -469,11 +483,10 @@ fn aliases(
         env,
     );
     let cfg = load_config_if_present(&path).unwrap_or_default();
-    let p = cfg
-        .profiles
-        .get(&cfg.active_profile)
-        .cloned()
-        .unwrap_or_default();
+    let name = get_string_flag(&parsed.flags, "profile")
+        .or_else(|| env.get("ANYROUTER_PROFILE").cloned())
+        .unwrap_or_else(|| cfg.active_profile.clone());
+    let p = cfg.profiles.get(&name).cloned().unwrap_or_default();
     let values = [
         p.claude_haiku(),
         p.claude_sonnet(),
@@ -659,7 +672,9 @@ fn confirm(parsed: &ParsedArgs, question: &str) -> Result<(), String> {
         return Ok(());
     }
     if !term::is_interactive() {
-        return Err(format!("{question} Pass --yes to confirm in a script."));
+        return Err(format!(
+            "{USAGE}{question} Pass --yes to confirm in a script."
+        ));
     }
     if term::confirm(question) {
         Ok(())
@@ -671,7 +686,7 @@ fn confirm(parsed: &ParsedArgs, question: &str) -> Result<(), String> {
 fn unknown<'a>(what: &str, got: &str, options: impl Iterator<Item = &'a str>) -> String {
     let opts: Vec<&str> = options.collect();
     format!(
-        "{} unknown {what} \"{got}\"\n{} one of: {}",
+        "{USAGE}{} unknown {what} \"{got}\"\n{} one of: {}",
         term::err("error:"),
         term::dim("hint:"),
         opts.join(", ")
@@ -804,7 +819,7 @@ pub fn help() -> String {
         out.push_str(&format!("  {name:<12}{desc}  [{}]\n", verbs.join(" ")));
     }
     out.push_str(
-        "\nFlags\n  --json            Print server JSON (default when piped for get)\n  --yes             Skip confirmation on revoke/delete\n  --limit <n>       Page size for list verbs\n  --data <json>     JSON body for raw / presets\n  --profile <name>  Use another account\n\nExit codes: 0 ok, 1 error, 3 not found, 4 auth/permission.\n",
+        "\nFlags\n  --json            Print server JSON (default when piped for get)\n  --yes             Skip confirmation on revoke/delete\n  --limit <n>       Page size for list verbs\n  --data <json>     JSON body for raw / presets\n  --profile <name>  Use another account\n\nExit codes: 0 ok, 1 error, 2 usage, 3 not found, 4 auth/permission.\n",
     );
     out
 }

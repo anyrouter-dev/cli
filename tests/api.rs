@@ -176,14 +176,15 @@ fn presets_without_management_key_explains_how_to_get_one() {
 #[test]
 fn revoke_refuses_without_yes_when_not_interactive() {
     let (code, _, err) = run(&["api", "keys", "revoke", "h1", "--key", "sk-ar-test"]);
-    assert_eq!(code, 1);
+    assert_eq!(code, 2);
     assert!(err.contains("--yes"), "{err}");
 }
 
 #[test]
 fn unknown_resource_lists_choices() {
     let (code, _, err) = run(&["api", "kees"]);
-    assert_eq!(code, 1);
+    // WHY: usage errors share exit 2 with top-level typos.
+    assert_eq!(code, 2);
     assert!(err.contains("keys") && err.contains("credits"), "{err}");
 }
 
