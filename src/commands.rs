@@ -86,6 +86,8 @@ pub fn run(argv: Vec<String>, env: HashMap<String, String>) -> i32 {
         let topic = parsed.passthrough.first().map(String::as_str);
         if topic == Some("commands") || topic == Some("help") {
             print!("{}", commands_help());
+        } else if let Some(help) = topic_help(&parsed.passthrough) {
+            print!("{help}");
         } else {
             print!("{}", root_help());
         }
@@ -144,6 +146,17 @@ fn unknown_help_topic(words: &[String]) -> Option<String> {
         return words.get(1).filter(|w| !known(w)).cloned();
     }
     None
+}
+
+/// Help for `help <topic>` / `help auth <sub>`; None falls back to root help.
+fn topic_help(words: &[String]) -> Option<String> {
+    let first = words.first()?;
+    if first == "auth" {
+        if let Some(help) = words.get(1).and_then(|sub| command_help(sub)) {
+            return Some(help);
+        }
+    }
+    command_help(first)
 }
 
 fn help_topic_fail(topic: &str) -> i32 {

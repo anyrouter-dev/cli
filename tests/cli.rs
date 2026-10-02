@@ -3019,3 +3019,27 @@ fn help_known_topics_still_exit_0() {
         assert_eq!(code, 0, "{args:?} stderr={stderr}");
     }
 }
+
+#[test]
+fn help_topic_prints_that_topics_help_not_root_help() {
+    // `help <topic>` used to fall through to root help, so users asking for
+    // `help claude` never saw the launch flags.
+    let (_, root, _) = run(&["help"]);
+    for (args, needle) in [
+        (&["help", "claude"][..], "--yolo"),
+        (&["help", "login"], "--device"),
+        (&["help", "auth", "login"], "--key -"),
+        (&["help", "auth", "token"], "--masked"),
+        (&["help", "keys"], "keys revoke"),
+    ] {
+        let (code, stdout, stderr) = run(args);
+        assert_eq!(code, 0, "{args:?}: {stderr}");
+        assert!(
+            stdout.contains(needle),
+            "{args:?} lacks {needle}:\n{stdout}"
+        );
+        assert_ne!(stdout, root, "{args:?} printed root help");
+    }
+    let (_, auth, _) = run(&["help", "auth"]);
+    assert_ne!(auth, root, "help auth printed root help");
+}
