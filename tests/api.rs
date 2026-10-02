@@ -314,3 +314,56 @@ fn model_use_under_alias_persists_default() {
     let cfg = std::fs::read_to_string(home.join("config.yaml")).expect("config");
     assert!(!cfg.contains("openai/gpt-5.4-mini"), "{cfg}");
 }
+
+#[test]
+fn env_key_alone_drives_auth_token_and_status_without_config() {
+    // WHY: CI/headless use sets ANYROUTER_API_KEY and has no config file.
+    let (code, out, err) = {
+        let o = anyr()
+            .args(["auth", "token", "--masked"])
+            .env("ANYROUTER_API_KEY", "sk-ar-v1-abcdefghijklmnop")
+            .output()
+            .unwrap();
+        (
+            o.status.code().unwrap_or(1),
+            String::from_utf8_lossy(&o.stdout).into_owned(),
+            String::from_utf8_lossy(&o.stderr).into_owned(),
+        )
+    };
+    assert_eq!(code, 0, "{err}");
+    assert!(out.starts_with("sk-ar-v1-abcd"), "{out}");
+    assert!(!out.contains("abcdefghijklmnop"), "{out}");
+
+    let o = anyr()
+        .args(["status", "--json", "--base-url", "http://example.test"])
+        .env("ANYROUTER_API_KEY", "sk-ar-v1-abcdefghijklmnop")
+        .output()
+        .unwrap();
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(
+        out.contains("\"base_url\": \"http://example.test\""),
+        "{out}"
+    );
+}
+
+#[test]
+fn keys_list_accepts_env_key_and_key_flag_without_config() {
+    for use_flag in [false, true] {
+        let (base, rx) = serve_once(200, r#"{"data":[]}"#);
+        let mut cmd = anyr();
+        cmd.args(["keys", "list", "--base-url", &base]);
+        if use_flag {
+            cmd.args(["--key", "sk-ar-v1-flagkey"]);
+        } else {
+            cmd.env("ANYROUTER_API_KEY", "sk-ar-v1-flagkey");
+        }
+        let o = cmd.output().unwrap();
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert!(!err.contains("No AnyRouter config"), "{err}");
+        assert!(!err.contains("unknown flag"), "{err}");
+        let seen = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        assert!(seen.contains("Bearer sk-ar-v1-flagkey"), "{seen}");
+    }
+}
+

@@ -206,6 +206,41 @@ pub fn load_config_if_present(path: &Path) -> Option<Config> {
     }
 }
 
+/// Load the config for a credentialed command. A missing config file is fine
+/// when a `--key` flag or `ANYROUTER_API_KEY` already supplies the credential,
+/// so headless/CI use needs no `anyr login`.
+pub fn config_for_credential(
+    path: &Path,
+    flags: &HashMap<String, FlagValue>,
+    env: &BTreeMap<String, String>,
+) -> Result<Config, String> {
+    match load_config_if_present(path) {
+        Some(cfg) => Ok(cfg),
+        None if resolve_api_key(flags, env, None).is_some() => Ok(Config::default()),
+        None => Err(no_key_error()),
+    }
+}
+
+/// Stored profile `name`, or an empty one when the config holds no profiles at
+/// all and a flag/env key stands in for it. A named-but-missing profile in a
+/// populated config stays an error so typos are not silently ignored.
+pub fn profile_or_default(
+    cfg: &Config,
+    name: &str,
+    flags: &HashMap<String, FlagValue>,
+    env: &BTreeMap<String, String>,
+) -> Result<Profile, String> {
+    match cfg.profiles.get(name) {
+        Some(p) => Ok(p.clone()),
+        None if cfg.profiles.is_empty() && resolve_api_key(flags, env, None).is_some() => {
+            Ok(Profile::default())
+        }
+        None => Err(format!(
+            "Profile \"{name}\" was not found in AnyRouter config."
+        )),
+    }
+}
+
 pub fn active_profile<'a>(
     config: &'a Config,
     flags: &std::collections::HashMap<String, FlagValue>,
