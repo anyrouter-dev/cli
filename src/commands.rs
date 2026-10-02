@@ -120,7 +120,25 @@ pub fn run(argv: Vec<String>, env: HashMap<String, String>) -> i32 {
             return usage_fail(&err);
         }
     }
-    match usage_exit(dispatch(canonical_command(command), &parsed, &env)) {
+    let canonical = canonical_command(command);
+    let mut parsed = parsed.clone();
+    // Login handles `--key` itself (acquire_api_key); `auth login` is the same.
+    let own_key_handling = matches!(canonical, "login" | "setup")
+        || (canonical == "auth"
+            && matches!(
+                parsed.passthrough.first().map(String::as_str),
+                Some("login" | "setup")
+            ));
+    if !own_key_handling {
+        if let Err(err) = crate::key::normalize_key_flag(
+            &mut parsed.flags,
+            &mut std::io::stdin().lock(),
+            &mut std::io::stderr(),
+        ) {
+            return usage_fail(&err);
+        }
+    }
+    match usage_exit(dispatch(canonical, &parsed, &env)) {
         Ok(code) => code,
         Err(err) => {
             eprintln!("{err}");

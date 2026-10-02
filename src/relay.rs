@@ -738,8 +738,40 @@ fn connect_ws(url: &str, token: &str) -> Result<Ws, String> {
     let value = HeaderValue::from_str(&format!("Bearer {token}"))
         .map_err(|_| "relay token contains invalid characters".to_string())?;
     request.headers_mut().insert(AUTHORIZATION, value);
-    let (ws, _resp) = tungstenite::client::connect(request).map_err(|e| e.to_string())?;
+    // `tungstenite::client::connect` dials with no timeout, so a blackholed
+    // relay host would hang the reconnect loop. Dial ourselves (15s, same as
+    // the relay HTTP client), then let tungstenite do TLS + handshake.
+    let uri = request.uri();
+    let tls = uri.scheme_str() == Some("wss");
+    let host = uri
+        .host()
+        .ok_or_else(|| format!("relay url \"{url}\" has no host"))?
+        .to_string();
+    let port = uri.port_u16().unwrap_or(if tls { 443 } else { 80 });
+    let stream = dial_with_timeout(&host, port, WS_CONNECT_TIMEOUT)?;
+    let (ws, _resp) = tungstenite::client_tls(request, stream).map_err(|e| e.to_string())?;
     Ok(ws)
+}
+
+const WS_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+
+fn dial_with_timeout(
+    host: &str,
+    port: u16,
+    timeout: Duration,
+) -> Result<std::net::TcpStream, String> {
+    use std::net::ToSocketAddrs;
+    let addrs = (host, port)
+        .to_socket_addrs()
+        .map_err(|e| format!("could not resolve relay host {host}: {e}"))?;
+    let mut last = format!("relay host {host} resolved to no addresses");
+    for addr in addrs {
+        match std::net::TcpStream::connect_timeout(&addr, timeout) {
+            Ok(s) => return Ok(s),
+            Err(e) => last = format!("could not connect to relay {addr}: {e}"),
+        }
+    }
+    Err(last)
 }
 
 /// Shared state one live connection owns.
@@ -1038,6 +1070,26 @@ pub fn run(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn dial_gives_up_within_the_timeout_on_a_blackholed_host() {
+        // 192.0.2.0/24 (TEST-NET-1) is never routed: without a connect
+        // timeout the reconnect loop would hang for minutes here.
+        let t = std::time::Instant::now();
+        let res = super::dial_with_timeout("192.0.2.1", 9, Duration::from_millis(300));
+        assert!(res.is_err());
+        assert!(
+            t.elapsed() < Duration::from_secs(5),
+            "dial ignored its timeout"
+        );
+    }
+
+    #[test]
+    fn dial_connects_to_a_live_listener() {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        assert!(super::dial_with_timeout("127.0.0.1", port, Duration::from_secs(2)).is_ok());
+    }
+
     use super::*;
 
     fn request_frame(raw: &str) -> RequestFrame {

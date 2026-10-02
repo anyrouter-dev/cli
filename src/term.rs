@@ -349,10 +349,15 @@ pub fn is_interactive() -> bool {
 }
 
 pub fn prompt(label: &str) -> Result<String, String> {
+    prompt_from(label, &mut io::stdin().lock())
+}
+
+/// `prompt` over an explicit reader, so tests never block on real stdin.
+fn prompt_from(label: &str, input: &mut dyn io::BufRead) -> Result<String, String> {
     eprint!("{label}");
     let _ = io::stderr().flush();
     let mut line = String::new();
-    io::stdin()
+    input
         .read_line(&mut line)
         .map_err(|e| format!("Could not read input: {e}"))?;
     Ok(line.trim().to_string())
@@ -767,12 +772,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn prompt_secret_falls_back_without_tty() {
-        // In `cargo test` stdin is typically not a tty; assert it delegates and
-        // returns whatever the underlying reader yields. Feed empty stdin via
-        // the existing harness pattern — simplest: just call it and accept Ok/Err
-        // but require no panic.
-        let _ = prompt_secret("x: ");
+    fn prompt_reads_one_trimmed_line_from_the_reader() {
+        // The non-TTY fallback of prompt_secret is this path. It takes an
+        // injected reader so the test cannot hang on inherited stdin.
+        let got = prompt_from("x: ", &mut "  sk-ar-v1-abc \nsecond\n".as_bytes()).unwrap();
+        assert_eq!(got, "sk-ar-v1-abc");
+        assert_eq!(prompt_from("x: ", &mut "".as_bytes()).unwrap(), "");
     }
 
     #[test]

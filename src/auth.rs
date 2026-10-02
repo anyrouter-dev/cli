@@ -334,40 +334,18 @@ pub struct AcquiredKey {
     pub source: String,
 }
 
-/// `--key -` reads the key from stdin. A literal `--key sk-...` still works
-/// but lands in argv (`ps`, shell history), so it warns on `warn_to`.
+/// Wraps the shared `--key` handling (see `crate::key::key_from_flag`).
 fn key_from_flag(
     raw: &str,
     stdin: &mut dyn std::io::BufRead,
     warn_to: &mut dyn std::io::Write,
 ) -> Result<Option<AcquiredKey>, String> {
-    let trimmed = raw.trim();
-    if trimmed == "-" {
-        let mut line = String::new();
-        stdin
-            .read_line(&mut line)
-            .map_err(|e| format!("could not read the key from stdin: {e}"))?;
-        let key = line.trim();
-        if key.is_empty() {
-            return Err("No key on stdin (expected `--key -` to read one line).".into());
-        }
-        return Ok(Some(AcquiredKey {
-            api_key: key.to_string(),
-            source: "stdin".into(),
-        }));
-    }
-    if trimmed.is_empty() {
-        return Ok(None);
-    }
-    let _ = writeln!(
-        warn_to,
-        "warning: --key puts the secret in your process list and shell history; \
-prefer `--key -` (stdin), ANYROUTER_API_KEY, or --paste."
-    );
-    Ok(Some(AcquiredKey {
-        api_key: trimmed.to_string(),
-        source: "--key".into(),
-    }))
+    Ok(
+        crate::key::key_from_flag(raw, stdin, warn_to)?.map(|(api_key, from_stdin)| AcquiredKey {
+            api_key,
+            source: if from_stdin { "stdin" } else { "--key" }.into(),
+        }),
+    )
 }
 
 /// Priority: --key / ANYROUTER_API_KEY → --device → TTY paste / auto device.
