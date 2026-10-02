@@ -7,6 +7,7 @@ use crate::VERSION;
 
 use crate::cmd::account::{run_account, run_logout};
 use crate::cmd::auth::run_auth;
+use crate::cmd::byok::run_byok;
 use crate::cmd::config_tui::run_config;
 use crate::cmd::decision::run_decision;
 use crate::cmd::dispatch::{
@@ -17,7 +18,7 @@ use crate::cmd::keys::run_keys;
 use crate::cmd::launch::run_launch;
 use crate::cmd::login::run_login;
 use crate::cmd::menu::run_menu;
-use crate::cmd::models::run_models;
+use crate::cmd::models::run_models_cli;
 use crate::cmd::usage::{run_usage, run_whoami};
 
 pub fn run(argv: Vec<String>, env: HashMap<String, String>) -> i32 {
@@ -136,13 +137,14 @@ fn dispatch(
         "auth" => run_auth(parsed, env),
         "login" | "setup" => run_login(parsed, env),
         "logout" => run_logout(parsed, env),
-        "models" => run_models(parsed, env),
+        "models" => run_models_cli(parsed, env),
         "usage" => run_usage(parsed, env),
         "whoami" | "status" => run_whoami(parsed, env),
         "config" => run_config(parsed, env),
         "decision" => run_decision(parsed, env),
         "account" => run_account(parsed, env),
         "keys" => run_keys(parsed, env),
+        "byok" => run_byok(parsed, env),
         "menu" => run_menu(parsed, env),
         "commands" => {
             print!("{}", commands_help());

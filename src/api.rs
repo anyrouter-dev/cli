@@ -74,11 +74,11 @@ pub fn verbs(resource: &str) -> &'static [(&'static str, &'static str)] {
 }
 
 /// Context resolved once per invocation.
-struct Ctx {
-    base: String,
-    key: Option<String>,
-    management_key: Option<String>,
-    json: bool,
+pub(crate) struct Ctx {
+    pub(crate) base: String,
+    pub(crate) key: Option<String>,
+    pub(crate) management_key: Option<String>,
+    pub(crate) json: bool,
 }
 
 impl Ctx {
@@ -87,25 +87,14 @@ impl Ctx {
     }
 }
 
-/// Usage errors carry this prefix so `run` can exit 2 instead of 1.
-const USAGE: &str = "\u{0}usage\u{0}";
+use crate::cmd::dispatch::USAGE;
 
 pub fn run(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, String> {
-    match run_inner(parsed, env) {
-        Err(e) if e.starts_with(USAGE) => {
-            eprintln!("{}", &e[USAGE.len()..]);
-            Ok(2)
-        }
-        other => other,
-    }
+    crate::cmd::dispatch::usage_exit(run_inner(parsed, env))
 }
 
-fn run_inner(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, String> {
-    let args: Vec<&str> = parsed.passthrough.iter().map(String::as_str).collect();
-    if args.is_empty() {
-        print!("{}", help());
-        return Ok(0);
-    }
+/// Base URL, API key and management key for this invocation.
+pub(crate) fn context(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Ctx {
     let path = crate::config::resolve_config_path(
         get_string_flag(&parsed.flags, "config").as_deref(),
         env,
@@ -117,7 +106,7 @@ fn run_inner(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32,
             .unwrap_or_else(|| c.active_profile.clone());
         c.profiles.get(&name)
     });
-    let ctx = Ctx {
+    Ctx {
         base: resolve_base_url(&parsed.flags, profile),
         key: resolve_api_key(&parsed.flags, env, profile),
         management_key: env
@@ -126,7 +115,16 @@ fn run_inner(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32,
             .or_else(|| profile.and_then(|p| p.management_key.clone()))
             .filter(|k| !k.trim().is_empty()),
         json: parsed.flag_true("json"),
-    };
+    }
+}
+
+fn run_inner(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, String> {
+    let args: Vec<&str> = parsed.passthrough.iter().map(String::as_str).collect();
+    if args.is_empty() {
+        print!("{}", help());
+        return Ok(0);
+    }
+    let ctx = context(parsed, env);
 
     // Raw: `api /path …` or `api METHOD /path …`.
     let method_word = args[0].to_ascii_uppercase();
@@ -551,11 +549,11 @@ fn request(
     }
 }
 
-fn get(ctx: &Ctx, path: &str, auth: bool) -> Result<Value, String> {
+pub(crate) fn get(ctx: &Ctx, path: &str, auth: bool) -> Result<Value, String> {
     send(ctx, "GET", path, None, auth)
 }
 
-fn send(
+pub(crate) fn send(
     ctx: &Ctx,
     method: &str,
     path: &str,
@@ -693,7 +691,7 @@ fn unknown<'a>(what: &str, got: &str, options: impl Iterator<Item = &'a str>) ->
     )
 }
 
-fn rows(v: &Value) -> Vec<Value> {
+pub(crate) fn rows(v: &Value) -> Vec<Value> {
     match v {
         Value::Array(a) => a.clone(),
         Value::Object(o) => o
@@ -719,7 +717,7 @@ fn cell(v: Option<&Value>) -> String {
 }
 
 /// Table on a TTY, TSV when piped, raw JSON with `--json`.
-fn list(ctx: &Ctx, value: Value, columns: &[&str]) -> Result<i32, String> {
+pub(crate) fn list(ctx: &Ctx, value: Value, columns: &[&str]) -> Result<i32, String> {
     if ctx.json {
         println!(
             "{}",

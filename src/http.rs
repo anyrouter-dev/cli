@@ -273,6 +273,22 @@ fn parse_models_body(body: &str) -> Result<Vec<CatalogModel>, String> {
         .collect())
 }
 
+/// `id\towner\tcontext_length\tpinned` per model, for pipes.
+pub fn format_models_tsv(models: &[CatalogModel], pinned_ids: &[String]) -> String {
+    models
+        .iter()
+        .map(|m| {
+            format!(
+                "{}\t{}\t{}\t{}\n",
+                m.id,
+                m.owned_by.as_deref().unwrap_or(""),
+                m.context_length.map(|n| n.to_string()).unwrap_or_default(),
+                pinned_ids.iter().any(|id| id == &m.id)
+            )
+        })
+        .collect()
+}
+
 pub fn format_models_list(
     models: &[CatalogModel],
     pinned_ids: &[String],

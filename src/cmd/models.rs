@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::io::IsTerminal;
 use std::path::Path;
 
 use crate::config::{write_config, Profile};
@@ -346,6 +347,14 @@ pub(crate) fn toggle_agent_routing_field(
     Ok(0)
 }
 
+/// Dispatch entry: usage errors exit 2, matching `anyr api`.
+pub(crate) fn run_models_cli(
+    parsed: &ParsedArgs,
+    env: &BTreeMap<String, String>,
+) -> Result<i32, String> {
+    crate::cmd::dispatch::usage_exit(run_models(parsed, env))
+}
+
 pub(crate) fn run_models(
     parsed: &ParsedArgs,
     env: &BTreeMap<String, String>,
@@ -356,6 +365,15 @@ pub(crate) fn run_models(
         .as_ref()
         .and_then(|c| c.profiles.get(&c.active_profile));
     let sub = parsed.passthrough.first().map(String::as_str);
+    if let Some(verb) = sub.filter(|v| !matches!(*v, "list" | "ls" | "use")) {
+        return Err(format!(
+            "{}{}",
+            crate::cmd::dispatch::USAGE,
+            hint(&format!(
+                "Unknown models command \"{verb}\". Use: {{bin}} models [list|ls|use <id>]"
+            ))
+        ));
+    }
     let agent = flag_agent(parsed);
     // Pinning a caller-supplied id to an agent does not need the catalog —
     // do not invent ids; the user (or TUI picker) already chose one.
@@ -496,6 +514,11 @@ pub(crate) fn run_models(
         .into_iter()
         .collect::<Vec<_>>();
     let preset = profile.map(|p| p.pinned_preset().to_string());
+    // Piped: bare TSV rows like `anyr api`, no header or footer hints.
+    if !parsed.flag_true("json") && !std::io::stdout().is_terminal() {
+        print!("{}", crate::http::format_models_tsv(&models, &pinned));
+        return Ok(0);
+    }
     let (stdout, _) = format_models_list(
         &models,
         &pinned,

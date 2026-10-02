@@ -210,7 +210,6 @@ fn wants_check(parsed: &ParsedArgs) -> bool {
 }
 
 fn print_redacted_env(env: &BTreeMap<String, String>) {
-    println!("env:");
     for key in [
         "ANYR_CHANNEL",
         "ANYR_RELEASES_JSON",
@@ -221,9 +220,57 @@ fn print_redacted_env(env: &BTreeMap<String, String>) {
         "ANYR_GITHUB_TOKEN",
     ] {
         if let Some(value) = env.get(key) {
-            println!("{key}={}", redact_printed_value(key, value));
+            println!(
+                "{}",
+                field("env", format!("{key}={}", redact_printed_value(key, value)))
+            );
         }
     }
+}
+
+/// What an update run should do, given the installed version and the
+/// channel's installable releases (newest first).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum UpdatePlan {
+    UpToDate,
+    /// Installed build is newer than everything on the channel, e.g. a beta
+    /// build after switching to stable. Never downgrade silently.
+    Ahead {
+        latest: String,
+    },
+    /// Install candidates, newest first.
+    Install(Vec<Release>),
+}
+
+/// Only strictly newer releases are installed. A downgrade (installed build
+/// ahead of the channel) needs `allow_downgrade` (`--beta/--stable --force`).
+fn plan_update(current: &str, candidates: Vec<Release>, allow_downgrade: bool) -> UpdatePlan {
+    let Some(latest) = candidates.first().map(|r| r.version_str().to_string()) else {
+        return UpdatePlan::UpToDate;
+    };
+    if version_eq(current, &latest) {
+        return UpdatePlan::UpToDate;
+    }
+    let newer: Vec<Release> = candidates
+        .iter()
+        .filter(|r| needs_upgrade(current, r.version_str()))
+        .cloned()
+        .collect();
+    if !newer.is_empty() {
+        return UpdatePlan::Install(newer);
+    }
+    if allow_downgrade {
+        return UpdatePlan::Install(candidates);
+    }
+    UpdatePlan::Ahead { latest }
+}
+
+fn downgrade_hint(channel: Channel) -> String {
+    format!(
+        "{} update --{} --force",
+        crate::help::invoked_bin(),
+        channel.as_str()
+    )
 }
 
 /// Install-time error for a failed asset download. A 404 means the selected
@@ -276,8 +323,108 @@ fn download_binary(url: &str, dest: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn replace_current_binary(url: &str) -> Result<PathBuf, String> {
+/// Only official release assets may replace the binary.
+const RELEASE_DOWNLOAD_PREFIX: &str = "https://github.com/anyrouter-dev/cli/releases/download/";
+
+/// First release that always ships `checksums.txt`. Older tags are legacy and
+/// may install unverified (with a warning); newer ones fail closed.
+const CHECKSUMS_REQUIRED_FROM: &str = "0.1.14";
+
+fn validate_download_url(url: &str) -> Result<(), String> {
+    if url.starts_with(RELEASE_DOWNLOAD_PREFIX) {
+        Ok(())
+    } else {
+        Err(format!(
+            "refusing to install from {url}: updates must come from {RELEASE_DOWNLOAD_PREFIX}"
+        ))
+    }
+}
+
+fn release_tag_from_url(url: &str) -> Option<&str> {
+    url.split_once("/releases/download/")
+        .and_then(|(_, rest)| rest.split('/').next())
+        .filter(|tag| !tag.is_empty())
+}
+
+/// Unknown or unparseable tags require checksums (fail closed).
+fn checksums_required(url: &str) -> bool {
+    match release_tag_from_url(url).and_then(crate::channel::parse_version) {
+        Some(ver) => match crate::channel::parse_version(CHECKSUMS_REQUIRED_FROM) {
+            Some(cutoff) => ver >= cutoff,
+            None => true,
+        },
+        None => true,
+    }
+}
+
+/// A binary under a cargo `target/{debug,release}` dir is a dev build; the
+/// updater must never overwrite it.
+fn is_cargo_target_build(exe: &Path) -> bool {
+    let parts: Vec<String> = exe
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    parts.iter().enumerate().any(|(i, p)| {
+        p == "target"
+            && parts[i + 1..]
+                .iter()
+                .take(2)
+                .any(|n| n == "debug" || n == "release")
+    })
+}
+
+fn running_from_cargo_target() -> bool {
+    std::env::current_exe()
+        .map(|exe| is_cargo_target_build(&exe))
+        .unwrap_or(false)
+}
+
+/// Version of the binary currently on disk at `path` (it may differ from the
+/// running process when another install replaced it meanwhile).
+#[cfg(feature = "native")]
+fn on_disk_version(path: &Path) -> Option<String> {
+    let out = std::process::Command::new(path)
+        .arg("--version")
+        .env("ANYR_NO_UPDATE", "1")
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&out.stdout)
+        .split_whitespace()
+        .next()
+        .map(str::to_string)
+}
+
+#[cfg(not(feature = "native"))]
+fn on_disk_version(_path: &Path) -> Option<String> {
+    None
+}
+
+/// Refuse to overwrite `on_disk` with an older-or-equal `target` unless the
+/// user explicitly asked to downgrade.
+fn guard_not_older(
+    on_disk: Option<&str>,
+    target: &str,
+    allow_downgrade: bool,
+) -> Result<(), String> {
+    match on_disk {
+        Some(disk) if !allow_downgrade && !needs_upgrade(disk, target) => Err(format!(
+            "refusing to replace anyr {disk} with {target}: installed build is not older"
+        )),
+        _ => Ok(()),
+    }
+}
+
+fn replace_current_binary(url: &str, allow_downgrade: bool) -> Result<PathBuf, String> {
+    validate_download_url(url)?;
     let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
+    if is_cargo_target_build(&exe) {
+        return Err(format!(
+            "refusing to self-update a cargo build at {}; rebuild with cargo instead",
+            exe.display()
+        ));
+    }
     let dest = match fs::read_link(&exe) {
         Ok(target) => {
             if target.is_absolute() {
@@ -294,6 +441,10 @@ fn replace_current_binary(url: &str) -> Result<PathBuf, String> {
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|| "anyr".into())
     ));
+    if let Some(target) = release_tag_from_url(url) {
+        let target = target.strip_prefix('v').unwrap_or(target);
+        guard_not_older(on_disk_version(&dest).as_deref(), target, allow_downgrade)?;
+    }
     download_binary(url, &tmp)?;
     if let Err(e) = verify_downloaded_asset(url, &tmp) {
         return abort_download(&tmp, e);
@@ -460,9 +611,13 @@ fn try_releases(
 fn verify_downloaded_asset(url: &str, tmp: &Path) -> Result<(), String> {
     let checksums = checksums_url(url);
     match fetch_checksums_body(&checksums)? {
+        None if checksums_required(url) => Err(format!(
+            "release {} has no checksums.txt; refusing to install an unverified binary",
+            release_tag_from_url(url).unwrap_or("?")
+        )),
         None => {
             crate::spinner::warn_beside_spinner(
-                "warning: release has no checksums.txt — skipping verification",
+                "warning: legacy release has no checksums.txt — skipping verification",
             );
             Ok(())
         }
@@ -622,27 +777,11 @@ fn run_auto(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, 
     let arch = current_arch();
     let asset = asset_name(os, arch);
     let candidates = channel_update_candidates(&releases, channel, &asset);
-    let Some(latest) = candidates.first() else {
-        write_stamp(env);
+    write_stamp(env);
+    let UpdatePlan::Install(installable) = plan_update(VERSION, candidates, false) else {
         return Ok(0);
     };
-    let latest_ver = latest.version_str().to_string();
-    write_stamp(env);
-    if !needs_upgrade(VERSION, &latest_ver)
-        && candidates
-            .iter()
-            .all(|r| !needs_upgrade(VERSION, r.version_str()))
-    {
-        return Ok(0);
-    }
     let dry = parsed.flag_true("dry-run") || fixture.is_some();
-    let installable: Vec<Release> = candidates
-        .into_iter()
-        .filter(|r| needs_upgrade(VERSION, r.version_str()))
-        .collect();
-    if installable.is_empty() {
-        return Ok(0);
-    }
     if dry {
         println!("would update {VERSION} -> {}", installable[0].version_str());
         return Ok(0);
@@ -651,7 +790,7 @@ fn run_auto(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, 
         &installable,
         os,
         arch,
-        replace_current_binary,
+        |url| replace_current_binary(url, false),
         crate::spinner::warn_beside_spinner,
     ) {
         Ok((rel, _)) => {
@@ -714,7 +853,7 @@ pub fn on_startup(command: &str, parsed: &ParsedArgs, env: &BTreeMap<String, Str
     if !auto_update_enabled(env) {
         return;
     }
-    if stamp_is_fresh(env) {
+    if stamp_is_fresh(env) || running_from_cargo_target() {
         return;
     }
     spawn_detached_auto(env);
@@ -725,7 +864,10 @@ pub fn on_startup(command: &str, parsed: &ParsedArgs, env: &BTreeMap<String, Str
 pub fn start_session_checker(
     env: &BTreeMap<String, String>,
 ) -> Option<std::thread::JoinHandle<()>> {
-    if !auto_update_enabled(env) || env.get("ANYR_AUTO_CHILD").is_some() {
+    if !auto_update_enabled(env)
+        || env.get("ANYR_AUTO_CHILD").is_some()
+        || running_from_cargo_target()
+    {
         return None;
     }
     let env = env.clone();
@@ -775,33 +917,47 @@ pub fn run(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, S
         .ok_or_else(|| select_latest_release_with_asset(&releases, channel, &asset).unwrap_err())?;
     let url = release_asset_url(&latest, os, arch);
     let latest_ver = latest.version_str();
-    // Channel switches may need a "downgrade" (beta → older stable). Compare
-    // equality instead of semver-newer when --beta/--stable was used.
-    let wants = |ver: &str| {
-        if switch.is_some() {
-            !version_eq(VERSION, ver)
-        } else {
-            needs_upgrade(VERSION, ver)
-        }
-    };
-    let update = wants(latest_ver);
+    let allow_downgrade = switch.is_some() && parsed.flag_true("force");
+    let plan = plan_update(VERSION, candidates, allow_downgrade);
     let check = wants_check(parsed);
     let dry = parsed.flag_true("dry-run") || fixture.is_some();
 
     if check {
         print_version_report(channel, latest_ver);
         println!("{}", field("asset", url));
-        if update {
-            println!(
-                "{}",
-                status_change(term::warn("update available"), VERSION, latest_ver)
-            );
-            println!(
-                "{}",
-                field("run", format!("{} update", crate::help::invoked_bin()))
-            );
-        } else {
-            println!("{}", field("status", term::ok("up to date")));
+        match &plan {
+            UpdatePlan::Install(_) => {
+                let label = if needs_upgrade(VERSION, latest_ver) {
+                    "update available"
+                } else {
+                    "downgrade available"
+                };
+                println!("{}", status_change(term::warn(label), VERSION, latest_ver));
+                let mut run = format!("{} update", crate::help::invoked_bin());
+                if let Some(ch) = switch {
+                    run.push_str(&format!(" --{}", ch.as_str()));
+                }
+                if allow_downgrade {
+                    run.push_str(" --force");
+                }
+                println!("{}", field("run", run));
+            }
+            UpdatePlan::UpToDate => println!("{}", field("status", term::ok("up to date"))),
+            UpdatePlan::Ahead { latest } => {
+                println!(
+                    "{}",
+                    field(
+                        "status",
+                        format!(
+                            "{}  {VERSION} is newer than {} {latest}",
+                            term::ok("ahead"),
+                            channel.as_str()
+                        )
+                    )
+                );
+                println!("{}", field("note", "kept until the channel catches up"));
+                println!("{}", field("run", downgrade_hint(channel)));
+            }
         }
         if parsed.flag_true("dry-run") {
             print_redacted_env(env);
@@ -809,27 +965,29 @@ pub fn run(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, S
         return Ok(0);
     }
 
-    let installable: Vec<Release> = if switch.is_some() {
-        candidates
-            .into_iter()
-            .filter(|r| !version_eq(VERSION, r.version_str()))
-            .collect()
-    } else {
-        candidates
-            .into_iter()
-            .filter(|r| needs_upgrade(VERSION, r.version_str()))
-            .collect()
+    let installable = match plan {
+        UpdatePlan::Install(list) => list,
+        UpdatePlan::UpToDate => {
+            println!(
+                "{} Already up to date ({}, {} channel)",
+                term::ok("✔"),
+                display_tag(VERSION),
+                channel.as_str()
+            );
+            return Ok(0);
+        }
+        UpdatePlan::Ahead { latest } => {
+            println!(
+                "{} Keeping {}: newer than latest {} {}. Downgrade with `{}`.",
+                term::ok("✔"),
+                display_tag(VERSION),
+                channel.as_str(),
+                display_tag(&latest),
+                downgrade_hint(channel)
+            );
+            return Ok(0);
+        }
     };
-
-    if installable.is_empty() {
-        println!(
-            "{} Already up to date ({}, {} channel)",
-            term::ok("✔"),
-            display_tag(VERSION),
-            channel.as_str()
-        );
-        return Ok(0);
-    }
 
     let target_ver = installable[0].version_str().to_string();
     let spinner = crate::spinner::Spinner::start(updating_line(VERSION, &target_ver, channel));
@@ -845,7 +1003,7 @@ pub fn run(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, S
         &installable,
         os,
         arch,
-        replace_current_binary,
+        |url| replace_current_binary(url, allow_downgrade),
         crate::spinner::warn_beside_spinner,
     ) {
         Ok((rel, _)) => {
@@ -924,6 +1082,121 @@ mod tests {
   {"tag_name":"v0.1.1","prerelease":false,"assets":[{"name":"anyr-linux-x86_64","browser_download_url":"https://github.com/anyrouter-dev/cli/releases/download/v0.1.1/anyr-linux-x86_64"}]},
   {"tag_name":"v0.1.2-beta.1","prerelease":true,"assets":[{"name":"anyr-linux-x86_64","browser_download_url":"https://github.com/anyrouter-dev/cli/releases/download/v0.1.2-beta.1/anyr-linux-x86_64"}]}
 ]"#;
+
+    fn rel(tag: &str) -> Release {
+        Release {
+            tag_name: tag.into(),
+            prerelease: tag.contains('-'),
+            assets: Vec::new(),
+        }
+    }
+
+    fn tags(plan: &UpdatePlan) -> Vec<String> {
+        match plan {
+            UpdatePlan::Install(list) => list.iter().map(|r| r.tag_name.clone()).collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    #[test]
+    fn plan_never_downgrades_beta_to_older_stable_without_force() {
+        // WHY: `update --stable` on a newer beta used to report "update
+        // available" for an older stable and install it.
+        let plan = plan_update("0.1.16-beta.221", vec![rel("v0.1.15")], false);
+        assert_eq!(
+            plan,
+            UpdatePlan::Ahead {
+                latest: "0.1.15".into()
+            }
+        );
+        let forced = plan_update("0.1.16-beta.221", vec![rel("v0.1.15")], true);
+        assert_eq!(tags(&forced), vec!["v0.1.15"]);
+    }
+
+    #[test]
+    fn plan_current_latest_beta_is_up_to_date_not_older_fallback() {
+        // WHY: `update --beta` on beta.221 picked beta.218 via the fallback
+        // list because it only skipped the exact current version.
+        let cands = vec![
+            rel("v0.1.16-beta.221"),
+            rel("v0.1.16-beta.220"),
+            rel("v0.1.16-beta.218"),
+        ];
+        assert_eq!(
+            plan_update("0.1.16-beta.221", cands.clone(), false),
+            UpdatePlan::UpToDate
+        );
+        assert_eq!(
+            plan_update("0.1.16-beta.221", cands, true),
+            UpdatePlan::UpToDate
+        );
+    }
+
+    #[test]
+    fn plan_installs_only_strictly_newer_releases() {
+        let cands = vec![rel("v0.1.17"), rel("v0.1.16"), rel("v0.1.14")];
+        assert_eq!(
+            tags(&plan_update("0.1.15", cands, false)),
+            vec!["v0.1.17", "v0.1.16"]
+        );
+        assert_eq!(
+            plan_update("0.1.15", Vec::new(), false),
+            UpdatePlan::UpToDate
+        );
+    }
+
+    #[test]
+    fn download_url_must_be_official_https_release() {
+        // WHY: a tampered releases listing must not point the updater at an
+        // arbitrary host or plain http.
+        let ok = "https://github.com/anyrouter-dev/cli/releases/download/v0.1.15/anyr-linux-x86_64";
+        assert!(validate_download_url(ok).is_ok());
+        for bad in [
+            "http://github.com/anyrouter-dev/cli/releases/download/v0.1.15/anyr-linux-x86_64",
+            "https://evil.example/anyrouter-dev/cli/releases/download/v0.1.15/anyr",
+            "https://github.com/someone-else/cli/releases/download/v0.1.15/anyr",
+            "file:///tmp/anyr",
+        ] {
+            assert!(validate_download_url(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn checksums_required_for_current_tags_only() {
+        // WHY: every release since v0.1.14 ships checksums.txt, so a missing
+        // file there means tampering or a broken upload, not a legacy tag.
+        let url = |tag: &str| {
+            format!(
+                "https://github.com/anyrouter-dev/cli/releases/download/{tag}/anyr-linux-x86_64"
+            )
+        };
+        assert!(checksums_required(&url("v0.1.14")));
+        assert!(checksums_required(&url("v0.1.16-beta.221")));
+        assert!(!checksums_required(&url("v0.1.12")));
+        assert!(checksums_required("https://example.com/no-tag"));
+    }
+
+    #[test]
+    fn cargo_target_builds_are_never_self_updated() {
+        // WHY: auto-update replaced a dev build in target/ with a release.
+        assert!(is_cargo_target_build(Path::new("/w/cli/target/debug/anyr")));
+        assert!(is_cargo_target_build(Path::new(
+            "/w/cli/target/x86_64-unknown-linux-gnu/release/anyr"
+        )));
+        assert!(!is_cargo_target_build(Path::new("/home/u/.local/bin/anyr")));
+        assert!(!is_cargo_target_build(Path::new("/opt/target/bin/anyr")));
+    }
+
+    #[test]
+    fn never_overwrites_a_newer_binary_on_disk() {
+        // WHY: a 0.1.16-beta.221 install was replaced by 0.1.15. The running
+        // process can be older than the file on disk, so compare the disk.
+        assert!(guard_not_older(Some("0.1.16-beta.221"), "0.1.15", false).is_err());
+        assert!(guard_not_older(Some("0.1.15"), "0.1.15", false).is_err());
+        assert!(guard_not_older(Some("0.1.15"), "0.1.16-beta.224", false).is_ok());
+        assert!(guard_not_older(Some("0.1.16-beta.221"), "0.1.15", true).is_ok());
+        assert!(guard_not_older(None, "0.1.15", false).is_ok());
+    }
 
     #[test]
     fn select_latest_stable_skips_beta() {

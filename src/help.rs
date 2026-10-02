@@ -137,6 +137,7 @@ CORE COMMANDS
   auth:       Authenticate with AnyRouter
   config:     Print current settings (`--pick` for the TUI)
   keys:       Manage API keys
+  byok:       Provider keys (BYOK); --donate shares one with the pool
   models:     List catalog and set the default (`--pick` to choose)
   usage:      Credits remaining
   api:        Dashboard from the terminal (keys, credits, logs, presets…)
@@ -215,10 +216,7 @@ pub fn command_help(command: &str) -> Option<String> {
             "{bin} skills — not yet in the native CLI (coming later).\n",
         ),
         "relay" => fill(&bin, RELAY),
-        "byok" => fill(
-            &bin,
-            "{bin} byok — not yet in the native CLI. Manage BYOK in the dashboard.\n",
-        ),
+        "byok" => fill(&bin, BYOK),
         "task" => fill(
             &bin,
             "{bin} task — not yet in the native CLI. Try {bin} onboard plan|impl instead.\n",
@@ -407,7 +405,7 @@ const MODELS: &str = "\
 {bin} models — list catalog model ids
 
 Usage:
-  {bin} models [options]
+  {bin} models [list|ls] [options]     (alias: {bin} model)
   {bin} models use <id>
   {bin} models use <id> --agent <claude|codex|grok|opencode|pi|pool>
   {bin} models use --haiku|--sonnet|--opus|--fable <id>
@@ -546,6 +544,29 @@ Start options:
 Examples:
   fm serve && {bin} relay start
   {bin} relay start --pool --target http://localhost:11434/v1
+";
+
+const BYOK: &str = "{bin} byok — bring your own provider keys
+
+Usage:
+  {bin} byok [list]                     Keys with a BYOK or DONATED badge
+  {bin} byok add <provider>             Keep the key private to your account
+  {bin} byok add <provider> --donate    Share it with the community pool
+  {bin} byok --donate <provider>        Same as add --donate
+
+The key is read from $ANYR_BYOK_KEY, else stdin when piped, else a hidden
+prompt. It is never accepted as an argument and never printed.
+--donate shows the pool terms and asks to confirm; scripts pass --yes.
+Without a terminal and without --yes, --donate exits 2 and sends nothing.
+
+Needs a management key (ak_…) with read:byok and write:byok:
+  export ANYROUTER_MANAGEMENT_KEY=ak_…
+
+Options:
+  --donate          Donate the key to the community pool
+  --yes             Accept the pool terms without a prompt
+  --json            Print JSON (kind: byok | donated | unknown)
+  --profile <name>  Use another account
 ";
 
 const COMPLETION: &str = "{bin} completion — shell completion

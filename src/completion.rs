@@ -43,6 +43,18 @@ pub fn subcommands(command: &str) -> &'static [(&'static str, &'static str)] {
             ("fish", "Fish completion script"),
             ("powershell", "PowerShell completion script"),
         ],
+        "models" => &[
+            ("list", "List catalog model ids"),
+            ("ls", "Alias of list"),
+            ("use", "Set the default model"),
+        ],
+        "byok" => &[
+            ("list", "List provider keys with BYOK / DONATED badges"),
+            (
+                "add",
+                "Add a provider key (--donate shares it with the pool)",
+            ),
+        ],
         "api" => crate::api::RESOURCES,
         _ => &[],
     }
