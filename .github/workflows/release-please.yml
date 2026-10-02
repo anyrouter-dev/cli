@@ -7,13 +7,40 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  actions: write
 
 jobs:
   release-please:
     runs-on: ubuntu-latest
     steps:
       - uses: googleapis/release-please-action@v4
+        id: rp
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
         # Creates a release PR only. Do not auto-merge release-please PRs.
+
+      # release-please bumps Cargo.toml but not Cargo.lock, which breaks
+      # `--locked` CI once the release PR merges. Sync it on the PR branch.
+      - if: steps.rp.outputs.pr
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ fromJSON(steps.rp.outputs.pr).headBranchName }}
+      - if: steps.rp.outputs.pr
+        run: |
+          v=$(sed -n 's/^version = "\([^"]*\)".*/\1/p' Cargo.toml | head -1)
+          awk -v v="$v" '/^name = "anyr-cli"$/{print;getline;print "version = \"" v "\"";next}1' Cargo.lock > Cargo.lock.new
+          mv Cargo.lock.new Cargo.lock
+          if ! git diff --quiet; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit -am "chore: sync Cargo.lock to $v"
+            git push
+          fi
+
+      # Releases created with GITHUB_TOKEN do not fire `release: published`,
+      # so start the binary build explicitly.
+      - if: steps.rp.outputs.release_created
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run release-binaries.yml -R ${{ github.repository }} -f tag=${{ steps.rp.outputs.tag_name }}
