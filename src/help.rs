@@ -291,12 +291,15 @@ Interactive (TTY): opens a login URL with the code already in it (browser
 when one is reachable). Falls back to printing that URL over SSH / CI.
 Force a route with --device or --paste.
 
-Non-interactive: pass --key or set ANYROUTER_API_KEY.
+Non-interactive: pipe the key (`echo $KEY | {bin} auth login --key -`) or set
+ANYROUTER_API_KEY. A literal `--key sk-...` works but is visible in `ps` and
+shell history.
 
 After login, `{bin} claude` starts Claude Code (the default agent).
 
 FLAGS
-  --key sk-ar-v1-...       AnyRouter API key (skips the prompt)
+  --key -                  Read the API key from stdin (safest non-interactive)
+  --key sk-ar-v1-...       AnyRouter API key as an argument (warns: visible in argv)
   --device, --device-code  Force the device-code flow (headless / SSH)
   --paste                  Force the paste-a-key flow
 

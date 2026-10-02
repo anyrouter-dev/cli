@@ -334,6 +334,42 @@ pub struct AcquiredKey {
     pub source: String,
 }
 
+/// `--key -` reads the key from stdin. A literal `--key sk-...` still works
+/// but lands in argv (`ps`, shell history), so it warns on `warn_to`.
+fn key_from_flag(
+    raw: &str,
+    stdin: &mut dyn io::BufRead,
+    warn_to: &mut dyn Write,
+) -> Result<Option<AcquiredKey>, String> {
+    let trimmed = raw.trim();
+    if trimmed == "-" {
+        let mut line = String::new();
+        stdin
+            .read_line(&mut line)
+            .map_err(|e| format!("could not read the key from stdin: {e}"))?;
+        let key = line.trim();
+        if key.is_empty() {
+            return Err("No key on stdin (expected `--key -` to read one line).".into());
+        }
+        return Ok(Some(AcquiredKey {
+            api_key: key.to_string(),
+            source: "stdin".into(),
+        }));
+    }
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    let _ = writeln!(
+        warn_to,
+        "warning: --key puts the secret in your process list and shell history; \
+prefer `--key -` (stdin), ANYROUTER_API_KEY, or --paste."
+    );
+    Ok(Some(AcquiredKey {
+        api_key: trimmed.to_string(),
+        source: "--key".into(),
+    }))
+}
+
 /// Priority: --key / ANYROUTER_API_KEY → --device → TTY paste / auto device.
 pub fn acquire_api_key(
     flags: &std::collections::HashMap<String, FlagValue>,
@@ -342,12 +378,8 @@ pub fn acquire_api_key(
     tool: Option<&str>,
 ) -> Result<AcquiredKey, String> {
     if let Some(key) = get_string_flag(flags, "key") {
-        let trimmed = key.trim();
-        if !trimmed.is_empty() {
-            return Ok(AcquiredKey {
-                api_key: trimmed.to_string(),
-                source: "--key".into(),
-            });
+        if let Some(acquired) = key_from_flag(&key, &mut io::stdin().lock(), &mut io::stderr())? {
+            return Ok(acquired);
         }
     }
     if let Some(key) = env
@@ -437,6 +469,38 @@ mod tests {
             start.verification_uri,
             "https://anyrouter.dev/cli/device?code=ABCD-EFGH"
         );
+    }
+
+    #[test]
+    fn key_dash_reads_stdin_without_warning() {
+        let mut warn = Vec::new();
+        let got = key_from_flag("-", &mut "sk-ar-v1-abc\n".as_bytes(), &mut warn)
+            .unwrap()
+            .unwrap();
+        assert_eq!(got.api_key, "sk-ar-v1-abc");
+        assert_eq!(got.source, "stdin");
+        assert!(warn.is_empty(), "stdin is the safe path; nothing to warn");
+    }
+
+    #[test]
+    fn key_dash_with_empty_stdin_fails_loud() {
+        let err = key_from_flag("-", &mut "".as_bytes(), &mut Vec::new()).unwrap_err();
+        assert!(err.contains("No key on stdin"), "{err}");
+    }
+
+    #[test]
+    fn literal_key_flag_warns_about_argv_exposure() {
+        let mut warn = Vec::new();
+        let got = key_from_flag(" sk-ar-v1-abc ", &mut "".as_bytes(), &mut warn)
+            .unwrap()
+            .unwrap();
+        assert_eq!(got.api_key, "sk-ar-v1-abc");
+        let text = String::from_utf8(warn).unwrap();
+        assert!(
+            text.contains("process list") && text.contains("--key -"),
+            "{text}"
+        );
+        assert!(!text.contains("sk-ar"), "warning must not echo the secret");
     }
 
     #[test]
