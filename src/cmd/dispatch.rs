@@ -121,7 +121,7 @@ pub(crate) fn tui_palette_select(
 
 #[cfg(feature = "native")]
 pub(crate) fn launcher_uses_palette(env: &BTreeMap<String, String>) -> bool {
-    crate::tui::env_flag(env, "ANYR_TUI") && crate::tui::can_use_fullscreen()
+    crate::tui::bool_env("ANYR_TUI", env, crate::tui::can_use_fullscreen())
 }
 
 #[cfg(not(feature = "native"))]

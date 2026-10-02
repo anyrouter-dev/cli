@@ -25,17 +25,23 @@ pub use state::{
     PickerState, SettingRow, SettingsOutcome, SettingsState, Tone,
 };
 
-pub fn env_flag(env: &BTreeMap<String, String>, key: &str) -> bool {
-    env.get(key)
-        .map(|s| {
-            let t = s.trim();
-            t == "1" || t.eq_ignore_ascii_case("true") || t.eq_ignore_ascii_case("yes")
-        })
-        .unwrap_or(false)
+/// Parse a tri-state boolean env var.
+/// Returns `true` for "1"/"true"/"yes", `false` for "0"/"false"/"no"
+/// (all case-insensitive), and `default` when unset or unrecognized.
+pub fn bool_env(var: &str, env: &BTreeMap<String, String>, default: bool) -> bool {
+    match env.get(var).map(|s| s.trim()) {
+        Some(t) if t == "1" || t.eq_ignore_ascii_case("true") || t.eq_ignore_ascii_case("yes") => {
+            true
+        }
+        Some(t) if t == "0" || t.eq_ignore_ascii_case("false") || t.eq_ignore_ascii_case("no") => {
+            false
+        }
+        _ => default,
+    }
 }
 
 pub fn wants_dump(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> bool {
-    parsed.flag_true("dump-tui") || env_flag(env, "ANYR_TUI_DUMP")
+    parsed.flag_true("dump-tui") || bool_env("ANYR_TUI_DUMP", env, false)
 }
 
 pub fn dump_cols(env: &BTreeMap<String, String>) -> usize {
