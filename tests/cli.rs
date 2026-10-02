@@ -3082,3 +3082,25 @@ fn missing_subcommand_argument_is_a_usage_error_exit_2() {
         assert!(!stderr.contains('\u{0}'), "marker leaked: {stderr:?}");
     }
 }
+
+#[test]
+fn dash_key_with_empty_stdin_fails_on_non_login_commands() {
+    // `--key -` must mean "read stdin", never the literal key "-", including
+    // under `auth <sub>`.
+    for args in [
+        &["usage", "--key", "-"][..],
+        &["auth", "status", "--key", "-"][..],
+    ] {
+        let home = std::env::temp_dir().join(format!("anyr-key-{}", std::process::id()));
+        let out = anyr()
+            .args(args)
+            .env("ANYROUTER_HOME", &home)
+            .env("ANYR_AUTO_UPDATE", "0")
+            .stdin(std::process::Stdio::null())
+            .output()
+            .expect("spawn anyr");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(2), "{args:?}: {stderr}");
+        assert!(stderr.contains("No key on stdin"), "{args:?}: {stderr}");
+    }
+}

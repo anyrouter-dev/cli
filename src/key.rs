@@ -17,6 +17,56 @@ pub fn is_dummy_key(value: &str) -> bool {
         .any(|dummy| trimmed.eq_ignore_ascii_case(dummy))
 }
 
+/// `--key -` reads one line from stdin. A literal `--key sk-...` still works
+/// but lands in argv (`ps`, shell history), so it warns on `warn_to`. Shared by
+/// `auth login` and every other command. Returns the key and whether it came
+/// from stdin; `None` for an empty flag.
+pub fn key_from_flag(
+    raw: &str,
+    stdin: &mut dyn std::io::BufRead,
+    warn_to: &mut dyn std::io::Write,
+) -> Result<Option<(String, bool)>, String> {
+    let trimmed = raw.trim();
+    if trimmed == "-" {
+        let mut line = String::new();
+        stdin
+            .read_line(&mut line)
+            .map_err(|e| format!("could not read the key from stdin: {e}"))?;
+        let key = line.trim();
+        if key.is_empty() {
+            return Err("No key on stdin (expected `--key -` to read one line).".into());
+        }
+        return Ok(Some((key.to_string(), true)));
+    }
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    let _ = writeln!(
+        warn_to,
+        "warning: --key puts the secret in your process list and shell history; \
+prefer `--key -` (stdin), ANYROUTER_API_KEY, or --paste."
+    );
+    Ok(Some((trimmed.to_string(), false)))
+}
+
+/// Resolve `--key -` once, up front, for commands that read the flag through
+/// `resolve_api_key` (many call sites; stdin can only be read once). A literal
+/// key warns once here. Login-family commands handle the flag themselves.
+pub fn normalize_key_flag(
+    flags: &mut HashMap<String, FlagValue>,
+    stdin: &mut dyn std::io::BufRead,
+    warn_to: &mut dyn std::io::Write,
+) -> Result<(), String> {
+    let Some(raw) = get_string_flag(flags, "key") else {
+        return Ok(());
+    };
+    match key_from_flag(&raw, stdin, warn_to)? {
+        Some((key, _)) => flags.insert("key".into(), FlagValue::Value(key)),
+        None => flags.remove("key"),
+    };
+    Ok(())
+}
+
 pub fn resolve_api_key(
     flags: &std::collections::HashMap<String, FlagValue>,
     env: &BTreeMap<String, String>,
@@ -192,6 +242,37 @@ or run in an interactive terminal to log in."
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn dash_key_reads_stdin_so_the_secret_never_hits_argv() {
+        let mut flags = HashMap::from([("key".to_string(), FlagValue::Value("-".into()))]);
+        let mut warn = Vec::new();
+        normalize_key_flag(&mut flags, &mut "sk-ar-v1-real\n".as_bytes(), &mut warn).unwrap();
+        assert_eq!(
+            get_string_flag(&flags, "key").as_deref(),
+            Some("sk-ar-v1-real")
+        );
+        assert!(warn.is_empty(), "stdin keys must not warn");
+    }
+
+    #[test]
+    fn literal_key_warns_that_argv_is_visible() {
+        let mut flags =
+            HashMap::from([("key".to_string(), FlagValue::Value("sk-ar-v1-real".into()))]);
+        let mut warn = Vec::new();
+        normalize_key_flag(&mut flags, &mut "".as_bytes(), &mut warn).unwrap();
+        assert_eq!(
+            get_string_flag(&flags, "key").as_deref(),
+            Some("sk-ar-v1-real")
+        );
+        assert!(String::from_utf8(warn).unwrap().contains("process list"));
+    }
+
+    #[test]
+    fn empty_stdin_for_dash_key_is_an_error_not_a_literal_dash() {
+        let mut flags = HashMap::from([("key".to_string(), FlagValue::Value("-".into()))]);
+        assert!(normalize_key_flag(&mut flags, &mut "".as_bytes(), &mut Vec::new()).is_err());
+    }
+
     use super::*;
     use crate::parse::FlagValue;
 
