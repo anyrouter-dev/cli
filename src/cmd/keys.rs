@@ -4,7 +4,8 @@ use std::path::Path;
 use crate::config::write_config;
 use crate::http::{create_key, delete_key, fetch_keys, is_active_key_row, reveal_key};
 use crate::key::{
-    load_config_if_present, mask_api_key, no_key_error, resolve_api_key, resolve_base_url,
+    config_for_credential, load_config_if_present, mask_api_key, profile_or_default,
+    resolve_api_key, resolve_base_url,
 };
 use crate::parse::{get_string_flag, ParsedArgs};
 use crate::term;
@@ -17,15 +18,12 @@ pub(crate) fn keys_credential(
     env: &BTreeMap<String, String>,
 ) -> Result<(std::path::PathBuf, crate::config::Config, String, String), String> {
     let path = config_path(parsed, env);
-    let cfg = load_config_if_present(&path).ok_or_else(no_key_error)?;
+    let cfg = config_for_credential(&path, &parsed.flags, env)?;
     let name =
         get_string_flag(&parsed.flags, "profile").unwrap_or_else(|| cfg.active_profile.clone());
-    let profile = cfg
-        .profiles
-        .get(&name)
-        .ok_or_else(|| format!("Profile \"{name}\" was not found in AnyRouter config."))?;
-    let base = resolve_base_url(&parsed.flags, Some(profile));
-    let api_key = resolve_api_key(&parsed.flags, env, Some(profile))
+    let profile = profile_or_default(&cfg, &name, &parsed.flags, env)?;
+    let base = resolve_base_url(&parsed.flags, Some(&profile));
+    let api_key = resolve_api_key(&parsed.flags, env, Some(&profile))
         .ok_or_else(|| hint("No stored credential. Run \"{bin} login\" first."))?;
     Ok((path, cfg, base, api_key))
 }

@@ -1,7 +1,10 @@
 use std::collections::BTreeMap;
 
 use crate::help::command_help;
-use crate::key::{load_config_if_present, mask_api_key, no_key_error, resolve_api_key};
+use crate::key::{
+    config_for_credential, load_config_if_present, mask_api_key, no_key_error, profile_or_default,
+    resolve_api_key,
+};
 use crate::parse::{get_string_flag, ParsedArgs};
 use crate::term;
 
@@ -42,15 +45,13 @@ pub(crate) fn run_auth_token(
     env: &BTreeMap<String, String>,
 ) -> Result<i32, String> {
     let path = config_path(parsed, env);
-    let cfg = load_config_if_present(&path).ok_or_else(no_key_error)?;
+    let cfg = config_for_credential(&path, &parsed.flags, env)?;
     let name = get_string_flag(&parsed.flags, "profile")
         .or_else(|| env.get("ANYROUTER_PROFILE").cloned())
         .unwrap_or_else(|| cfg.active_profile.clone());
-    let profile = cfg
-        .profiles
-        .get(&name)
-        .ok_or_else(|| format!("Account \"{name}\" was not found."))?;
-    let key = resolve_api_key(&parsed.flags, env, Some(profile)).ok_or_else(no_key_error)?;
+    let profile = profile_or_default(&cfg, &name, &parsed.flags, env)
+        .map_err(|_| format!("Account \"{name}\" was not found."))?;
+    let key = resolve_api_key(&parsed.flags, env, Some(&profile)).ok_or_else(no_key_error)?;
     if parsed.flag_true("json") {
         let value = if parsed.flag_true("masked") {
             mask_api_key(Some(&key))

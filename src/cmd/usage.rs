@@ -34,16 +34,12 @@ pub(crate) fn run_whoami(
     env: &BTreeMap<String, String>,
 ) -> Result<i32, String> {
     let path = config_path(parsed, env);
-    let Some(cfg) = load_config_if_present(&path) else {
-        return Err(no_key_error());
-    };
+    let cfg = crate::key::config_for_credential(&path, &parsed.flags, env)?;
     let name = get_string_flag(&parsed.flags, "profile")
         .or_else(|| env.get("ANYROUTER_PROFILE").cloned())
         .unwrap_or_else(|| cfg.active_profile.clone());
-    let profile = cfg
-        .profiles
-        .get(&name)
-        .ok_or_else(|| format!("Profile \"{name}\" was not found in AnyRouter config."))?;
+    let profile = crate::key::profile_or_default(&cfg, &name, &parsed.flags, env)?;
+    let profile = &profile;
     let key = resolve_api_key(&parsed.flags, env, Some(profile));
     if parsed.flag_true("json") {
         let payload = serde_json::json!({
@@ -56,7 +52,7 @@ pub(crate) fn run_whoami(
             "claude_opus": profile.claude_opus(),
             "claude_fable": profile.claude_fable(),
             "default_tool": profile.default_tool,
-            "base_url": profile.base_url(),
+            "base_url": resolve_base_url(&parsed.flags, Some(profile)),
         });
         println!(
             "{}",

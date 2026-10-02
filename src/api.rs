@@ -575,7 +575,8 @@ pub(crate) fn send(
         .or_else(|| value.get("error"))
         .or_else(|| value.get("message"))
         .and_then(Value::as_str)
-        .unwrap_or(text.trim());
+        .map(str::to_string)
+        .unwrap_or_else(|| error_summary(status, &text));
     let hint = match status {
         401 => format!(
             "\n{} sign in again: {} login",
@@ -593,6 +594,39 @@ pub(crate) fn send(
         "{} HTTP {status}: {msg}{hint}",
         term::err("error:")
     ))
+}
+
+/// Error text for a body with no JSON `message`. An HTML 404 page must not
+/// flood the terminal, so show the status reason plus a short single-line peek.
+fn error_summary(status: u16, body: &str) -> String {
+    if serde_json::from_str::<Value>(body).is_ok() {
+        return body.trim().to_string();
+    }
+    let reason = match status {
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        403 => "Forbidden",
+        404 => "Not Found",
+        405 => "Method Not Allowed",
+        409 => "Conflict",
+        422 => "Unprocessable Entity",
+        429 => "Too Many Requests",
+        500 => "Internal Server Error",
+        502 => "Bad Gateway",
+        503 => "Service Unavailable",
+        504 => "Gateway Timeout",
+        _ => "Error",
+    };
+    let flat = body.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut peek: String = flat.chars().take(200).collect();
+    if flat.chars().count() > 200 {
+        peek.push('…');
+    }
+    if peek.is_empty() {
+        reason.to_string()
+    } else {
+        format!("{reason}: {peek}")
+    }
 }
 
 fn exit_for(status: u16) -> i32 {

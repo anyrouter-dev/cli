@@ -364,7 +364,7 @@ pub(crate) fn allowed_flags(command: &str) -> Option<&'static [&'static str]> {
             "base-url",
             "config",
         ],
-        "whoami" => &["profile", "config", "json"],
+        "whoami" => &["profile", "config", "json", "key", "base-url"],
         "config" => &[
             "config", "json", "key", "base-url", "profile", "dump-tui", "pick",
         ],
@@ -424,7 +424,9 @@ pub(crate) fn allowed_flags(command: &str) -> Option<&'static [&'static str]> {
         "delegate" => &[
             "to", "from", "model", "profile", "base-url", "config", "key", "yes", "dry-run",
         ],
-        "keys" => &["profile", "base-url", "config", "json", "yes", "agent"],
+        "keys" => &[
+            "profile", "base-url", "config", "json", "yes", "agent", "key",
+        ],
         "audit" => &["profile", "config", "json", "launches", "tool", "limit"],
         "logout" => &["profile", "config"],
         "auth" => &[

@@ -37,7 +37,7 @@ Every PR and GitHub Release gets a size + startup report (`anyr --version` / `--
 Manual download of `https://github.com/anyrouter-dev/cli/releases/latest/download/anyr-linux-x86_64`
 404s when the latest non-prerelease has no assets (v0.1.11 shipped empty). Use
 `setup.sh` — it probes `/latest` and then picks a release that actually has
-`anyr-linux-x86_64` (currently a `v0.1.12-beta.*` prerelease). Direct tag URLs:
+`anyr-linux-x86_64`. Direct tag URLs:
 
 `https://github.com/anyrouter-dev/cli/releases/download/<tag>/anyr-linux-x86_64`
 
@@ -51,11 +51,8 @@ Add `~/.local/bin` to `PATH` if the installer says so.
 
 ### npm / npx
 
-npm already has `@anyr/cli@0.2.8` on the **`latest`** tag (the previous JS CLI)
-and `@anyr/cli@0.1.0` was published earlier, so **this repo cannot republish
-0.1.0**. Native line stays **0.1.x**; the first npm publish from this repo will
-be `0.1.1` (or later) with `--tag next` so `@latest` stays `0.2.8` until a
-human retags.
+npm `@anyr/cli@latest` is still the previous JS CLI. The native line stays
+**0.1.x** and publishes with `--tag next` until a human retags.
 
 ```bash
 npx @anyr/cli@next --help
@@ -113,6 +110,51 @@ anyr pi --ok
 anyr decision --model typesafe/jev \
   --state 'Help! My payouts have been failing for 3 days.' \
   --questions '{"is_urgent":{"type":"noul","instructions":"Does this convey urgency?"}}'
+```
+
+### Dashboard from the terminal: `anyr api`
+
+```bash
+anyr api me                          # profile and balance
+anyr api keys list --json
+anyr api keys create ci-bot          # secret on stdout only: KEY=$(anyr api keys create x)
+anyr api GET /credits                # raw request, like `gh api`
+anyr api PATCH /keys/<hash> disabled=true limit:=25
+```
+
+Resources: `me credits keys logs presets aliases models providers dashboard hubs connections`.
+Run `anyr api --help` for verbs. Piped output is TSV; pass `--json` for JSON.
+Errors exit 2 (usage), 3 (404) or 4 (401/403).
+
+### Bring your own provider keys: `anyr byok`
+
+```bash
+anyr byok                            # keys with a BYOK or DONATED badge
+ANYR_BYOK_KEY=sk-... anyr byok add openai
+```
+
+Needs a management key (`ANYROUTER_MANAGEMENT_KEY=ak_...`) with `read:byok` and
+`write:byok`. The provider key is read from `$ANYR_BYOK_KEY`, stdin or a hidden
+prompt, never from argv.
+
+`--donate` shares the key with the community pool. Caveat: server support is
+still pending ([duyet/anyrouter#4220](https://github.com/duyet/anyrouter/issues/4220)),
+so treat `--donate` as not yet effective.
+
+### Models: `anyr model list`
+
+```bash
+anyr model list                      # catalog ids usable with --model (alias of `anyr models`)
+anyr model list --json
+anyr model use <id>                  # persist the default model
+```
+
+### Shell completion
+
+```bash
+anyr completion bash > ~/.local/share/bash-completion/completions/anyr
+anyr completion zsh > "${fpath[1]}/_anyr"
+anyr completion fish > ~/.config/fish/completions/anyr.fish
 ```
 
 ### Structured decisions
