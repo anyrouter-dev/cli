@@ -338,8 +338,8 @@ pub struct AcquiredKey {
 /// but lands in argv (`ps`, shell history), so it warns on `warn_to`.
 fn key_from_flag(
     raw: &str,
-    stdin: &mut dyn io::BufRead,
-    warn_to: &mut dyn Write,
+    stdin: &mut dyn std::io::BufRead,
+    warn_to: &mut dyn std::io::Write,
 ) -> Result<Option<AcquiredKey>, String> {
     let trimmed = raw.trim();
     if trimmed == "-" {
@@ -378,7 +378,9 @@ pub fn acquire_api_key(
     tool: Option<&str>,
 ) -> Result<AcquiredKey, String> {
     if let Some(key) = get_string_flag(flags, "key") {
-        if let Some(acquired) = key_from_flag(&key, &mut io::stdin().lock(), &mut io::stderr())? {
+        if let Some(acquired) =
+            key_from_flag(&key, &mut std::io::stdin().lock(), &mut std::io::stderr())?
+        {
             return Ok(acquired);
         }
     }
