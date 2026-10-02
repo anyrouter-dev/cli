@@ -2111,7 +2111,7 @@ fn relay_unknown_subcommand_prints_usage_and_fails() {
 #[test]
 fn relay_rejects_unknown_flag_before_running() {
     let (code, _stdout, stderr) = run(&["relay", "start", "--bogus"]);
-    assert_eq!(code, 1);
+    assert_eq!(code, 2);
     assert!(stderr.contains("Unknown flag --bogus"), "{stderr}");
 }
 
@@ -2761,7 +2761,7 @@ fn cursor_is_honest_stub_not_silent_success() {
 #[test]
 fn launch_rejects_unknown_flag() {
     let (code, _stdout, stderr) = run(&["claude", "--bogus"]);
-    assert_eq!(code, 1);
+    assert_eq!(code, 2);
     assert!(
         stderr.contains("Unknown") || stderr.contains("bogus"),
         "{stderr}"
