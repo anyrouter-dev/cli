@@ -17,7 +17,7 @@ use crate::cmd::keys::run_keys;
 use crate::cmd::launch::run_launch;
 use crate::cmd::login::run_login;
 use crate::cmd::menu::run_menu;
-use crate::cmd::models::run_models;
+use crate::cmd::models::run_models_cli;
 use crate::cmd::usage::{run_usage, run_whoami};
 
 pub fn run(argv: Vec<String>, env: HashMap<String, String>) -> i32 {
@@ -136,7 +136,7 @@ fn dispatch(
         "auth" => run_auth(parsed, env),
         "login" | "setup" => run_login(parsed, env),
         "logout" => run_logout(parsed, env),
-        "models" => run_models(parsed, env),
+        "models" => run_models_cli(parsed, env),
         "usage" => run_usage(parsed, env),
         "whoami" | "status" => run_whoami(parsed, env),
         "config" => run_config(parsed, env),

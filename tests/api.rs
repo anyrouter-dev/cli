@@ -228,3 +228,60 @@ fn api_help_is_examples_first() {
         "{out}"
     );
 }
+
+const MODELS_BODY: &str = r#"{"data":[{"id":"anthropic/claude-sonnet-4.6","owned_by":"anthropic","context_length":200000},{"id":"openai/gpt-5.4-mini","owned_by":"openai","context_length":128000}]}"#;
+
+#[test]
+fn model_alias_list_and_ls_pipe_tsv_like_api() {
+    // WHY: `anyr model list` failed with "Unknown command model"; the
+    // singular form and list/ls verbs must reach the same listing, and
+    // piped output must be bare TSV rows like `anyr api`.
+    for argv in [
+        ["model", "list"],
+        ["model", "ls"],
+        ["models", "list"],
+        ["models", "ls"],
+    ] {
+        let (base, rx) = serve_once(200, MODELS_BODY);
+        let (code, out, err) = run(&[argv[0], argv[1], "--base-url", &base]);
+        assert_eq!(code, 0, "{argv:?}: {err}");
+        assert!(rx.recv().unwrap().contains("/models"), "{argv:?}");
+        assert_eq!(
+            out,
+            "anthropic/claude-sonnet-4.6\tanthropic\t200000\tfalse\nopenai/gpt-5.4-mini\topenai\t128000\tfalse\n",
+            "{argv:?}"
+        );
+    }
+}
+
+#[test]
+fn model_list_json_matches_models_json() {
+    let (base, _rx) = serve_once(200, MODELS_BODY);
+    let (code, out, err) = run(&["model", "list", "--json", "--base-url", &base]);
+    assert_eq!(code, 0, "{err}");
+    let v: serde_json::Value = serde_json::from_str(&out).expect("json");
+    assert_eq!(v["models"][0]["id"], "anthropic/claude-sonnet-4.6");
+}
+
+#[test]
+fn model_unknown_verb_is_usage_error_without_network() {
+    // WHY: a typo like `model lsit` used to silently list; it is a usage
+    // error (exit 2) and must not hit the network.
+    let (code, out, err) = run(&["model", "lsit", "--base-url", "http://127.0.0.1:9/api"]);
+    assert_eq!(code, 2, "{out}{err}");
+    assert!(err.contains("Unknown models command"), "{err}");
+}
+
+#[test]
+fn model_help_and_completion_resolve_to_models() {
+    let (code, out, _) = run(&["model", "--help"]);
+    assert_eq!(code, 0);
+    assert!(out.contains("models — list catalog"), "{out}");
+    let (_, out, _) = run(&["__complete", "model", ""]);
+    for verb in ["list", "ls", "use"] {
+        assert!(out.lines().any(|l| l.starts_with(verb)), "{verb}: {out}");
+    }
+    let (code, _, err) = run(&["modle"]);
+    assert_eq!(code, 2);
+    assert!(err.contains("did you mean"), "{err}");
+}

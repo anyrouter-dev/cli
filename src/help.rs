@@ -407,7 +407,7 @@ const MODELS: &str = "\
 {bin} models — list catalog model ids
 
 Usage:
-  {bin} models [options]
+  {bin} models [list|ls] [options]     (alias: {bin} model)
   {bin} models use <id>
   {bin} models use <id> --agent <claude|codex|grok|opencode|pi|pool>
   {bin} models use --haiku|--sonnet|--opus|--fable <id>

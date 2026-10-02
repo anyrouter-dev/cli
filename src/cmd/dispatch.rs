@@ -231,6 +231,7 @@ pub(crate) fn canonical_command(command: &str) -> &str {
         "update" => "upgrade",
         "implement" => "impl",
         "decisions" | "systemone" => "decision",
+        "model" => "models",
         other => canonical_tool(other),
     }
 }
@@ -256,6 +257,7 @@ pub(crate) const COMMANDS: &[(&str, &str)] = &[
     ),
     ("decision", "Structured decisions (Decisions API)"),
     ("models", "List catalog and set the default"),
+    ("model", "Alias of models"),
     ("usage", "Credits remaining"),
     ("keys", "Manage API keys"),
     ("account", "Manage multiple accounts"),
@@ -485,6 +487,7 @@ pub(crate) fn help_topic(parsed: &ParsedArgs) -> String {
             .find(|s| *s != "-h" && *s != "--help")
             .cloned()
             .unwrap_or_else(|| "auth".into()),
+        "model" => "models".into(),
         other => other.to_string(),
     }
 }
