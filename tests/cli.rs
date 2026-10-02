@@ -2111,7 +2111,7 @@ fn relay_unknown_subcommand_prints_usage_and_fails() {
 #[test]
 fn relay_rejects_unknown_flag_before_running() {
     let (code, _stdout, stderr) = run(&["relay", "start", "--bogus"]);
-    assert_eq!(code, 1);
+    assert_eq!(code, 2);
     assert!(stderr.contains("Unknown flag --bogus"), "{stderr}");
 }
 
@@ -2761,7 +2761,7 @@ fn cursor_is_honest_stub_not_silent_success() {
 #[test]
 fn launch_rejects_unknown_flag() {
     let (code, _stdout, stderr) = run(&["claude", "--bogus"]);
-    assert_eq!(code, 1);
+    assert_eq!(code, 2);
     assert!(
         stderr.contains("Unknown") || stderr.contains("bogus"),
         "{stderr}"
@@ -2971,4 +2971,51 @@ fn auto_update_never_downgrades_to_older_stable() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert_eq!(out.status.code(), Some(0));
     assert!(!stdout.contains("would update"), "{stdout}");
+}
+
+// WHY: scripts branch on exit code. Exit 2 means "you called it wrong" and
+// must be the same for every kind of usage mistake; exit 1 is for runtime
+// failures only.
+#[test]
+fn usage_errors_all_exit_2() {
+    for args in [
+        &["nonsense"][..],
+        &["auth", "bogus"],
+        &["claude", "--bogus-flag"],
+        &["completion", "bogus"],
+        &["api", "bogus"],
+        &["model", "bogus"],
+        &["usage", "--zzz"],
+        &["help", "nonsense"],
+        &["help", "auth", "bogus"],
+    ] {
+        let (code, _, stderr) = run(args);
+        assert_eq!(code, 2, "{args:?} stderr={stderr}");
+    }
+}
+
+// WHY: `help <typo>` used to print root help and exit 0, hiding the typo.
+#[test]
+fn help_unknown_topic_errors_with_suggestion() {
+    let (code, stdout, stderr) = run(&["help", "clade"]);
+    assert_eq!(code, 2);
+    assert!(stdout.is_empty(), "no help on stdout: {stdout}");
+    assert!(stderr.contains("unknown help topic \"clade\""), "{stderr}");
+    assert!(
+        stderr.contains("did you mean `anyr help claude`"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn help_known_topics_still_exit_0() {
+    for args in [
+        &["help"][..],
+        &["help", "commands"],
+        &["help", "auth", "login"],
+        &["help", "claude"],
+    ] {
+        let (code, _, stderr) = run(args);
+        assert_eq!(code, 0, "{args:?} stderr={stderr}");
+    }
 }
