@@ -2,6 +2,7 @@
 """Stand-in curl for setup.sh tests. Never talks to the network."""
 from __future__ import annotations
 
+import hashlib
 import os
 import sys
 from pathlib import Path
@@ -57,8 +58,12 @@ def classify(url: str) -> str:
         return "latest"
     if "/releases/download/v0.1.11/" in url:
         return "empty-tag"
+    if url.endswith("/v0.1.12-beta.98/checksums.txt"):
+        return "latest"  # legacy tag: no checksums.txt, plain 404
     if "/releases/download/v0.1.12-beta.98/" in url:
         return "beta-asset"
+    if "/releases/download/v0.1.20/" in url:
+        return "checksummed-sums" if url.endswith("/checksums.txt") else "checksummed-asset"
     if url.rstrip("/").endswith("/anyrouter-dev/cli/releases"):
         return "listing"
     if "/expanded_assets/" in url:
@@ -75,8 +80,18 @@ def body_and_code(url: str, headers: list[str]) -> tuple[int, bytes]:
         return 200, API_JSON.read_bytes()
     if kind in ("latest", "empty-tag"):
         return 404, b"Not Found"
-    if kind == "beta-asset":
+    if kind in ("beta-asset", "checksummed-asset"):
         return 200, ELF
+    if kind == "checksummed-sums":
+        mode = os.environ.get("FAKE_CURL_SUMS", "good")
+        if mode == "missing":
+            return 404, b"Not Found"
+        digest = hashlib.sha256(ELF).hexdigest()
+        if mode == "bad":
+            digest = "0" * 64
+        if mode == "noentry":
+            return 200, f"{digest}  anyr-other\n".encode()
+        return 200, f"{digest}  anyr-{os.environ.get('FAKE_CURL_ASSET', 'linux-x86_64')}\n".encode()
     if kind == "listing":
         return 200, LISTING.read_bytes()
     if kind == "expanded":
