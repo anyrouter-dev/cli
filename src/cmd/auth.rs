@@ -29,7 +29,8 @@ pub(crate) fn run_auth(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> R
         "token" => run_auth_token(&rest, env),
         "switch" => run_auth_switch(&rest, env),
         other => Err(format!(
-            "unknown command \"{other}\" for \"{} auth\"\n\n{}",
+            "{}unknown command \"{other}\" for \"{} auth\"\n\n{}",
+            crate::cmd::dispatch::USAGE,
             crate::help::invoked_bin(),
             command_help("auth").unwrap_or_default()
         )),

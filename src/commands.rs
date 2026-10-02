@@ -12,7 +12,7 @@ use crate::cmd::config_tui::run_config;
 use crate::cmd::decision::run_decision;
 use crate::cmd::dispatch::{
     allowed_flags, assert_known_flags, canonical_command, help_topic, known_command,
-    should_open_launcher, stub, suggest_command, tui_wants_dump, wants_help,
+    should_open_launcher, stub, suggest_command, tui_wants_dump, usage_exit, wants_help, USAGE,
 };
 use crate::cmd::keys::run_keys;
 use crate::cmd::launch::run_launch;
@@ -47,10 +47,7 @@ pub fn run(argv: Vec<String>, env: HashMap<String, String>) -> i32 {
 
     let parsed = match parse_cli_args(&raw) {
         Ok(p) => p,
-        Err(err) => {
-            eprintln!("{err}");
-            return 1;
-        }
+        Err(err) => return usage_fail(&err),
     };
 
     let command = parsed.command.as_str();
@@ -83,6 +80,9 @@ pub fn run(argv: Vec<String>, env: HashMap<String, String>) -> i32 {
     crate::upgrade::on_startup(command, &parsed, &env);
 
     if raw.is_empty() || command == "help" || command == "--help" || command == "-h" {
+        if let Some(bad) = unknown_help_topic(&parsed.passthrough) {
+            return help_topic_fail(&bad);
+        }
         let topic = parsed.passthrough.first().map(String::as_str);
         if topic == Some("commands") || topic == Some("help") {
             print!("{}", commands_help());
@@ -115,17 +115,45 @@ pub fn run(argv: Vec<String>, env: HashMap<String, String>) -> i32 {
     }
     if let Some(allowed) = allowed_flags(command) {
         if let Err(err) = assert_known_flags(command, &parsed.flags, allowed) {
-            eprintln!("{err}");
-            return 1;
+            return usage_fail(&err);
         }
     }
-    match dispatch(canonical_command(command), &parsed, &env) {
+    match usage_exit(dispatch(canonical_command(command), &parsed, &env)) {
         Ok(code) => code,
         Err(err) => {
             eprintln!("{err}");
             1
         }
     }
+}
+
+/// The one exit path for usage errors (bad flag, bad subcommand, bad topic).
+fn usage_fail(message: &str) -> i32 {
+    eprintln!("{message}");
+    2
+}
+
+/// First word of `help <words>` that is not a real topic, if any.
+fn unknown_help_topic(words: &[String]) -> Option<String> {
+    let first = words.first()?;
+    let known = |w: &str| known_command(w) || command_help(w).is_some();
+    if !known(first) {
+        return Some(first.clone());
+    }
+    if first == "auth" {
+        return words.get(1).filter(|w| !known(w)).cloned();
+    }
+    None
+}
+
+fn help_topic_fail(topic: &str) -> i32 {
+    let bin = crate::help::invoked_bin();
+    eprintln!("{} unknown help topic \"{topic}\"", term::err("error:"));
+    match suggest_command(topic) {
+        Some(near) => eprintln!("{} did you mean `{bin} help {near}`?", term::dim("hint:")),
+        None => eprintln!("{} run `{bin} --help`", term::dim("hint:")),
+    }
+    2
 }
 
 fn dispatch(
@@ -184,7 +212,7 @@ fn run_completion(parsed: &ParsedArgs) -> Result<i32, String> {
             Ok(0)
         }
         None => Err(format!(
-            "Usage: {bin} completion <{}>",
+            "{USAGE}Usage: {bin} completion <{}>",
             crate::completion::SHELLS.join("|")
         )),
     }
