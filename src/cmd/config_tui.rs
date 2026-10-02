@@ -7,7 +7,7 @@ use crate::install::{agent_available, available_agents, ensure_tool_installed, K
 use crate::key::{
     load_config_if_present, mask_api_key, no_key_error, resolve_api_key, resolve_base_url,
 };
-use crate::parse::{FlagValue, ParsedArgs};
+use crate::parse::{get_string_flag, FlagValue, ParsedArgs};
 use crate::spawn::{catalog_model_id, display_model_id, resolve_tool, session_model_label};
 use crate::term;
 
@@ -1224,10 +1224,27 @@ pub(crate) fn run_config(
             if parsed.flag_true("json") {
                 let cfg = load_config_if_present(&path).unwrap_or_default();
                 let profile = cfg.profiles.get(&cfg.active_profile);
+                let key = resolve_api_key(&parsed.flags, env, profile);
+                let (api_key, api_key_source) = match key.as_deref() {
+                    None => (serde_json::Value::Null, "none"),
+                    Some(k) => {
+                        let source = if get_string_flag(&parsed.flags, "key").is_some_and(|f| f.trim() == k) {
+                            "flag"
+                        } else if profile.and_then(|p| p.api_key.as_deref()).map(str::trim) == Some(k)
+                            && env.get("ANYROUTER_API_KEY").map(|e| e.trim()) != Some(k)
+                        {
+                            "config"
+                        } else {
+                            "env"
+                        };
+                        (serde_json::json!(mask_api_key(Some(k))), source)
+                    }
+                };
                 let payload = serde_json::json!({
                     "path": path.display().to_string(),
                     "active_profile": cfg.active_profile,
-                    "api_key": mask_api_key(profile.and_then(|p| p.api_key.as_deref())),
+                    "api_key": api_key,
+                    "api_key_source": api_key_source,
                     "default_model": profile.map(|p| display_model_id(p.default_model())),
                     "claude_haiku": profile.map(|p| p.claude_haiku()),
                     "claude_sonnet": profile.map(|p| p.claude_sonnet()),

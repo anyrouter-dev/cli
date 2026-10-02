@@ -343,3 +343,78 @@ fn html_error_body_is_summarised_not_dumped() {
     assert!(err.len() < 600, "{} bytes: {err}", err.len());
 }
 
+#[test]
+fn env_key_alone_drives_auth_token_and_status_without_config() {
+    // WHY: CI/headless use sets ANYROUTER_API_KEY and has no config file.
+    let (code, out, err) = {
+        let o = anyr()
+            .args(["auth", "token", "--masked"])
+            .env("ANYROUTER_API_KEY", "sk-ar-v1-abcdefghijklmnop")
+            .output()
+            .unwrap();
+        (
+            o.status.code().unwrap_or(1),
+            String::from_utf8_lossy(&o.stdout).into_owned(),
+            String::from_utf8_lossy(&o.stderr).into_owned(),
+        )
+    };
+    assert_eq!(code, 0, "{err}");
+    assert!(out.starts_with("sk-ar-v1-abcd"), "{out}");
+    assert!(!out.contains("abcdefghijklmnop"), "{out}");
+
+    let o = anyr()
+        .args(["status", "--json", "--base-url", "http://example.test"])
+        .env("ANYROUTER_API_KEY", "sk-ar-v1-abcdefghijklmnop")
+        .output()
+        .unwrap();
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(
+        out.contains("\"base_url\": \"http://example.test\""),
+        "{out}"
+    );
+}
+
+#[test]
+fn keys_list_accepts_env_key_and_key_flag_without_config() {
+    for use_flag in [false, true] {
+        let (base, rx) = serve_once(200, r#"{"data":[]}"#);
+        let mut cmd = anyr();
+        cmd.args(["keys", "list", "--base-url", &base]);
+        if use_flag {
+            cmd.args(["--key", "sk-ar-v1-flagkey"]);
+        } else {
+            cmd.env("ANYROUTER_API_KEY", "sk-ar-v1-flagkey");
+        }
+        let o = cmd.output().unwrap();
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert!(!err.contains("No AnyRouter config"), "{err}");
+        assert!(!err.contains("unknown flag"), "{err}");
+        let seen = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        assert!(seen.contains("Bearer sk-ar-v1-flagkey"), "{seen}");
+    }
+}
+
+#[test]
+fn config_get_json_reports_env_key_source() {
+    let o = anyr()
+        .args(["config", "get", "--json"])
+        .env("ANYROUTER_API_KEY", "sk-ar-v1-abcdefghijklmnop")
+        .output()
+        .unwrap();
+    let out = String::from_utf8_lossy(&o.stdout);
+    let v: serde_json::Value = serde_json::from_str(&out).expect(&out);
+    // WHY: scripts must see the key that will actually be used, masked.
+    assert_eq!(v["api_key_source"], "env");
+    assert!(v["api_key"].as_str().unwrap().starts_with("sk-ar-v1-abcd"));
+    assert!(!out.contains("abcdefghijklmnop"), "{out}");
+
+    let o = anyr()
+        .args(["config", "get", "--json"])
+        .env_remove("ANYROUTER_API_KEY")
+        .output()
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(v["api_key_source"], "none");
+    assert!(v["api_key"].is_null());
+}
