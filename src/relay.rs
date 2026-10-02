@@ -1027,7 +1027,7 @@ pub fn run(
             eprintln!("       (--target auto-detects fm serve on :1976, then :8000, then Ollama on :11434)");
             eprintln!("       (--pool opts this device into the shared relay pool — earn credits when idle)");
             eprintln!(r#"       {bin} relay pair --name "My Mac""#);
-            Err(String::new())
+            Err(crate::cmd::dispatch::USAGE.to_string())
         }
     }
 }

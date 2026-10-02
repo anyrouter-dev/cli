@@ -480,7 +480,10 @@ pub(crate) const USAGE: &str = "\u{0}usage\u{0}";
 pub(crate) fn usage_exit(result: Result<i32, String>) -> Result<i32, String> {
     match result {
         Err(e) if e.starts_with(USAGE) => {
-            eprintln!("{}", &e[USAGE.len()..]);
+            let msg = &e[USAGE.len()..];
+            if !msg.is_empty() {
+                eprintln!("{msg}");
+            }
             Ok(2)
         }
         other => other,
@@ -516,8 +519,12 @@ pub(crate) fn shift_passthrough(parsed: &ParsedArgs) -> ParsedArgs {
     next
 }
 
+/// Every caller passes a `Usage: ...` line, so it is a usage error (exit 2).
 pub(crate) fn hint(template: &str) -> String {
-    template.replace("{bin}", &crate::help::invoked_bin())
+    format!(
+        "{USAGE}{}",
+        template.replace("{bin}", &crate::help::invoked_bin())
+    )
 }
 
 pub(crate) fn stub(command: &str) -> Result<i32, String> {

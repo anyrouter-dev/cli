@@ -2103,7 +2103,7 @@ fn relay_help_documents_subcommands_and_flags() {
 #[test]
 fn relay_unknown_subcommand_prints_usage_and_fails() {
     let (code, _stdout, stderr) = run(&["relay", "wat"]);
-    assert_eq!(code, 1);
+    assert_eq!(code, 2, "bad subcommand is a usage error");
     assert!(stderr.contains("Unknown relay subcommand: wat"), "{stderr}");
     assert!(stderr.contains("Usage:"), "{stderr}");
 }
@@ -3042,4 +3042,43 @@ fn help_topic_prints_that_topics_help_not_root_help() {
     }
     let (_, auth, _) = run(&["help", "auth"]);
     assert_ne!(auth, root, "help auth printed root help");
+}
+
+#[test]
+fn missing_subcommand_argument_is_a_usage_error_exit_2() {
+    // Scripts tell "you called it wrong" (2) from "it ran and failed" (1).
+    let dir = temp_home();
+    let stub_path = exit_zero_stub();
+    let seed = anyr()
+        .args(["claude", "--yes", "--key", "sk-ar-v1-fixture-key-0002"])
+        .args(["--model", "z-ai/glm-4.7-flash"])
+        .env("ANYROUTER_HOME", &dir)
+        .env("ANYROUTER_CLAUDE_PATH", stub_path.to_str().unwrap())
+        .env_remove("ANYROUTER_API_KEY")
+        .output()
+        .expect("seed config");
+    assert!(
+        dir.join("config.yaml").exists(),
+        "seed failed: {}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+    for args in [
+        &["account", "use"][..],
+        &["account", "remove"],
+        &["account", "rename", "a"],
+        &["auth", "switch"],
+        &["keys", "revoke"],
+        &["relay", "bogus"],
+    ] {
+        let out = anyr()
+            .args(args)
+            .env("ANYROUTER_HOME", &dir)
+            .env_remove("ANYROUTER_API_KEY")
+            .output()
+            .expect("spawn anyr");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(2), "{args:?}: {stderr}");
+        assert!(stderr.contains("Usage:"), "{args:?}: {stderr}");
+        assert!(!stderr.contains('\u{0}'), "marker leaked: {stderr:?}");
+    }
 }
