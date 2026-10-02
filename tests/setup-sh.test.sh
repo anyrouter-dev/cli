@@ -52,10 +52,26 @@ ANYR_SETUP_BIN="$fake" ANYR_BIN_DIR="$bindir" bash "$SETUP"
   echo "missing anyrouter symlink" >&2
   exit 1
 }
-[ -L "${bindir}/ar" ] || {
-  echo "missing ar symlink" >&2
+# `ar` must never be created: it shadows the system archiver (breaks cc/cargo).
+[ ! -e "${bindir}/ar" ] && [ ! -L "${bindir}/ar" ] || {
+  echo "setup.sh must not create an ar symlink" >&2
   exit 1
 }
+
+# An old `ar -> anyr` link is removed on reinstall; an unrelated ar is kept.
+ln -sfn anyr "${bindir}/ar"
+ANYR_SETUP_BIN="$fake" ANYR_BIN_DIR="$bindir" bash "$SETUP" | grep -q 'Removed .*/ar'
+[ ! -L "${bindir}/ar" ] || {
+  echo "stale ar -> anyr symlink was not removed" >&2
+  exit 1
+}
+ln -sfn /usr/bin/ar "${bindir}/ar"
+ANYR_SETUP_BIN="$fake" ANYR_BIN_DIR="$bindir" bash "$SETUP" >/dev/null
+[ "$(readlink "${bindir}/ar")" = /usr/bin/ar ] || {
+  echo "unrelated ar symlink must be left alone" >&2
+  exit 1
+}
+rm -f "${bindir}/ar"
 
 help_out="$("${bindir}/anyr" --help)"
 echo "$help_out"

@@ -120,9 +120,18 @@ install_bin() {
   cp "$src" "${BIN_DIR}/${BIN_NAME}"
   chmod +x "${BIN_DIR}/${BIN_NAME}"
   ln -sfn "$BIN_NAME" "${BIN_DIR}/anyrouter"
-  ln -sfn "$BIN_NAME" "${BIN_DIR}/ar"
+  # Older installers also linked `ar`, which shadows the system archiver and
+  # breaks C/Rust builds. Remove it only when it points at anyr.
+  if [ -L "${BIN_DIR}/ar" ]; then
+    case "$(readlink "${BIN_DIR}/ar")" in
+      anyr | */anyr | anyrouter | */anyrouter)
+        rm -f "${BIN_DIR}/ar"
+        echo "Removed ${BIN_DIR}/ar (it shadowed the system ar archiver)"
+        ;;
+    esac
+  fi
   echo "Installed ${BIN_DIR}/${BIN_NAME}"
-  echo "Symlinks: ${BIN_DIR}/anyrouter ${BIN_DIR}/ar"
+  echo "Symlink: ${BIN_DIR}/anyrouter"
   case ":${PATH}:" in
     *":${BIN_DIR}:"*) ;;
     *)
