@@ -379,7 +379,44 @@ fn running_from_cargo_target() -> bool {
         .unwrap_or(false)
 }
 
-fn replace_current_binary(url: &str) -> Result<PathBuf, String> {
+/// Version of the binary currently on disk at `path` (it may differ from the
+/// running process when another install replaced it meanwhile).
+#[cfg(feature = "native")]
+fn on_disk_version(path: &Path) -> Option<String> {
+    let out = std::process::Command::new(path)
+        .arg("--version")
+        .env("ANYR_NO_UPDATE", "1")
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&out.stdout)
+        .split_whitespace()
+        .next()
+        .map(str::to_string)
+}
+
+#[cfg(not(feature = "native"))]
+fn on_disk_version(_path: &Path) -> Option<String> {
+    None
+}
+
+/// Refuse to overwrite `on_disk` with an older-or-equal `target` unless the
+/// user explicitly asked to downgrade.
+fn guard_not_older(
+    on_disk: Option<&str>,
+    target: &str,
+    allow_downgrade: bool,
+) -> Result<(), String> {
+    match on_disk {
+        Some(disk) if !allow_downgrade && !needs_upgrade(disk, target) => Err(format!(
+            "refusing to replace anyr {disk} with {target}: installed build is not older"
+        )),
+        _ => Ok(()),
+    }
+}
+
+fn replace_current_binary(url: &str, allow_downgrade: bool) -> Result<PathBuf, String> {
     validate_download_url(url)?;
     let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
     if is_cargo_target_build(&exe) {
@@ -404,6 +441,10 @@ fn replace_current_binary(url: &str) -> Result<PathBuf, String> {
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|| "anyr".into())
     ));
+    if let Some(target) = release_tag_from_url(url) {
+        let target = target.strip_prefix('v').unwrap_or(target);
+        guard_not_older(on_disk_version(&dest).as_deref(), target, allow_downgrade)?;
+    }
     download_binary(url, &tmp)?;
     if let Err(e) = verify_downloaded_asset(url, &tmp) {
         return abort_download(&tmp, e);
@@ -749,7 +790,7 @@ fn run_auto(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, 
         &installable,
         os,
         arch,
-        replace_current_binary,
+        |url| replace_current_binary(url, false),
         crate::spinner::warn_beside_spinner,
     ) {
         Ok((rel, _)) => {
@@ -962,7 +1003,7 @@ pub fn run(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, S
         &installable,
         os,
         arch,
-        replace_current_binary,
+        |url| replace_current_binary(url, allow_downgrade),
         crate::spinner::warn_beside_spinner,
     ) {
         Ok((rel, _)) => {
@@ -1144,6 +1185,17 @@ mod tests {
         )));
         assert!(!is_cargo_target_build(Path::new("/home/u/.local/bin/anyr")));
         assert!(!is_cargo_target_build(Path::new("/opt/target/bin/anyr")));
+    }
+
+    #[test]
+    fn never_overwrites_a_newer_binary_on_disk() {
+        // WHY: a 0.1.16-beta.221 install was replaced by 0.1.15. The running
+        // process can be older than the file on disk, so compare the disk.
+        assert!(guard_not_older(Some("0.1.16-beta.221"), "0.1.15", false).is_err());
+        assert!(guard_not_older(Some("0.1.15"), "0.1.15", false).is_err());
+        assert!(guard_not_older(Some("0.1.15"), "0.1.16-beta.224", false).is_ok());
+        assert!(guard_not_older(Some("0.1.16-beta.221"), "0.1.15", true).is_ok());
+        assert!(guard_not_older(None, "0.1.15", false).is_ok());
     }
 
     #[test]
