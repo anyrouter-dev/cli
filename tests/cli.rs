@@ -1173,7 +1173,7 @@ fn upgrade_check_flag_is_known() {
         "upgrade --check treated as unknown:\n{combined}"
     );
     assert!(
-        stdout.contains("up to date") || stdout.contains("Already up to date"),
+        stdout.contains("up to date") || stdout.contains("ahead"),
         "{stdout}"
     );
 }
@@ -2842,4 +2842,133 @@ profiles:
         "{stdout}"
     );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Releases where stable is older than the running build and the beta
+/// channel holds the running build plus an older beta. Version-independent.
+fn ahead_of_stable_fixture(tag: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+    let (_, ver, _) = run(&["--version"]);
+    let ver = ver.split_whitespace().next().unwrap_or("").to_string();
+    let home = std::env::temp_dir().join(format!("anyr-ahead-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).expect("home");
+    let asset = r#""assets":[{"name":"anyr-linux-x86_64","browser_download_url":"https://github.com/anyrouter-dev/cli/releases/download/vX/anyr-linux-x86_64"},{"name":"anyr-linux-arm64","browser_download_url":"https://github.com/anyrouter-dev/cli/releases/download/vX/anyr-linux-arm64"},{"name":"anyr-darwin-arm64","browser_download_url":"https://github.com/anyrouter-dev/cli/releases/download/vX/anyr-darwin-arm64"},{"name":"anyr-darwin-x86_64","browser_download_url":"https://github.com/anyrouter-dev/cli/releases/download/vX/anyr-darwin-x86_64"},{"name":"anyr-windows-x86_64.exe","browser_download_url":"https://github.com/anyrouter-dev/cli/releases/download/vX/anyr-windows-x86_64.exe"}]"#;
+    let fixture = home.join("releases.json");
+    std::fs::write(
+        &fixture,
+        format!(
+            r#"[{{"tag_name":"v0.0.1","prerelease":false,{asset}}},{{"tag_name":"v{ver}","prerelease":true,{asset}}},{{"tag_name":"v0.0.2-beta.1","prerelease":true,{asset}}}]"#
+        ),
+    )
+    .expect("fixture");
+    (home, fixture)
+}
+
+fn update_out(args: &[&str], home: &std::path::Path, fixture: &std::path::Path) -> String {
+    let out = anyr()
+        .args(args)
+        .env("ANYROUTER_HOME", home)
+        .env("ANYR_RELEASES_JSON", fixture)
+        .env_remove("ANYR_CHANNEL")
+        .output()
+        .expect("update");
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "{args:?}\n{stdout}{stderr}");
+    stdout
+}
+
+#[test]
+fn switch_to_older_stable_is_ahead_not_update_and_agrees_with_channel_flag() {
+    // WHY: `update --stable --check` reported "update available" for an older
+    // stable while `upgrade --channel stable --check` said "up to date".
+    // Both must agree, and neither may offer a silent downgrade.
+    let (home, fixture) = ahead_of_stable_fixture("check");
+    let switch = update_out(&["update", "--stable", "--check"], &home, &fixture);
+    let channel = update_out(
+        &["upgrade", "--channel", "stable", "--check"],
+        &home,
+        &fixture,
+    );
+    for out in [&switch, &channel] {
+        assert!(!out.contains("update available"), "{out}");
+        assert!(out.contains("ahead") && out.contains("0.0.1"), "{out}");
+        assert!(out.contains("--stable --force"), "{out}");
+    }
+    let dry = update_out(&["update", "--stable", "--dry-run"], &home, &fixture);
+    assert!(!dry.contains("Would update"), "downgraded silently:\n{dry}");
+    assert!(dry.contains("Keeping"), "{dry}");
+    let forced = update_out(
+        &["update", "--stable", "--force", "--dry-run"],
+        &home,
+        &fixture,
+    );
+    assert!(forced.contains("Would update to v0.0.1"), "{forced}");
+}
+
+#[test]
+fn beta_dry_run_on_latest_beta_never_picks_older_build() {
+    // WHY: the fallback list skipped only the exact installed version, so
+    // `update --beta --dry-run` offered an older beta while --check said current.
+    let (home, fixture) = ahead_of_stable_fixture("beta");
+    let dry = update_out(&["update", "--beta", "--dry-run"], &home, &fixture);
+    assert!(!dry.contains("0.0.2-beta.1"), "{dry}");
+    assert!(dry.contains("Already up to date"), "{dry}");
+    let check = update_out(&["update", "--beta", "--check"], &home, &fixture);
+    assert!(check.contains("up to date"), "{check}");
+}
+
+#[test]
+fn dry_run_has_no_bare_env_header() {
+    // WHY: dry-run printed a stray `env:` line with nothing under it.
+    let (home, fixture) = ahead_of_stable_fixture("env");
+    let out = anyr()
+        .args(["update", "--beta", "--check", "--dry-run"])
+        .env("ANYROUTER_HOME", &home)
+        .env("ANYR_RELEASES_JSON", &fixture)
+        .output()
+        .expect("dry-run");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stdout.lines().any(|l| l.trim() == "env:"),
+        "stray env header:\n{stdout}"
+    );
+}
+
+#[test]
+fn beta_stable_flags_persist_channel_but_channel_flag_does_not() {
+    // WHY: --beta/--stable switch the track auto-update follows; --channel
+    // is a one-off peek and must not rewrite config.
+    let (home, fixture) = ahead_of_stable_fixture("persist");
+    update_out(&["update", "--beta", "--check"], &home, &fixture);
+    let cfg = std::fs::read_to_string(home.join("config.yaml")).expect("config");
+    assert!(cfg.contains("channel: beta"), "{cfg}");
+    update_out(
+        &["update", "--channel", "stable", "--check"],
+        &home,
+        &fixture,
+    );
+    let cfg = std::fs::read_to_string(home.join("config.yaml")).expect("config");
+    assert!(
+        cfg.contains("channel: beta"),
+        "--channel rewrote config:\n{cfg}"
+    );
+}
+
+#[test]
+fn auto_update_never_downgrades_to_older_stable() {
+    // WHY: the background updater must not replace a newer beta build with
+    // an older stable after a channel switch.
+    let (home, fixture) = ahead_of_stable_fixture("auto");
+    let out = anyr()
+        .args(["upgrade", "--auto"])
+        .env("ANYROUTER_HOME", &home)
+        .env("ANYR_RELEASES_JSON", &fixture)
+        .env("ANYR_UPDATE_INTERVAL_SECS", "0")
+        .env("ANYR_CHANNEL", "stable")
+        .output()
+        .expect("auto");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(0));
+    assert!(!stdout.contains("would update"), "{stdout}");
 }
