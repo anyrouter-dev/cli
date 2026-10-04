@@ -2098,6 +2098,15 @@ fn relay_help_documents_subcommands_and_flags() {
         !combined.contains("not yet implemented") && !combined.contains("coming later"),
         "relay is implemented; help must not call it a stub:\n{combined}"
     );
+    // Windows and Linux keep the same command and do not describe the
+    // system model. That path exists only where the OS can run it.
+    #[cfg(not(target_os = "macos"))]
+    {
+        assert!(
+            !combined.contains("foundation-model") && !combined.to_lowercase().contains("apple"),
+            "non-macOS relay help mentioned the system model:\n{combined}"
+        );
+    }
 }
 
 #[test]
