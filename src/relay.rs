@@ -19,11 +19,14 @@
 //!
 //! Transport: one outbound WebSocket to the cloud relay (via
 //! `/api/v1/relay/connect`), auto-reconnecting with exponential backoff. For
-//! each `request` frame pushed down, the body is forwarded to the local
-//! `--target` server and the response streams back up as `head`/`chunk`/
-//! `done` frames — chunks are sent incrementally as they arrive from the
-//! local server, never buffered whole. `cancel` frames abort the in-flight
-//! local request between stream reads.
+//! each `request` frame pushed down, the device answers with `head`/`chunk`/
+//! `done` frames. On macOS, when the system model is available, those frames
+//! come from the in-process helper and the hello frame advertises
+//! `foundation-model`. Otherwise the body is forwarded to a local
+//! OpenAI-compatible server. `fm serve` on :1976 also advertises
+//! `foundation-model` — that is the pool join key, not the id its own
+//! `/v1/models` returns. :8000 and Ollama advertise only their own list.
+//! `cancel` frames abort the in-flight request.
 //!
 //! Process model: the socket lives on the main thread (tungstenite is not
 //! Sync, so readers and writers share one owner). Each incoming `request`
@@ -58,19 +61,13 @@ const BASE_BACKOFF_MS: u64 = 1_000;
 /// outbound queue again. Bounds cancel latency and reconnect responsiveness.
 const SOCKET_POLL_MS: u64 = 250;
 
-/// `fm serve`'s loopback-only OpenAI-compatible endpoint (Apple Foundation
-/// Models): observed output is `url http://127.0.0.1:1976`,
-/// `access loopback-only`, with GET /v1/models and GET /health.
+/// `fm serve`'s loopback OpenAI-compatible endpoint: GET /health and /v1/models.
 const FM_SERVE_TARGET: &str = "http://127.0.0.1:1976/v1";
 const FM_SERVE_HEALTH_URL: &str = "http://127.0.0.1:1976/health";
 const OLLAMA_TARGET: &str = "http://localhost:11434/v1";
-
-/// The join key pool routing actually matches on (#1128): the executor sends
-/// the UPSTREAM model_name ("foundation-model") from the catalog entry as
-/// `body.model`, not the public catalog id "apple/foundation-model". A hello
-/// frame advertising only fm serve's own local model ids would never match a
-/// pool lookup. Always advertise this id when talking to fm serve.
-const FM_SERVE_ADVERTISED_MODEL_ID: &str = "foundation-model";
+/// Model id `fm serve` accepts for the on-device system model. The cloud
+/// sends the pool join key `foundation-model` instead.
+const FM_SERVE_LOCAL_MODEL_ID: &str = "system";
 
 // ---------------------------------------------------------------------------
 // Diagnostics — verbose-gated [relay] lines go to stderr like the TS client.
@@ -372,35 +369,38 @@ fn persist_api_key(key: &str, env: &BTreeMap<String, String>) -> Result<(), Stri
 // Target detection
 // ---------------------------------------------------------------------------
 
+struct Probe {
+    target: &'static str,
+    label: &'static str,
+    health_url: &'static str,
+}
+
+/// HTTP probe order after the in-process system model is unavailable.
+const RELAY_PROBES: &[Probe] = &[
+    Probe {
+        target: FM_SERVE_TARGET,
+        label: "fm serve",
+        health_url: FM_SERVE_HEALTH_URL,
+    },
+    Probe {
+        target: DEFAULT_TARGET,
+        label: "default target",
+        health_url: "http://localhost:8000/v1/models",
+    },
+    Probe {
+        target: OLLAMA_TARGET,
+        label: "Ollama",
+        health_url: "http://localhost:11434/v1/models",
+    },
+];
+
 /// Auto-detect a local OpenAI-compatible server when `--target` isn't given:
 /// probe fm serve (:1976), then the historical default (:8000), then Ollama
 /// (:11434) — the first one that responds AT ALL wins (any HTTP response
 /// counts, not just 2xx; the point is only "something is listening").
 /// Falls back to the historical default with a clear log line otherwise.
 fn detect_relay_target() -> &'static str {
-    struct Probe {
-        target: &'static str,
-        label: &'static str,
-        health_url: &'static str,
-    }
-    let probes = [
-        Probe {
-            target: FM_SERVE_TARGET,
-            label: "fm serve (Apple Foundation Models)",
-            health_url: FM_SERVE_HEALTH_URL,
-        },
-        Probe {
-            target: DEFAULT_TARGET,
-            label: "default target",
-            health_url: "http://localhost:8000/v1/models",
-        },
-        Probe {
-            target: OLLAMA_TARGET,
-            label: "Ollama",
-            health_url: "http://localhost:11434/v1/models",
-        },
-    ];
-    for p in probes {
+    for p in RELAY_PROBES {
         if http_probe_listening(p.health_url) {
             ulog(&format!(
                 "auto-detected local server: {} at {}",
@@ -416,6 +416,31 @@ fn detect_relay_target() -> &'static str {
     DEFAULT_TARGET
 }
 
+fn resolve_backend(explicit: Option<&str>) -> RelayBackend {
+    let explicit = explicit.map(str::trim).filter(|s| !s.is_empty());
+    let fm_available = explicit.is_none() && crate::foundation::foundation_model_available();
+    if fm_available {
+        ulog("serving foundation-model");
+    }
+    let detected = if explicit.is_none() && !fm_available {
+        detect_relay_target()
+    } else {
+        ""
+    };
+    choose_backend(explicit, fm_available, detected)
+}
+
+fn detect_help_line() -> &'static str {
+    #[cfg(target_os = "macos")]
+    {
+        "auto-detects the system model when it is available, else fm serve on :1976, then :8000, then Ollama on :11434"
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        "auto-detects fm serve on :1976, then :8000, then Ollama on :11434"
+    }
+}
+
 /// True when something answers within PROBE_TIMEOUT_MS (any status counts).
 fn http_probe_listening(url: &str) -> bool {
     matches!(
@@ -427,11 +452,6 @@ fn http_probe_listening(url: &str) -> bool {
 // ---------------------------------------------------------------------------
 // Capability advertisement (hello frame)
 // ---------------------------------------------------------------------------
-
-/// True when `target` is (or looks like) fm serve's loopback endpoint.
-fn is_fm_serve_target(target: &str) -> bool {
-    target.contains("127.0.0.1:1976") || target.contains("localhost:1976")
-}
 
 /// Fetch the local target's OpenAI-compatible /models list. Empty vec when
 /// unreachable — connect without advertising rather than failing: a device
@@ -470,14 +490,78 @@ fn fetch_local_models(target: &str) -> Vec<String> {
     }
 }
 
-/// Model list for the hello frame: the local /models ids plus the fm serve
-/// join-key correction (see FM_SERVE_ADVERTISED_MODEL_ID).
-fn advertised_models(target: &str, fetched: &[String]) -> Vec<String> {
-    let mut models = fetched.to_vec();
-    if is_fm_serve_target(target) && !models.iter().any(|m| m == FM_SERVE_ADVERTISED_MODEL_ID) {
-        models.push(FM_SERVE_ADVERTISED_MODEL_ID.to_string());
+/// Where one `anyr relay` process answers request frames.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RelayBackend {
+    /// System language model, in-process. Hello id is `foundation-model`.
+    Foundation,
+    /// OpenAI-compatible HTTP server. Hello ids are that server's `/v1/models`.
+    Http(&'static str),
+}
+
+/// Pick the backend for this process. An explicit `--target` is that HTTP
+/// server. With no target, an available system model wins. Otherwise `detected`
+/// is the first HTTP probe that answered.
+fn choose_backend(
+    explicit_target: Option<&str>,
+    fm_available: bool,
+    detected: &'static str,
+) -> RelayBackend {
+    if let Some(target) = explicit_target.map(str::trim).filter(|s| !s.is_empty()) {
+        return RelayBackend::Http(Box::leak(target.to_string().into_boxed_str()));
     }
-    models
+    if fm_available {
+        RelayBackend::Foundation
+    } else {
+        RelayBackend::Http(detected)
+    }
+}
+
+/// True when `target` is `fm serve`'s loopback endpoint.
+fn is_fm_serve_target(target: &str) -> bool {
+    target.contains("127.0.0.1:1976") || target.contains("localhost:1976")
+}
+
+/// Hello-frame model ids. The in-process system model and `fm serve` advertise
+/// `foundation-model`, the upstream name pool routing joins on. The catalog id
+/// `apple/foundation-model` is not that key. :8000 and Ollama advertise only
+/// the ids they returned.
+fn models_for_hello(backend: RelayBackend, fetched: &[String]) -> Vec<String> {
+    match backend {
+        RelayBackend::Foundation => vec![crate::foundation::FOUNDATION_MODEL_ID.to_string()],
+        RelayBackend::Http(target) => {
+            let mut models = fetched.to_vec();
+            if is_fm_serve_target(target)
+                && !models
+                    .iter()
+                    .any(|m| m == crate::foundation::FOUNDATION_MODEL_ID)
+            {
+                models.push(crate::foundation::FOUNDATION_MODEL_ID.to_string());
+            }
+            models
+        }
+    }
+}
+
+/// Body forwarded to an HTTP target. `fm serve` rejects the pool join key, so
+/// `foundation-model` and the catalog id become its local id `system`. Other
+/// servers, and any other model name, are forwarded unchanged.
+fn body_for_http_target(target: &str, body: &str) -> String {
+    if !is_fm_serve_target(target) {
+        return body.to_string();
+    }
+    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(body) else {
+        return body.to_string();
+    };
+    let Some(model) = value.get("model").and_then(|m| m.as_str()) else {
+        return body.to_string();
+    };
+    if model == crate::foundation::FOUNDATION_MODEL_ID || model == "apple/foundation-model" {
+        value["model"] = serde_json::json!(FM_SERVE_LOCAL_MODEL_ID);
+        value.to_string()
+    } else {
+        body.to_string()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -509,10 +593,11 @@ fn handle_request(
         .timeout_read(Duration::from_secs(300))
         .build();
 
+    let body = body_for_http_target(target, &frame.body);
     let resp = match agent
         .post(&url)
         .set("Content-Type", "application/json")
-        .send_string(&frame.body)
+        .send_string(&body)
     {
         Ok(resp) => resp,
         Err(ureq::Error::Status(code, resp)) => {
@@ -606,6 +691,60 @@ fn handle_request(
     let _ = tx.send(ClientFrame::Done {
         id: frame.id.clone(),
     });
+}
+
+fn handle_foundation_request(
+    tx: &mpsc::Sender<ClientFrame>,
+    frame: &RequestFrame,
+    cancel: &AtomicBool,
+) {
+    if !frame.path.is_empty() && !frame.path.contains("chat/completions") {
+        let _ = tx.send(ClientFrame::Error {
+            id: frame.id.clone(),
+            message: format!("local relay does not serve {}", frame.path),
+        });
+        return;
+    }
+    let mut session = match crate::foundation::FmSession::from_chat_body(&frame.id, &frame.body) {
+        Ok(session) => session,
+        Err(message) => {
+            let _ = tx.send(ClientFrame::Error {
+                id: frame.id.clone(),
+                message,
+            });
+            return;
+        }
+    };
+    let tx = tx.clone();
+    let id = frame.id.clone();
+    crate::foundation::run_foundation_model(&mut session, cancel, move |event| {
+        if matches!(&event, crate::foundation::FmEvent::Error(_)) {
+            vlog(&format!("request {id} failed"));
+        }
+        let _ = tx.send(foundation_client_frame(&id, event));
+    });
+}
+
+fn foundation_client_frame(id: &str, event: crate::foundation::FmEvent) -> ClientFrame {
+    match event {
+        crate::foundation::FmEvent::Head {
+            status,
+            content_type,
+        } => ClientFrame::Head {
+            id: id.to_string(),
+            status,
+            content_type,
+        },
+        crate::foundation::FmEvent::Chunk(data) => ClientFrame::Chunk {
+            id: id.to_string(),
+            data,
+        },
+        crate::foundation::FmEvent::Done => ClientFrame::Done { id: id.to_string() },
+        crate::foundation::FmEvent::Error(message) => ClientFrame::Error {
+            id: id.to_string(),
+            message,
+        },
+    }
 }
 
 /// Longest prefix of `bytes` ending on a UTF-8 codepoint boundary.
@@ -787,7 +926,7 @@ struct ConnState {
 /// socket dies. Returns when disconnected (caller reconnects with backoff).
 fn serve_connection(
     ws: &mut Ws,
-    target: &'static str,
+    backend: RelayBackend,
     state: &ConnState,
     max_concurrency: Option<u32>,
 ) {
@@ -795,8 +934,11 @@ fn serve_connection(
 
     // Capability advertisement on every connect/reconnect (#1128), so models
     // added to the local server show up at the next reconnect at latest.
-    let fetched = fetch_local_models(target);
-    let models = advertised_models(target, &fetched);
+    let fetched = match backend {
+        RelayBackend::Foundation => Vec::new(),
+        RelayBackend::Http(target) => fetch_local_models(target),
+    };
+    let models = models_for_hello(backend, &fetched);
     send_frame(
         ws,
         &ClientFrame::Hello {
@@ -836,7 +978,7 @@ fn serve_connection(
         //    (read timeout) is not fatal — just loop back to the queue drain.
         match ws.read() {
             Ok(tungstenite::Message::Text(text)) => match parse_server_frame(&text) {
-                Some(Ok(frame)) => spawn_request(state, frame, target),
+                Some(Ok(frame)) => spawn_request(state, frame, backend),
                 Some(Err(id)) => {
                     if let Some(flag) = lock_in_flight(&state.in_flight).remove(&id) {
                         flag.store(true, Ordering::SeqCst);
@@ -853,7 +995,7 @@ fn serve_connection(
                 continue;
             }
             Err(tungstenite::Error::ConnectionClosed) | Err(tungstenite::Error::AlreadyClosed) => {
-                return
+                return;
             }
             Err(err) => {
                 vlog(&format!("ws error: {err}"));
@@ -870,22 +1012,25 @@ fn short_id(s: &str, max_chars: usize) -> String {
 }
 
 /// Spawn a worker thread for one incoming request frame and register its
-/// cancel flag. `target` is 'static by construction: either one of the built-in
-/// probe constants or a leaked --target value (resolved once per process).
+/// cancel flag. An HTTP target is 'static: either a built-in probe constant or
+/// a leaked --target value, resolved once per process.
 fn lock_in_flight(
     map: &Arc<Mutex<BTreeMap<String, Arc<AtomicBool>>>>,
 ) -> std::sync::MutexGuard<'_, BTreeMap<String, Arc<AtomicBool>>> {
     map.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-fn spawn_request(state: &ConnState, frame: RequestFrame, target: &'static str) {
+fn spawn_request(state: &ConnState, frame: RequestFrame, backend: RelayBackend) {
     let cancel = Arc::new(AtomicBool::new(false));
     let id = frame.id.clone();
     lock_in_flight(&state.in_flight).insert(id.clone(), Arc::clone(&cancel));
     let tx = state.tx.clone();
     if let Err(err) = std::thread::Builder::new()
         .name(format!("relay-req-{}", short_id(&id, 8)))
-        .spawn(move || handle_request(&tx, &frame, target, &cancel))
+        .spawn(move || match backend {
+            RelayBackend::Http(target) => handle_request(&tx, &frame, target, &cancel),
+            RelayBackend::Foundation => handle_foundation_request(&tx, &frame, &cancel),
+        })
     {
         lock_in_flight(&state.in_flight).remove(&id);
         let _ = state.tx.send(ClientFrame::Error {
@@ -948,14 +1093,10 @@ fn run_relay_start(
 
     let token = ensure_relay_token(args.token.as_deref(), &args.name, parsed, env)?;
 
-    let target: &'static str = match args
-        .target
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        Some(t) => Box::leak(t.to_string().into_boxed_str()),
-        None => detect_relay_target(),
+    let backend = resolve_backend(args.target.as_deref());
+    let target_label = match backend {
+        RelayBackend::Foundation => crate::foundation::FOUNDATION_MODEL_ID,
+        RelayBackend::Http(target) => target,
     };
 
     if args.pool {
@@ -979,7 +1120,7 @@ fn run_relay_start(
         .as_deref()
         .filter(|s| !s.trim().is_empty())
         .unwrap_or(DEFAULT_WS_URL);
-    println!("Starting relay: target={target} url={url}");
+    println!("Starting relay: target={target_label} url={url}");
 
     let (tx, rx) = mpsc::channel();
     let conn = ConnState {
@@ -994,7 +1135,7 @@ fn run_relay_start(
             Ok(mut ws) => {
                 attempt = 0;
                 set_read_timeouts(&ws, Duration::from_millis(SOCKET_POLL_MS));
-                serve_connection(&mut ws, target, &conn, args.max_concurrency);
+                serve_connection(&mut ws, backend, &conn, args.max_concurrency);
                 abort_in_flight(&conn.in_flight);
             }
             Err(err) => {
@@ -1056,8 +1197,10 @@ pub fn run(
             eprintln!(
                 "               [--name <device>] [--pool] [--max-concurrency <n>] [--verbose]"
             );
-            eprintln!("       (--target auto-detects fm serve on :1976, then :8000, then Ollama on :11434)");
-            eprintln!("       (--pool opts this device into the shared relay pool — earn credits when idle)");
+            eprintln!("       (--target {})", detect_help_line());
+            eprintln!(
+                "       (--pool opts this device into the shared relay pool — earn credits when idle)"
+            );
             eprintln!(r#"       {bin} relay pair --name "My Mac""#);
             Err(crate::cmd::dispatch::USAGE.to_string())
         }
@@ -1188,31 +1331,136 @@ mod tests {
     }
 
     #[test]
-    fn fm_serve_targets_advertise_the_pool_join_key() {
-        // Even when /models returns nothing usable, the executor's upstream
-        // model_name must be present or pool routing can't match (#1128).
-        let models = advertised_models(FM_SERVE_TARGET, &[]);
+    fn in_process_model_advertises_the_upstream_join_key() {
+        // Pool routing joins on the upstream model name, even when the HTTP
+        // catalog id is apple/foundation-model.
+        let models = models_for_hello(RelayBackend::Foundation, &["llama3".into()]);
         assert_eq!(models, vec!["foundation-model"]);
-
-        let fetched = vec!["_base".into()];
-        let models = advertised_models(FM_SERVE_TARGET, &fetched);
-        assert_eq!(models, vec!["_base", "foundation-model"]);
+        assert!(!models.iter().any(|m| m == "apple/foundation-model"));
     }
 
     #[test]
-    fn non_fm_targets_keep_local_model_list_verbatim() {
+    fn http_targets_advertise_the_server_model_list() {
+        // :8000 and Ollama are not the Apple model. Their hello list is
+        // exactly what /v1/models returned.
         let fetched = vec!["llama3".into(), "qwen2".into()];
-        let models = advertised_modules_placeholder(&fetched);
+        let models = models_for_hello(RelayBackend::Http("http://10.0.0.5:8000/v1"), &fetched);
         assert_eq!(models, fetched);
-
-        // No duplicate when fm serve itself already lists the id.
-        let fetched = vec!["foundation-model".into()];
-        let models = advertised_models("http://localhost:1976/v1", &fetched);
-        assert_eq!(models, vec!["foundation-model"]);
+        let models = models_for_hello(RelayBackend::Http(OLLAMA_TARGET), &fetched);
+        assert_eq!(models, fetched);
+        assert!(!models.iter().any(|m| m == "foundation-model"));
     }
 
-    fn advertised_modules_placeholder(fetched: &[String]) -> Vec<String> {
-        advertised_models("http://10.0.0.5:8000/v1", fetched)
+    #[test]
+    fn fm_serve_advertises_the_pool_join_key() {
+        // fm serve lists `system` (older builds listed `_base`). Pool routing
+        // joins on foundation-model, so the hello frame has to add it.
+        let models = models_for_hello(RelayBackend::Http(FM_SERVE_TARGET), &["system".into()]);
+        assert_eq!(models, vec!["system", "foundation-model"]);
+        let models = models_for_hello(RelayBackend::Http("http://localhost:1976/v1"), &[]);
+        assert_eq!(models, vec!["foundation-model"]);
+        let models = models_for_hello(
+            RelayBackend::Http(FM_SERVE_TARGET),
+            &["foundation-model".into()],
+        );
+        assert_eq!(models, vec!["foundation-model"]);
+        assert!(!models.iter().any(|m| m == "apple/foundation-model"));
+    }
+
+    #[test]
+    fn auto_detect_probes_fm_serve_then_port_8000_then_ollama() {
+        let targets: Vec<_> = RELAY_PROBES.iter().map(|p| p.target).collect();
+        assert_eq!(
+            targets,
+            vec![FM_SERVE_TARGET, DEFAULT_TARGET, OLLAMA_TARGET]
+        );
+    }
+
+    #[test]
+    fn fm_serve_request_rewrites_the_pool_join_key_to_the_local_model_id() {
+        let out = body_for_http_target(
+            FM_SERVE_TARGET,
+            r#"{"model":"foundation-model","messages":[{"role":"user","content":"hi"}]}"#,
+        );
+        let value: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(value["model"], "system");
+        assert_eq!(value["messages"][0]["content"], "hi");
+
+        let out = body_for_http_target(
+            "http://localhost:1976/v1",
+            r#"{"model":"apple/foundation-model"}"#,
+        );
+        let value: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(value["model"], "system");
+
+        let ollama = r#"{"model":"llama3"}"#;
+        assert_eq!(body_for_http_target(OLLAMA_TARGET, ollama), ollama);
+        let already = r#"{"model":"system"}"#;
+        assert_eq!(body_for_http_target(FM_SERVE_TARGET, already), already);
+        assert_eq!(
+            body_for_http_target(FM_SERVE_TARGET, "not-json"),
+            "not-json"
+        );
+    }
+
+    #[test]
+    fn explicit_target_wins_over_an_available_system_model() {
+        match choose_backend(
+            Some(" http://127.0.0.1:9/v1 "),
+            true,
+            "http://localhost:11434/v1",
+        ) {
+            RelayBackend::Http(target) => assert_eq!(target, "http://127.0.0.1:9/v1"),
+            RelayBackend::Foundation => panic!("explicit --target must select that server"),
+        }
+    }
+
+    #[test]
+    fn available_system_model_is_chosen_before_http_probes() {
+        assert_eq!(
+            choose_backend(None, true, OLLAMA_TARGET),
+            RelayBackend::Foundation
+        );
+        assert_eq!(
+            choose_backend(Some("  "), false, OLLAMA_TARGET),
+            RelayBackend::Http(OLLAMA_TARGET)
+        );
+    }
+
+    #[test]
+    fn foundation_request_with_a_bad_body_does_not_call_the_model() {
+        let (tx, rx) = mpsc::channel();
+        handle_foundation_request(
+            &tx,
+            &req("r9", "/chat/completions", "not-json"),
+            &AtomicBool::new(false),
+        );
+        let frames = drain(&rx);
+        match frames.as_slice() {
+            [ClientFrame::Error { id, message }] => {
+                assert_eq!(id, "r9");
+                assert!(message.contains("not JSON"), "{message}");
+            }
+            _ => panic!("expected one error frame, got {} frames", frames.len()),
+        }
+    }
+
+    #[test]
+    fn foundation_request_rejects_a_path_other_than_chat_completions() {
+        let (tx, rx) = mpsc::channel();
+        handle_foundation_request(
+            &tx,
+            &req("r10", "/v1/models", "{}"),
+            &AtomicBool::new(false),
+        );
+        let frames = drain(&rx);
+        match frames.as_slice() {
+            [ClientFrame::Error { id, message }] => {
+                assert_eq!(id, "r10");
+                assert!(message.contains("/v1/models"), "{message}");
+            }
+            _ => panic!("expected one error frame, got {} frames", frames.len()),
+        }
     }
 
     #[test]

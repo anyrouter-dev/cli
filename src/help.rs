@@ -247,9 +247,7 @@ pub fn command_help(command: &str) -> Option<String> {
             &bin,
             "{bin} prompt — hub prompts not yet in the native CLI. Use {bin} onboard for agent paste prompts.\n",
         ),
-        "onboard" | "impl" | "plan" | "fix" | "deploy" | "cp" => {
-            crate::onboard::usage_hint(&bin)
-        }
+        "onboard" | "impl" | "plan" | "fix" | "deploy" | "cp" => crate::onboard::usage_hint(&bin),
         "claude" => launch_help(&bin, "claude", "Claude Code"),
         "codex" => launch_help(&bin, "codex", "Codex"),
         "grok" => launch_help(&bin, "grok", "Grok Build"),
@@ -522,11 +520,16 @@ If the newest build fails checksum, is missing, or is corrupt, the next
 good release on the same channel is installed instead of aborting.
 ";
 
+#[cfg(target_os = "macos")]
 const RELAY: &str = "\
 {bin} relay — pair this machine and serve a local OpenAI-compatible server to the cloud
 
-Runs your local models (fm serve on Apple Silicon, Ollama, LM Studio, …)
+Runs your local models (fm serve, Ollama, LM Studio, …)
 behind one https://anyrouter.dev endpoint. The CLI dials out; no ports open.
+When the system model is available, relay serves it in-process and
+advertises foundation-model. Otherwise it probes fm serve :1976, :8000,
+and Ollama :11434. fm serve advertises foundation-model too. The other
+servers advertise their /v1/models list.
 
 Subcommands:
   {bin} relay start   connect and keep serving (Ctrl-C to stop)
@@ -545,7 +548,38 @@ Start options:
   --verbose              show relay transport diagnostics
 
 Examples:
-  fm serve && {bin} relay start
+  {bin} relay start
+  {bin} relay start --pool --target http://localhost:11434/v1
+";
+
+#[cfg(not(target_os = "macos"))]
+const RELAY: &str = "\
+{bin} relay — pair this machine and serve a local OpenAI-compatible server to the cloud
+
+Runs your local models (fm serve, Ollama, LM Studio, …)
+behind one https://anyrouter.dev endpoint. The CLI dials out; no ports open.
+Probes fm serve :1976, :8000, and Ollama :11434. Whatever responds is
+served. A server on :1976 also advertises the pool model id; the others
+advertise their /v1/models list.
+
+Subcommands:
+  {bin} relay start   connect and keep serving (Ctrl-C to stop)
+  {bin} relay pair    pair this device only (start auto-pairs)
+
+Start options:
+  --target <url>         local OpenAI-compatible base URL
+                         (default: auto-detect fm serve :1976, :8000,
+                         Ollama :11434)
+  --token <rk_…>         pairing token (else $ANYROUTER_RELAY_TOKEN or the
+                         stored relay_token; an sk-ar key also works)
+  --url <wss://…>        relay websocket URL
+  --name <device>        device name when auto-pairing (default \"My Mac\")
+  --pool                 donate idle capacity to the shared pool, earn credits
+  --max-concurrency <n>  concurrent requests advertised to the pool
+  --verbose              show relay transport diagnostics
+
+Examples:
+  {bin} relay start
   {bin} relay start --pool --target http://localhost:11434/v1
 ";
 

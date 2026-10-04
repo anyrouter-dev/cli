@@ -9,6 +9,8 @@ pub mod commands;
 pub mod completion;
 pub mod config;
 pub mod demo;
+#[cfg(feature = "native")]
+mod foundation;
 pub mod help;
 pub mod http;
 pub mod install;
