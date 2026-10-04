@@ -42,7 +42,7 @@ public func anyr_fm_complete(
             return
         }
         #if canImport(FoundationModels)
-        box.rc = AnyrFm.generate(
+        box.rc = await AnyrFm.generate(
             instructions: instructionsCopy,
             prompt: promptCopy,
             stream: stream != 0,
@@ -115,7 +115,7 @@ private enum AnyrFm {
         prompt: String,
         stream: Bool,
         callbacks: Callbacks
-    ) -> Int32 {
+    ) async -> Int32 {
         guard case .available = SystemLanguageModel.default.availability else {
             callbacks.fail("system model is unavailable")
             return 1
