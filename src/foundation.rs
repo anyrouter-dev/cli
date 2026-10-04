@@ -322,7 +322,7 @@ pub(crate) fn probe_foundation_model() -> Result<bool, String> {
 pub(crate) fn run_foundation_model(
     session: &mut FmSession,
     cancel: &AtomicBool,
-    send: impl FnMut(FmEvent) + Send,
+    send: impl FnMut(FmEvent) + Send + 'static,
 ) {
     if cancel.load(Ordering::SeqCst) {
         return;
@@ -467,7 +467,7 @@ fn deliver(session: &mut FmSession, send: &mut impl FnMut(FmEvent), message: &st
 fn drive_foundation_model(
     session: &mut FmSession,
     cancel: &AtomicBool,
-    mut send: impl FnMut(FmEvent) + Send,
+    mut send: impl FnMut(FmEvent) + Send + 'static,
 ) {
     let mut owned = std::mem::replace(session, FmSession::empty());
     let instructions = match CString::new(owned.instructions()) {
