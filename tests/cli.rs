@@ -3122,3 +3122,36 @@ fn launch_help_lists_claude_only_flags_for_claude_alone() {
         }
     }
 }
+
+#[test]
+fn usage_403_points_at_auth_login() {
+    // WHY: a restricted key got a bare "HTTP 403" with no way forward, while
+    // `keys` and `api` already name the fix.
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        if let Ok((mut s, _)) = listener.accept() {
+            let mut buf = [0u8; 2048];
+            let _ = s.read(&mut buf);
+            let _ = s.write_all(
+                b"HTTP/1.1 403 Forbidden\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+            );
+        }
+    });
+    let base = format!("http://127.0.0.1:{port}");
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_anyr"))
+        .args([
+            "usage",
+            "--key",
+            "sk-ar-v1-testkey0000000000",
+            "--base-url",
+            &base,
+        ])
+        .env("ANYROUTER_HOME", temp_home())
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{err}");
+    assert!(err.contains("auth login"), "{err}");
+}

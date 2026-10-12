@@ -376,7 +376,14 @@ pub fn fetch_credits(base_url: &str, api_key: &str) -> Result<serde_json::Value,
     let url = join_api(base_url, "/v1/credits");
     let (status, body) = http_get(&url, Some(api_key))?;
     if !(200..300).contains(&status) {
-        return Err(format!("Could not fetch usage (HTTP {status})."));
+        let hint = match status {
+            401 | 403 => format!(
+                " This key may not be allowed to read credits; run `{} auth login` for a full-access CLI key.",
+                crate::help::invoked_bin()
+            ),
+            _ => String::new(),
+        };
+        return Err(format!("Could not fetch usage (HTTP {status}).{hint}"));
     }
     serde_json::from_str(&body).map_err(|e| format!("Invalid credits response: {e}"))
 }
