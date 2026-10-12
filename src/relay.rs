@@ -1074,21 +1074,12 @@ pub fn run(
     match sub {
         Some("start") => run_relay_start(parsed, env),
         Some("pair") => run_relay_pair(parsed, env),
-        other => {
-            let bin = crate::help::invoked_bin();
-            if let Some(o) = other.filter(|o| !o.is_empty()) {
-                eprintln!("Unknown relay subcommand: {o}");
-            }
-            eprintln!(
-                "Usage: {bin} relay start [--target <url>] [--token <rk_…>] [--url <wss://…>]"
-            );
-            eprintln!(
-                "               [--name <device>] [--pool] [--max-concurrency <n>] [--verbose]"
-            );
-            eprintln!("       (--target auto-detects fm serve on :1976, then :8000, then Ollama on :11434)");
-            eprintln!("       (--pool opts this device into the shared relay pool — earn credits when idle)");
-            eprintln!(r#"       {bin} relay pair --name "My Mac""#);
-            Err(crate::cmd::dispatch::USAGE.to_string())
+        Some(other) if !other.is_empty() => Err(crate::cmd::dispatch::hint(&format!(
+            "Unknown relay subcommand: {other}\nUsage: {{bin}} relay <start|pair> (see `{{bin}} relay --help`)"
+        ))),
+        _ => {
+            print!("{}", crate::help::command_help("relay").unwrap_or_default());
+            Ok(0)
         }
     }
 }
