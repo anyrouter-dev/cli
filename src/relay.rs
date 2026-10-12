@@ -1046,7 +1046,7 @@ pub fn run(
         Some("start") => run_relay_start(parsed, env),
         Some("pair") => run_relay_pair(parsed, env),
         Some(other) if !other.is_empty() => Err(crate::cmd::dispatch::hint(&format!(
-            "Unknown relay subcommand \"{other}\". Use: {{bin}} relay start | pair (see `{{bin}} relay --help`)."
+            "Unknown relay subcommand: {other}\nUsage: {{bin}} relay <start|pair> (see `{{bin}} relay --help`)"
         ))),
         _ => {
             print!("{}", crate::help::command_help("relay").unwrap_or_default());

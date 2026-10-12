@@ -3165,7 +3165,10 @@ fn usage_errors_print_clean_message_without_marker() {
     assert!(err.starts_with("Unknown models command"), "{err:?}");
     let (code, _, err) = run(&["relay", "bogus"]);
     assert_eq!(code, 2);
-    assert!(err.starts_with("Unknown relay subcommand"), "{err:?}");
+    assert!(
+        err.starts_with("Unknown relay subcommand: bogus"),
+        "{err:?}"
+    );
     let (code, out, _) = run(&["relay"]);
     assert_eq!(code, 0);
     assert!(out.contains("anyr relay start"), "{out}");
