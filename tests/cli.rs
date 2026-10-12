@@ -3104,3 +3104,21 @@ fn dash_key_with_empty_stdin_fails_on_non_login_commands() {
         assert!(stderr.contains("No key on stdin"), "{args:?}: {stderr}");
     }
 }
+
+#[test]
+fn launch_help_lists_claude_only_flags_for_claude_alone() {
+    // WHY: `codex --help` used to advertise --haiku/--yolo/--hub, which only
+    // Claude Code honours, so users tried flags that silently did nothing.
+    let (_, claude, _) = run(&["claude", "--help"]);
+    for flag in ["--haiku", "--yolo", "--hub"] {
+        assert!(claude.contains(flag), "claude help lacks {flag}:\n{claude}");
+    }
+    for agent in ["codex", "grok", "opencode", "pi", "pool"] {
+        let (code, out, _) = run(&[agent, "--help"]);
+        assert_eq!(code, 0);
+        assert!(out.contains("--model"), "{agent} help lost --model:\n{out}");
+        for flag in ["--haiku", "--sonnet", "--yolo", "--hub"] {
+            assert!(!out.contains(flag), "{agent} help shows {flag}:\n{out}");
+        }
+    }
+}

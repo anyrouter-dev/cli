@@ -14,13 +14,13 @@ Options:
   --yes, --ok           Skip confirmation prompts (login / install)
   --model auto|<id>     Session model. auto / anyrouter/auto; [1m] and [500k] \
 are min-context floors on auto (not catalog SKUs).
-  --haiku <id>          Claude /model haiku and subagents
-  --sonnet <id>         Claude /model sonnet
-  --opus <id>           Claude /model opus
-  --fable <id>          Claude /model fable (also the auto-fallback target)
+@claude   --haiku <id>          Claude /model haiku and subagents
+@claude   --sonnet <id>         Claude /model sonnet
+@claude   --opus <id>           Claude /model opus
+@claude   --fable <id>          Claude /model fable (also the auto-fallback target)
   --effort <level>      Reasoning effort: minimal | low | medium | high | xhigh | max
-  --yolo                Claude only: launch with --dangerously-skip-permissions
-  --hub <slug>          Load a hub: sync ~/.anyrouter/hubs + claude --plugin-dir
+@claude   --yolo                Launch with --dangerously-skip-permissions
+@claude   --hub <slug>          Load a hub: sync ~/.anyrouter/hubs + claude --plugin-dir
   --profile <name>      Use a named profile
   --command-path <path> Explicit path to the agent executable
   --install             Install a missing agent without prompting (implied on a TTY)
@@ -170,9 +170,19 @@ LAUNCH
     )
 }
 
+/// Lines tagged `@claude ` in the body only apply to Claude Code; other agents
+/// do not get them.
 fn launch_help(bin: &str, id: &str, label: &str) -> String {
+    let body: String = LAUNCH_HELP_BODY
+        .lines()
+        .filter_map(|line| match line.strip_prefix("@claude ") {
+            Some(rest) => (id == "claude").then_some(rest),
+            None => Some(line),
+        })
+        .map(|line| format!("{line}\n"))
+        .collect();
     format!(
-        "{bin} {id} — launch {label} through AnyRouter\n\nUsage:\n  {bin} {id} [options] [-- <{id}-args>]\n\n{LAUNCH_HELP_BODY}"
+        "{bin} {id} — launch {label} through AnyRouter\n\nUsage:\n  {bin} {id} [options] [-- <{id}-args>]\n\n{body}"
     )
 }
 
