@@ -3155,3 +3155,18 @@ fn usage_403_points_at_auth_login() {
     assert_eq!(out.status.code(), Some(1), "{err}");
     assert!(err.contains("auth login"), "{err}");
 }
+
+#[test]
+fn usage_errors_print_clean_message_without_marker() {
+    // WHY: the usage marker was doubled for `models <bad>` and leaked into
+    // stderr; bare `relay` dumped usage as an error instead of help.
+    let (code, _, err) = run(&["models", "nonexistent"]);
+    assert_eq!(code, 2);
+    assert!(err.starts_with("Unknown models command"), "{err:?}");
+    let (code, _, err) = run(&["relay", "bogus"]);
+    assert_eq!(code, 2);
+    assert!(err.starts_with("Unknown relay subcommand"), "{err:?}");
+    let (code, out, _) = run(&["relay"]);
+    assert_eq!(code, 0);
+    assert!(out.contains("anyr relay start"), "{out}");
+}

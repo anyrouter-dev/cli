@@ -366,13 +366,9 @@ pub(crate) fn run_models(
         .and_then(|c| c.profiles.get(&c.active_profile));
     let sub = parsed.passthrough.first().map(String::as_str);
     if let Some(verb) = sub.filter(|v| !matches!(*v, "list" | "ls" | "use")) {
-        return Err(format!(
-            "{}{}",
-            crate::cmd::dispatch::USAGE,
-            hint(&format!(
-                "Unknown models command \"{verb}\". Use: {{bin}} models [list|ls|use <id>]"
-            ))
-        ));
+        return Err(hint(&format!(
+            "Unknown models command \"{verb}\". Use: {{bin}} models [list|ls|use <id>]"
+        )));
     }
     let agent = flag_agent(parsed);
     // Pinning a caller-supplied id to an agent does not need the catalog —
