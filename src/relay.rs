@@ -3,19 +3,20 @@
 //! packages/agent/src/commands/relay.ts (TS CLI #1099); the cloud side
 //! (`MacBridgeDO`) is live, so only this client was missing.
 //!
-//! Zero-setup auth: `anyr relay start` resolves credentials in this order —
-//!   1. explicit `--token`
-//!   2. `ANYROUTER_RELAY_TOKEN` env var
-//!   3. `relay_token` in the active profile of ~/.anyrouter/config.yaml
-//!   4. AUTO-PAIR with an existing sk-ar-v1 inference key (--token-less chain:
-//!      flag/env/config) → POST /api/v1/relay/devices, store the minted rk_
-//!   5. DEVICE LOGIN when no credentials exist at all — RFC 8628 flow mints an
-//!      sk-ar key (stored), then auto-pair as in 4. An sk-ar key alone is
-//!      always sufficient; device login is a convenience path, not a
-//!      requirement.
+//! One-key auth: `anyr relay start` resolves the WebSocket credential in this
+//! order —
+//!   1. explicit `--token` (legacy rk_ pairing token)
+//!   2. `ANYROUTER_RELAY_TOKEN` env var (legacy)
+//!   3. `relay_token` in the active profile of ~/.anyrouter/config.yaml (legacy)
+//!   4. the regular sk-ar-v1 inference key (`--key` / `ANYROUTER_API_KEY` /
+//!      profile). The cloud pairs IMPLICITLY on connect (`?name=` labels a new
+//!      device), so no `POST /relay/devices` round trip happens and no rk_ is
+//!      minted. That call is not allowed for scoped keys.
+//!   5. DEVICE LOGIN when no credentials exist at all (interactive only) —
+//!      RFC 8628 flow mints an sk-ar key (stored), then connect as in 4.
 //!
-//! Both paths store the rk_ token under `relay_token` in the shared
-//! ~/.anyrouter/config.yaml, so the TS CLI picks it up too.
+//! `anyr relay pair` still mints and stores an rk_ under `relay_token` in the
+//! shared ~/.anyrouter/config.yaml, so the TS CLI keeps working.
 //!
 //! Transport: one outbound WebSocket to the cloud relay (via
 //! `/api/v1/relay/connect`), auto-reconnecting with exponential backoff. For
@@ -256,10 +257,10 @@ fn pair_device(
 }
 
 /// Resolve the credential chain documented in the module comment. Returns the
-/// rk_ relay token ready for the connect handshake.
-fn ensure_relay_token(
+/// bearer for the connect handshake: an rk_ token or an sk-ar key. Never calls
+/// the cloud unless it has to run device login.
+fn resolve_relay_credential(
     explicit: Option<&str>,
-    device_name: &str,
     parsed: &crate::parse::ParsedArgs,
     env: &BTreeMap<String, String>,
 ) -> Result<String, String> {
@@ -279,44 +280,24 @@ fn ensure_relay_token(
     {
         return Ok(t);
     }
-    let path = crate::config::resolve_config_path(None, env);
-
-    // No relay token yet: resolve (or mint) an sk-ar inference key, auto-pair.
-    let api_key = match crate::key::resolve_api_key(
-        &parsed.flags,
-        env,
-        crate::key::load_config_if_present(&path)
-            .as_ref()
-            .and_then(|c| c.profiles.get(&c.active_profile)),
-    ) {
-        Some(k) => k,
-        None => {
-            // Interactive convenience path only: a headless invocation
-            // (cron, CI, piped output) must not sit polling a device code.
-            if !crate::term::is_interactive() {
-                let bin = crate::help::invoked_bin();
-                return Err(format!(
-                    "No relay token and no AnyRouter key. Run `{bin} login`, \
+    if let Some(key) = resolve_sk_ar_key(parsed, env) {
+        return Ok(key);
+    }
+    // Interactive convenience path only: a headless invocation (cron, CI,
+    // piped output) must not sit polling a device code.
+    if !crate::term::is_interactive() {
+        let bin = crate::help::invoked_bin();
+        return Err(format!(
+            "No relay token and no AnyRouter key. Run `{bin} login`, \
 or set ANYROUTER_API_KEY / {RELAY_TOKEN_ENV_VAR}, or pass --token."
-                ));
-            }
-            ulog("No AnyRouter credentials found — starting device login.");
-            let open_browser = crate::auth::browser_likely_available(env);
-            let token =
-                crate::auth::login_via_device(&device_login_base(), Some("cli"), open_browser)?;
-            persist_api_key(&token.api_key, env)?;
-            ulog("Logged in.");
-            token.api_key
-        }
-    };
-
-    ulog("No relay token found — pairing this device automatically…");
-    let token = pair_device(&api_key, device_name, env)?;
-    ulog(&format!(
-        "Paired as \"{device_name}\". Token saved to {}.",
-        path.display()
-    ));
-    Ok(token)
+        ));
+    }
+    ulog("No AnyRouter credentials found — starting device login.");
+    let open_browser = crate::auth::browser_likely_available(env);
+    let token = crate::auth::login_via_device(&device_login_base(), Some("cli"), open_browser)?;
+    persist_api_key(&token.api_key, env)?;
+    ulog("Logged in.");
+    Ok(token.api_key)
 }
 
 fn read_stored_relay_token(env: &BTreeMap<String, String>) -> Option<String> {
@@ -725,7 +706,41 @@ fn resolve_sk_ar_key(
 
 type Ws = tungstenite::WebSocket<tungstenite::stream::MaybeTlsStream<std::net::TcpStream>>;
 
-fn connect_ws(url: &str, token: &str) -> Result<Ws, String> {
+/// Why a connect attempt failed. `Refused` (401/403) will not heal on retry —
+/// the credential is wrong or out of scope — so the loop stops instead of
+/// hammering the cloud with it forever.
+#[derive(Debug)]
+enum ConnectError {
+    Refused(String),
+    Transient(String),
+}
+
+impl From<String> for ConnectError {
+    fn from(message: String) -> Self {
+        Self::Transient(message)
+    }
+}
+
+/// Append the device `?name=` the cloud uses to label an implicitly paired
+/// device. A URL that already carries a query is left alone. The credential
+/// never goes in the URL (it lands in access logs): it rides the header.
+fn relay_url_with_name(url: &str, name: &str) -> String {
+    if url.contains('?') {
+        return url.to_string();
+    }
+    let encoded: String = name
+        .bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                (b as char).to_string()
+            }
+            _ => format!("%{b:02X}"),
+        })
+        .collect();
+    format!("{url}?name={encoded}")
+}
+
+fn connect_ws(url: &str, token: &str) -> Result<Ws, ConnectError> {
     use tungstenite::client::IntoClientRequest;
     use tungstenite::http::header::AUTHORIZATION;
     use tungstenite::http::HeaderValue;
@@ -749,8 +764,19 @@ fn connect_ws(url: &str, token: &str) -> Result<Ws, String> {
         .to_string();
     let port = uri.port_u16().unwrap_or(if tls { 443 } else { 80 });
     let stream = dial_with_timeout(&host, port, WS_CONNECT_TIMEOUT)?;
-    let (ws, _resp) = tungstenite::client_tls(request, stream).map_err(|e| e.to_string())?;
-    Ok(ws)
+    match tungstenite::client_tls(request, stream) {
+        Ok((ws, _resp)) => Ok(ws),
+        Err(tungstenite::HandshakeError::Failure(tungstenite::Error::Http(resp)))
+            if matches!(resp.status().as_u16(), 401 | 403) =>
+        {
+            Err(ConnectError::Refused(format!(
+                "the relay refused this credential ({}). Check the key is valid and allowed to \
+use /api/v1/relay/connect, or pass --token.",
+                resp.status().as_u16()
+            )))
+        }
+        Err(e) => Err(ConnectError::Transient(e.to_string())),
+    }
 }
 
 const WS_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
@@ -946,7 +972,7 @@ fn run_relay_start(
     let args = parse_start_args(parsed);
     VERBOSE.store(parsed.flag_true("verbose"), Ordering::Relaxed);
 
-    let token = ensure_relay_token(args.token.as_deref(), &args.name, parsed, env)?;
+    let token = resolve_relay_credential(args.token.as_deref(), parsed, env)?;
 
     let target: &'static str = match args
         .target
@@ -974,11 +1000,13 @@ fn run_relay_start(
         }
     }
 
-    let url = args
-        .url
-        .as_deref()
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or(DEFAULT_WS_URL);
+    let url = relay_url_with_name(
+        args.url
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or(DEFAULT_WS_URL),
+        &args.name,
+    );
     println!("Starting relay: target={target} url={url}");
 
     let (tx, rx) = mpsc::channel();
@@ -990,14 +1018,15 @@ fn run_relay_start(
 
     let mut attempt: u32 = 0;
     loop {
-        match connect_ws(url, &token) {
+        match connect_ws(&url, &token) {
             Ok(mut ws) => {
                 attempt = 0;
                 set_read_timeouts(&ws, Duration::from_millis(SOCKET_POLL_MS));
                 serve_connection(&mut ws, target, &conn, args.max_concurrency);
                 abort_in_flight(&conn.in_flight);
             }
-            Err(err) => {
+            Err(ConnectError::Refused(msg)) => return Err(format!("Relay connect failed: {msg}")),
+            Err(ConnectError::Transient(err)) => {
                 vlog(&err);
                 ulog(&format!("relay connect failed: {err}"));
             }
@@ -1520,5 +1549,249 @@ profiles:
             "missing Done"
         );
         assert_eq!(chunk_text(&frames), expected);
+    }
+
+    // ---- credential + connect behavior (one-key path) ----
+
+    fn parsed_start(flags: Vec<(&str, crate::parse::FlagValue)>) -> crate::parse::ParsedArgs {
+        crate::parse::ParsedArgs {
+            command: "relay".into(),
+            flags: flags.into_iter().map(|(k, v)| (k.to_string(), v)).collect(),
+            passthrough: vec!["start".into()],
+        }
+    }
+
+    fn env_with(home: &std::path::Path, extra: &[(&str, &str)]) -> BTreeMap<String, String> {
+        let mut env = BTreeMap::new();
+        env.insert("ANYROUTER_HOME".into(), home.display().to_string());
+        for (k, v) in extra {
+            env.insert((*k).into(), (*v).into());
+        }
+        env
+    }
+
+    fn temp_home(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("anyr-relay-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn sk_ar_key_alone_is_the_connect_credential_without_pairing() {
+        // The scoped-key bug: start used to POST /relay/devices first and died
+        // with "Pairing failed (403)". With only an sk-ar key the bearer is the
+        // key itself; nothing is minted or written to the config.
+        let home = temp_home("one-key");
+        let env = env_with(&home, &[("ANYROUTER_API_KEY", "sk-ar-v1-onlykey")]);
+        let cred = resolve_relay_credential(None, &parsed_start(vec![]), &env).unwrap();
+        assert_eq!(cred, "sk-ar-v1-onlykey");
+        assert!(
+            !home.join("config.yaml").exists(),
+            "resolving the credential must not write relay_token/device id"
+        );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn legacy_rk_tokens_still_win_over_the_sk_ar_key() {
+        let home = temp_home("legacy");
+        std::fs::write(
+            home.join("config.yaml"),
+            "active_profile: default\nprofiles:\n  default:\n    api_key: sk-ar-v1-cfg\n    relay_token: rk_stored\n",
+        )
+        .unwrap();
+        let parsed = parsed_start(vec![]);
+
+        let env = env_with(&home, &[("ANYROUTER_API_KEY", "sk-ar-v1-env")]);
+        assert_eq!(
+            resolve_relay_credential(None, &parsed, &env).unwrap(),
+            "rk_stored"
+        );
+
+        let env = env_with(
+            &home,
+            &[
+                ("ANYROUTER_RELAY_TOKEN", "rk_env"),
+                ("ANYROUTER_API_KEY", "sk-ar-v1-env"),
+            ],
+        );
+        assert_eq!(
+            resolve_relay_credential(None, &parsed, &env).unwrap(),
+            "rk_env"
+        );
+        assert_eq!(
+            resolve_relay_credential(Some(" rk_flag "), &parsed, &env).unwrap(),
+            "rk_flag"
+        );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn relay_url_gets_an_encoded_device_name_and_never_a_key() {
+        assert_eq!(
+            relay_url_with_name("wss://x.test/api/v1/relay/connect", "My Mac"),
+            "wss://x.test/api/v1/relay/connect?name=My%20Mac"
+        );
+        assert_eq!(
+            relay_url_with_name("wss://x.test/c", "Büro&x"),
+            "wss://x.test/c?name=B%C3%BCro%26x"
+        );
+        // An explicit --url query is the caller's; leave it alone.
+        assert_eq!(
+            relay_url_with_name("ws://127.0.0.1:1/c?name=Fixed", "My Mac"),
+            "ws://127.0.0.1:1/c?name=Fixed"
+        );
+    }
+
+    type MockCloud = (
+        String,
+        Arc<Mutex<Vec<(String, String)>>>,
+        std::thread::JoinHandle<()>,
+    );
+
+    /// One-shot mock cloud: accepts a single WebSocket, records the handshake
+    /// (path+query, Authorization), then runs `script` on the live socket.
+    fn spawn_mock_cloud(
+        refuse_with: Option<u16>,
+        script: impl FnOnce(&mut tungstenite::WebSocket<std::net::TcpStream>) + Send + 'static,
+    ) -> MockCloud {
+        use tungstenite::handshake::server::{ErrorResponse, Request, Response};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!(
+            "ws://{}/api/v1/relay/connect",
+            listener.local_addr().unwrap()
+        );
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_in = Arc::clone(&seen);
+        let handle = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            #[allow(clippy::result_large_err)]
+            let callback = |req: &Request, resp: Response| -> Result<Response, ErrorResponse> {
+                let auth = req
+                    .headers()
+                    .get("authorization")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("")
+                    .to_string();
+                seen_in.lock().unwrap().push((req.uri().to_string(), auth));
+                match refuse_with {
+                    Some(code) => {
+                        let mut r = ErrorResponse::new(Some("nope".into()));
+                        *r.status_mut() = tungstenite::http::StatusCode::from_u16(code).unwrap();
+                        Err(r)
+                    }
+                    None => Ok(resp),
+                }
+            };
+            if let Ok(mut ws) = tungstenite::accept_hdr(stream, callback) {
+                script(&mut ws);
+            }
+        });
+        (url, seen, handle)
+    }
+
+    #[test]
+    fn connect_sends_the_key_in_the_header_and_the_name_in_the_query_only() {
+        let (url, seen, join) = spawn_mock_cloud(None, |ws| {
+            let _ = ws.close(None);
+            let _ = ws.flush();
+        });
+        let url = relay_url_with_name(&url, "Desk");
+        assert!(connect_ws(&url, "sk-ar-v1-secret").is_ok());
+        let _ = join.join();
+        let seen = seen.lock().unwrap();
+        let (uri, auth) = &seen[0];
+        assert_eq!(auth, "Bearer sk-ar-v1-secret");
+        assert!(uri.ends_with("/api/v1/relay/connect?name=Desk"), "{uri}");
+        assert!(!uri.contains("sk-ar"), "key leaked into the URL: {uri}");
+    }
+
+    #[test]
+    fn a_401_or_403_handshake_stops_the_relay_instead_of_retrying() {
+        for code in [401u16, 403] {
+            let (url, _seen, join) = spawn_mock_cloud(Some(code), |_| {});
+            match connect_ws(&url, "sk-ar-v1-scoped") {
+                Err(ConnectError::Refused(msg)) => {
+                    assert!(msg.contains(&code.to_string()), "{msg}");
+                    assert!(!msg.contains("sk-ar"), "message must not echo the key");
+                }
+                other => panic!("expected Refused for {code}, got {other:?}"),
+            }
+            let _ = join.join();
+        }
+        // 5xx is the cloud's problem, not the credential's: keep retrying.
+        let (url, _seen, join) = spawn_mock_cloud(Some(500), |_| {});
+        assert!(matches!(
+            connect_ws(&url, "sk-ar-v1-k"),
+            Err(ConnectError::Transient(_))
+        ));
+        let _ = join.join();
+    }
+
+    #[test]
+    fn mock_cloud_round_trip_returns_the_model_text() {
+        // Whole device path with no network beyond loopback: cloud sends a
+        // `request` frame down, the relay forwards it to a stub "fm serve",
+        // and head/chunk/done come back up carrying the completion text.
+        let completion =
+            r#"{"choices":[{"message":{"role":"assistant","content":"Hello from the Mac"}}]}"#;
+        let (local, local_join) = spawn_stub_target(vec![
+            (200, r#"{"data":[{"id":"_base"}]}"#.into()), // GET /models
+            (200, completion.into()),                     // POST /chat/completions
+        ]);
+        let target: &'static str = Box::leak(local.into_boxed_str());
+
+        let (url, _seen, cloud_join) = spawn_mock_cloud(None, |ws| {
+            let first = ws.read().unwrap();
+            let hello: serde_json::Value = serde_json::from_str(first.to_text().unwrap()).unwrap();
+            assert_eq!(hello["type"], "hello");
+            assert_eq!(hello["models"][0], "_base");
+            let body =
+                r#"{"model":"foundation-model","messages":[{"role":"user","content":"hi"}]}"#;
+            ws.send(tungstenite::Message::text(
+                serde_json::json!({
+                    "type": "request", "id": "req-1", "path": "/chat/completions",
+                    "body": body, "stream": false,
+                })
+                .to_string(),
+            ))
+            .unwrap();
+            let mut types = Vec::new();
+            let mut text = String::new();
+            loop {
+                let msg = ws.read().unwrap();
+                let v: serde_json::Value = serde_json::from_str(msg.to_text().unwrap()).unwrap();
+                assert_eq!(v["id"], "req-1");
+                let ty = v["type"].as_str().unwrap().to_string();
+                if ty == "head" {
+                    assert_eq!(v["status"], 200);
+                }
+                if ty == "chunk" {
+                    text.push_str(v["data"].as_str().unwrap());
+                }
+                types.push(ty.clone());
+                if ty == "done" || ty == "error" {
+                    break;
+                }
+            }
+            assert_eq!(types.first().map(String::as_str), Some("head"));
+            assert_eq!(types.last().map(String::as_str), Some("done"));
+            assert!(text.contains("Hello from the Mac"), "{text}");
+            let _ = ws.close(None);
+            let _ = ws.flush();
+        });
+
+        let mut ws = connect_ws(&url, "sk-ar-v1-test").expect("connect to mock cloud");
+        set_read_timeouts(&ws, Duration::from_millis(20));
+        let (tx, rx) = mpsc::channel();
+        let state = ConnState {
+            tx,
+            rx,
+            in_flight: Arc::new(Mutex::new(BTreeMap::new())),
+        };
+        serve_connection(&mut ws, target, &state, None);
+        cloud_join.join().expect("mock cloud assertions");
+        let _ = local_join.join();
     }
 }
