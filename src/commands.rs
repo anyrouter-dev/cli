@@ -28,6 +28,12 @@ pub fn run(argv: Vec<String>, env: HashMap<String, String>) -> i32 {
         argv
     };
     let env: BTreeMap<String, String> = env.into_iter().collect();
+    // Detached telemetry sender (spawned by `telemetry::on_startup`).
+    #[cfg(feature = "native")]
+    if raw.first().map(String::as_str) == Some("__telemetry") {
+        crate::telemetry::send_ping(&raw[1..], &env);
+        return 0;
+    }
     // Completion callback runs before parsing: partial words like `--model`
     // with no value must not error, and nothing may hit the network.
     if raw.first().map(String::as_str) == Some("__complete") {
@@ -61,7 +67,10 @@ pub fn run(argv: Vec<String>, env: HashMap<String, String>) -> i32 {
     // opens the launcher without a TTY (`ANYR_TUI_DUMP=1`).
     if should_open_launcher(&raw, term::is_interactive(), tui_wants_dump(&parsed, &env)) {
         #[cfg(feature = "native")]
-        crate::upgrade::on_startup("menu", &parsed, &env);
+        {
+            crate::upgrade::on_startup("menu", &parsed, &env);
+            crate::telemetry::on_startup("menu", &env);
+        }
         let empty = ParsedArgs {
             command: "menu".into(),
             flags: parsed.flags.clone(),
@@ -77,7 +86,10 @@ pub fn run(argv: Vec<String>, env: HashMap<String, String>) -> i32 {
     }
 
     #[cfg(feature = "native")]
-    crate::upgrade::on_startup(command, &parsed, &env);
+    {
+        crate::upgrade::on_startup(command, &parsed, &env);
+        crate::telemetry::on_startup(command, &env);
+    }
 
     if raw.is_empty() || command == "help" || command == "--help" || command == "-h" {
         if let Some(bad) = unknown_help_topic(&parsed.passthrough) {

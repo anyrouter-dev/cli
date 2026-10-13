@@ -193,6 +193,27 @@ python scripts/bench.py measure --bin target/release/anyr \
 Interactive `menu` / `config` use a centered Ratatui dialog (GrokNight theme);
 pickers stay full-pane. `anyr menu --dump-tui` prints one ANSI-free frame for CI.
 
+## Telemetry
+
+`anyr` sends one anonymous ping per machine per day so the maintainers know which versions and platforms are in use.
+
+What is sent: event name (`ping`), a random install id, app version, OS, CPU architecture, whether it ran in CI, the subcommand name (for example `claude` or `models`), and the country (derived by Cloudflare from the request). The install id is a random UUID stored in `~/.anyrouter/telemetry-id` (or `$ANYROUTER_HOME`).
+
+What is not sent: IP address, user agent, file paths, hostnames, usernames, emails, command arguments, or any file content. Anything typed that is not a real command is reported as `unknown`.
+
+The ping runs in a detached background process with a 1 second timeout, so it never slows a command down. Nothing is sent in CI (`CI` set) or from a local `cargo` build.
+
+Opt out with any of these:
+
+- `DO_NOT_TRACK=1`
+- `ANYR_TELEMETRY_DISABLED=1`
+- `telemetry: false` in `~/.anyrouter/config.yaml`
+- `ANYR_TELEMETRY_ENDPOINT=` (empty)
+
+Set `ANYR_TELEMETRY_DEBUG=1` to print what would be sent to stderr instead of sending it.
+
+Public aggregate stats: https://telemetry.anyr.workers.dev/anyrouter-cli
+
 ## Version lock (0.1.x)
 
 `Cargo.toml`, `package.json`, and `.release-please-manifest.json` stay on
