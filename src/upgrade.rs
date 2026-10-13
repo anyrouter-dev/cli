@@ -372,7 +372,7 @@ fn is_cargo_target_build(exe: &Path) -> bool {
     })
 }
 
-fn running_from_cargo_target() -> bool {
+pub(crate) fn running_from_cargo_target() -> bool {
     std::env::current_exe()
         .map(|exe| is_cargo_target_build(&exe))
         .unwrap_or(false)
@@ -629,7 +629,7 @@ fn verify_downloaded_asset(url: &str, tmp: &Path) -> Result<(), String> {
     }
 }
 
-fn env_flag(env: &BTreeMap<String, String>, key: &str) -> Option<bool> {
+pub(crate) fn env_flag(env: &BTreeMap<String, String>, key: &str) -> Option<bool> {
     let raw = env.get(key)?.trim().to_ascii_lowercase();
     match raw.as_str() {
         "1" | "true" | "on" | "yes" => Some(true),
@@ -655,7 +655,7 @@ pub fn auto_update_enabled(env: &BTreeMap<String, String>) -> bool {
         .unwrap_or(true)
 }
 
-fn state_dir(env: &BTreeMap<String, String>) -> PathBuf {
+pub(crate) fn state_dir(env: &BTreeMap<String, String>) -> PathBuf {
     resolve_config_path(None, env)
         .parent()
         .map(Path::to_path_buf)
@@ -668,7 +668,7 @@ fn update_interval_secs(env: &BTreeMap<String, String>) -> u64 {
         .unwrap_or(DEFAULT_UPDATE_INTERVAL_SECS)
 }
 
-fn now_secs() -> u64 {
+pub(crate) fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())

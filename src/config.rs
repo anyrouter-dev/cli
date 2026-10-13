@@ -299,6 +299,8 @@ pub struct Config {
     pub last_tool: Option<String>,
     /// `None` means default on. Explicit `false` disables background auto-update.
     pub auto_update: Option<bool>,
+    /// `None` means default on. Explicit `false` disables the anonymous usage ping.
+    pub telemetry: Option<bool>,
     /// Upgrade channel: `stable` (default) or `beta`. Not shown in `ar config`.
     pub channel: Option<String>,
     pub profiles: BTreeMap<String, Profile>,
@@ -313,6 +315,7 @@ impl Default for Config {
             active_profile: DEFAULT_PROFILE.into(),
             last_tool: None,
             auto_update: None,
+            telemetry: None,
             channel: None,
             profiles: BTreeMap::new(),
             agents: BTreeMap::new(),
@@ -647,6 +650,18 @@ fn parse_require_params(value: &YamlValue) -> Vec<String> {
     }
 }
 
+fn yaml_bool(v: &YamlValue) -> Option<bool> {
+    match v {
+        YamlValue::Bool(b) => Some(*b),
+        YamlValue::String(s) => match s.trim().to_ascii_lowercase().as_str() {
+            "true" | "1" | "on" | "yes" => Some(true),
+            "false" | "0" | "off" | "no" => Some(false),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 pub fn parse_config(source: &str) -> Config {
     let root = parse_yaml_map(source);
     let mut config = Config::default();
@@ -657,15 +672,10 @@ pub fn parse_config(source: &str) -> Config {
         config.last_tool = Some(s.to_string());
     }
     if let Some(v) = root.get("auto_update") {
-        config.auto_update = match v {
-            YamlValue::Bool(b) => Some(*b),
-            YamlValue::String(s) => match s.trim().to_ascii_lowercase().as_str() {
-                "true" | "1" | "on" | "yes" => Some(true),
-                "false" | "0" | "off" | "no" => Some(false),
-                _ => None,
-            },
-            _ => None,
-        };
+        config.auto_update = yaml_bool(v);
+    }
+    if let Some(v) = root.get("telemetry") {
+        config.telemetry = yaml_bool(v);
     }
     if let Some(s) = root
         .get("channel")
@@ -720,6 +730,9 @@ pub fn serialize_config(config: &Config) -> String {
     }
     if let Some(v) = config.auto_update {
         lines.push(format!("auto_update: {v}"));
+    }
+    if let Some(v) = config.telemetry {
+        lines.push(format!("telemetry: {v}"));
     }
     if let Some(ch) = &config.channel {
         lines.push(format!("channel: {}", yaml_scalar(ch)));
@@ -1147,6 +1160,22 @@ tools:
         assert!(!off.auto_update());
         let again = parse_config(&serialize_config(&off));
         assert_eq!(again.auto_update, Some(false));
+    }
+
+    #[test]
+    fn telemetry_defaults_on_and_roundtrips_off() {
+        let missing =
+            parse_config("active_profile: default\nprofiles:\n  default:\n    api_key: x\n");
+        assert_eq!(missing.telemetry, None);
+        assert!(!serialize_config(&missing).contains("telemetry:"));
+
+        let off = parse_config(
+            "active_profile: default\ntelemetry: false\nprofiles:\n  default:\n    api_key: x\n",
+        );
+        assert_eq!(off.telemetry, Some(false));
+        // Any config rewrite (login, channel switch) must keep the opt-out.
+        let again = parse_config(&serialize_config(&off));
+        assert_eq!(again.telemetry, Some(false));
     }
 
     #[test]

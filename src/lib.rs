@@ -19,6 +19,8 @@ pub mod parse;
 pub mod relay;
 pub mod spawn;
 pub mod spinner;
+#[cfg(feature = "native")]
+pub mod telemetry;
 pub mod term;
 #[cfg(feature = "native")]
 pub mod tui;
