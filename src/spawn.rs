@@ -450,6 +450,15 @@ pub fn build_tool_env(input: BuildToolEnvInput<'_>) -> BTreeMap<String, String> 
         if claude_wants_auto_compact(input.model, input.min_context, input.context_window) {
             env.insert("CLAUDE_CODE_AUTO_COMPACT_WINDOW".into(), "1000000".into());
         }
+        // Claude Code sizes a session from its own model table, which only knows
+        // Anthropic ids, so a third-party id lands on the 200k default. Declare
+        // the window the catalog resolved. A virtual preset picks its hop per
+        // request and carries its own `[1m]` suffix, so it keeps its own window.
+        if !is_virtual_preset(input.model) {
+            if let Some(window) = input.context_window.filter(|n| *n > 0) {
+                env.insert("CLAUDE_CODE_MAX_CONTEXT_TOKENS".into(), window.to_string());
+            }
+        }
         // Label each picker entry with its role; otherwise four identical IDs
         // all render as "Custom <Alias> model".
         for (key, value) in [
