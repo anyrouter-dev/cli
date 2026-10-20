@@ -604,6 +604,7 @@ mod picker_catalog_tests {
             name: None,
             owned_by: None,
             context_length,
+            max_completion_tokens: None,
         }
     }
 

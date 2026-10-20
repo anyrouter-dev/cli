@@ -208,6 +208,7 @@ pub struct CatalogModel {
     pub name: Option<String>,
     pub owned_by: Option<String>,
     pub context_length: Option<i64>,
+    pub max_completion_tokens: Option<i64>,
 }
 
 pub fn fetch_models(base_url: &str, api_key: Option<&str>) -> Result<Vec<CatalogModel>, String> {
@@ -268,6 +269,9 @@ fn parse_models_body(body: &str) -> Result<Vec<CatalogModel>, String> {
                         .or_else(|| v.as_u64().map(|n| n as i64))
                         .or_else(|| v.as_f64().map(|n| n as i64))
                 }),
+                max_completion_tokens: item
+                    .pointer("/top_provider/max_completion_tokens")
+                    .and_then(|v| v.as_i64().or_else(|| v.as_u64().map(|n| n as i64))),
             })
         })
         .collect())
@@ -705,12 +709,14 @@ mod tests {
                 name: Some("Claude Sonnet 4.6".into()),
                 owned_by: Some("anthropic".into()),
                 context_length: Some(200_000),
+                max_completion_tokens: None,
             },
             CatalogModel {
                 id: "openai/gpt-5.4-mini".into(),
                 name: None,
                 owned_by: Some("openai".into()),
                 context_length: Some(128_000),
+                max_completion_tokens: None,
             },
         ];
         let pinned = vec!["anthropic/claude-sonnet-4.6".into()];
@@ -803,6 +809,14 @@ mod tests {
             Some("sk-ar-v1-zzzz")
         ));
         assert!(!is_active_key_row("short", Some("sk-ar-v1-abcd-secret")));
+    }
+
+    #[test]
+    fn parse_models_reads_context_and_max_completion_tokens() {
+        let body = r#"{"data":[{"id":"minimax/minimax-m3.1-flash","context_length":1000000,"top_provider":{"context_length":1000000,"max_completion_tokens":524288}}]}"#;
+        let m = parse_models_body(body).unwrap();
+        assert_eq!(m[0].context_length, Some(1_000_000));
+        assert_eq!(m[0].max_completion_tokens, Some(524_288));
     }
 
     #[test]

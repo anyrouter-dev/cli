@@ -170,18 +170,21 @@ fn demo_models(json: bool) -> String {
             name: Some("Claude Sonnet 4.6".into()),
             owned_by: Some("anthropic".into()),
             context_length: Some(200_000),
+            max_completion_tokens: None,
         },
         CatalogModel {
             id: "openai/gpt-5.4-mini".into(),
             name: Some("GPT-5.4 mini".into()),
             owned_by: Some("openai".into()),
             context_length: Some(128_000),
+            max_completion_tokens: None,
         },
         CatalogModel {
             id: "z-ai/glm-4.7-flash".into(),
             name: Some("GLM 4.7 Flash".into()),
             owned_by: Some("z-ai".into()),
             context_length: Some(128_000),
+            max_completion_tokens: None,
         },
     ];
     let pinned = vec!["anthropic/claude-sonnet-4.6".into()];
