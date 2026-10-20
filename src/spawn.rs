@@ -450,6 +450,15 @@ pub fn build_tool_env(input: BuildToolEnvInput<'_>) -> BTreeMap<String, String> 
         if claude_wants_auto_compact(input.model, input.min_context, input.context_window) {
             env.insert("CLAUDE_CODE_AUTO_COMPACT_WINDOW".into(), "1000000".into());
         }
+        // Claude Code sizes a session from its own model table, which only knows
+        // Anthropic ids, so a third-party id lands on the 200k default. Declare
+        // the window the catalog resolved. A virtual preset picks its hop per
+        // request and carries its own `[1m]` suffix, so it keeps its own window.
+        if !is_virtual_preset(input.model) {
+            if let Some(window) = input.context_window.filter(|n| *n > 0) {
+                env.insert("CLAUDE_CODE_MAX_CONTEXT_TOKENS".into(), window.to_string());
+            }
+        }
         // Label each picker entry with its role; otherwise four identical IDs
         // all render as "Custom <Alias> model".
         for (key, value) in [
@@ -1192,6 +1201,48 @@ mod tests {
                 "{key} should follow the pinned model"
             );
         }
+    }
+
+    fn claude_env(model: &str, context_window: Option<i64>) -> BTreeMap<String, String> {
+        let tool = builtin("claude").unwrap();
+        build_tool_env(BuildToolEnvInput {
+            tool_name: "claude",
+            tool: &tool,
+            profile: &profile(),
+            api_key: "sk-ar-v1-secret",
+            model,
+            effort: None,
+            context_window,
+            min_context: None,
+            model_map: None,
+        })
+    }
+
+    #[test]
+    fn claude_declares_the_model_context_window() {
+        // WHY: Claude Code only knows Anthropic model ids, so a third-party id
+        // opens on its 200k default unless the CLI declares the real window.
+        assert_eq!(
+            claude_env("minimax/minimax-m3.1-flash", Some(1_000_000))
+                .get("CLAUDE_CODE_MAX_CONTEXT_TOKENS")
+                .map(String::as_str),
+            Some("1000000")
+        );
+        // An unknown window is not a promise Claude Code should size a session to.
+        assert!(!claude_env("minimax/minimax-m3.1-flash", None)
+            .contains_key("CLAUDE_CODE_MAX_CONTEXT_TOKENS"));
+        // A virtual preset picks its hop per request, and `anyrouter/auto[1m]`
+        // already carries the suffix Claude Code reads, so a catalog cap would
+        // shrink that session.
+        assert!(!claude_env("anyrouter/auto", Some(200_000))
+            .contains_key("CLAUDE_CODE_MAX_CONTEXT_TOKENS"));
+        // A known window below 200k is still declared, so every surface agrees.
+        assert_eq!(
+            claude_env("minimax/minimax-m3.1-flash", Some(128_000))
+                .get("CLAUDE_CODE_MAX_CONTEXT_TOKENS")
+                .map(String::as_str),
+            Some("128000")
+        );
     }
 
     #[test]
