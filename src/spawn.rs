@@ -370,10 +370,11 @@ pub fn build_tool_env(input: BuildToolEnvInput<'_>) -> BTreeMap<String, String> 
         // Placeholder until `prepare_pi_wrapper` overwrites with the full catalog.
         let base = tool_base_url(input.profile, input.tool);
         let model_id = pi_resolved_model(input.model);
-        let ids = vec![model_id];
+        let entries = pi_catalog_models(&model_id, &[]);
         env.insert(
             "PI_MODELS_JSON".into(),
-            serde_json::to_string(&pi_models_config(&base, &ids)).unwrap_or_else(|_| "{}".into()),
+            serde_json::to_string(&pi_models_config(&base, &entries))
+                .unwrap_or_else(|_| "{}".into()),
         );
     }
     if input.tool_name == "opencode" {
@@ -750,11 +751,24 @@ pub fn pi_resolved_model(model: &str) -> String {
 /// Writing a single selected id made the picker show one row (e.g.
 /// `dots-studio/dots-3-note-preview`) with "Only showing models from configured
 /// providers". Pass the full catalog (selected first) so `/model` can switch.
-pub fn pi_models_config(base_url: &str, model_ids: &[String]) -> serde_json::Value {
-    let models: Vec<serde_json::Value> = model_ids
+///
+/// Pi assumes a 128k context window unless an entry sets `contextWindow`, so
+/// each entry carries the catalog `context_length` (and `maxTokens` from the
+/// catalog `top_provider.max_completion_tokens`) when known.
+pub fn pi_models_config(base_url: &str, models: &[crate::http::CatalogModel]) -> serde_json::Value {
+    let models: Vec<serde_json::Value> = models
         .iter()
-        .filter(|id| !id.is_empty())
-        .map(|id| serde_json::json!({ "id": id }))
+        .filter(|m| !m.id.is_empty())
+        .map(|m| {
+            let mut entry = serde_json::json!({ "id": m.id });
+            if let Some(n) = m.context_length.filter(|n| *n > 0) {
+                entry["contextWindow"] = n.into();
+            }
+            if let Some(n) = m.max_completion_tokens.filter(|n| *n > 0) {
+                entry["maxTokens"] = n.into();
+            }
+            entry
+        })
         .collect();
     serde_json::json!({
         "providers": {
@@ -770,22 +784,32 @@ pub fn pi_models_config(base_url: &str, model_ids: &[String]) -> serde_json::Val
     })
 }
 
-/// Deduped catalog ids for Pi, with `selected` first (after `pi_resolved_model`).
-pub fn pi_catalog_model_ids(selected: &str, catalog_ids: &[String]) -> Vec<String> {
+/// Deduped catalog entries for Pi, with `selected` first (after `pi_resolved_model`).
+pub fn pi_catalog_models(
+    selected: &str,
+    catalog: &[crate::http::CatalogModel],
+) -> Vec<crate::http::CatalogModel> {
     let selected = pi_resolved_model(selected);
-    let mut out = Vec::with_capacity(catalog_ids.len().saturating_add(1));
+    let entry = |id: &str| {
+        let row = catalog.iter().find(|m| catalog_model_id(&m.id) == id);
+        crate::http::CatalogModel {
+            id: id.to_string(),
+            name: None,
+            owned_by: None,
+            context_length: row.and_then(|m| m.context_length),
+            max_completion_tokens: row.and_then(|m| m.max_completion_tokens),
+        }
+    };
+    let mut out = Vec::with_capacity(catalog.len().saturating_add(1));
     if !selected.is_empty() {
-        out.push(selected.clone());
+        out.push(entry(&selected));
     }
-    for id in catalog_ids {
-        let id = catalog_model_id(id);
-        if id.is_empty() || id == selected || out.iter().any(|x| x == &id) {
+    for m in catalog {
+        let id = catalog_model_id(&m.id);
+        if id.is_empty() || out.iter().any(|x| x.id == id) {
             continue;
         }
-        out.push(id);
-    }
-    if out.is_empty() && !selected.is_empty() {
-        out.push(selected);
+        out.push(entry(&id));
     }
     out
 }
@@ -800,8 +824,8 @@ pub fn pi_agent_dir(config_path: &Path) -> PathBuf {
 /// Pi reads `models.json` from `PI_CODING_AGENT_DIR` (not `PI_MODELS_JSON`).
 /// Write a wrap dir with AnyRouter already registered and the full catalog listed.
 ///
-/// `catalog_ids` should be live `/v1/models` ids (any order). The selected
-/// `model` is listed first; if `catalog_ids` is empty, only the selected id is
+/// `catalog` should be live `/v1/models` rows (any order). The selected
+/// `model` is listed first; if `catalog` is empty, only the selected id is
 /// written (offline / fetch-failure fallback).
 pub fn prepare_pi_wrapper(
     env: &mut BTreeMap<String, String>,
@@ -809,13 +833,13 @@ pub fn prepare_pi_wrapper(
     profile: &Profile,
     tool: &ToolConfig,
     model: &str,
-    catalog_ids: &[String],
+    catalog: &[crate::http::CatalogModel],
 ) -> Result<(), String> {
     let dir = pi_agent_dir(config_path);
     let model_id = pi_resolved_model(model);
     let base = tool_base_url(profile, tool);
-    let ids = pi_catalog_model_ids(model, catalog_ids);
-    let models = pi_models_config(&base, &ids);
+    let entries = pi_catalog_models(model, catalog);
+    let models = pi_models_config(&base, &entries);
     write_pi_wrapper_files(&dir, &models, &model_id)?;
     env.insert(
         "PI_CODING_AGENT_DIR".into(),
@@ -1386,9 +1410,10 @@ mod tests {
         let tool = builtin("pi").unwrap();
         let mut env = BTreeMap::new();
         let catalog = vec![
-            "anyrouter/free".to_string(),
-            "anthropic/claude-sonnet-4.6".to_string(),
-            "z-ai/glm-5.2".to_string(),
+            pi_row("anyrouter/free", None, None),
+            pi_row("anthropic/claude-sonnet-4.6", Some(200_000), Some(64_000)),
+            pi_row("z-ai/glm-5.2", Some(200_000), None),
+            pi_row("minimax/minimax-m3.1-flash", Some(1_000_000), Some(524_288)),
         ];
         prepare_pi_wrapper(
             &mut env,
@@ -1412,6 +1437,17 @@ mod tests {
         assert!(models.contains("anthropic/claude-sonnet-4.6"), "{models}");
         assert!(models.contains("z-ai/glm-5.2"), "{models}");
         assert!(models.contains("anyrouter.dev/api/v1"), "{models}");
+        // Pi assumes 128k unless the entry declares the catalog window.
+        let json: serde_json::Value = serde_json::from_str(&models).unwrap();
+        let list = json["providers"]["anyrouter"]["models"].as_array().unwrap();
+        let m3 = list
+            .iter()
+            .find(|m| m["id"] == "minimax/minimax-m3.1-flash")
+            .unwrap();
+        assert_eq!(m3["contextWindow"], 1_000_000);
+        assert_eq!(m3["maxTokens"], 524_288);
+        let free = list.iter().find(|m| m["id"] == "anyrouter/free").unwrap();
+        assert!(free.get("contextWindow").is_none(), "{free}");
         let settings = std::fs::read_to_string(agent.join("settings.json")).unwrap();
         assert!(
             settings.contains("\"defaultProvider\": \"anyrouter\""),
@@ -1421,34 +1457,50 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    #[test]
-    fn pi_catalog_model_ids_puts_selected_first_and_dedupes() {
-        let ids = pi_catalog_model_ids(
-            "z-ai/glm-5.2",
-            &[
-                "anyrouter/free".into(),
-                "z-ai/glm-5.2".into(),
-                "anyrouter/free".into(),
-            ],
-        );
-        assert_eq!(
-            ids,
-            vec!["z-ai/glm-5.2".to_string(), "anyrouter/free".to_string(),]
-        );
+    fn pi_row(id: &str, ctx: Option<i64>, max: Option<i64>) -> crate::http::CatalogModel {
+        crate::http::CatalogModel {
+            id: id.into(),
+            name: None,
+            owned_by: None,
+            context_length: ctx,
+            max_completion_tokens: max,
+        }
     }
 
     #[test]
-    fn pi_models_config_lists_every_id() {
+    fn pi_catalog_models_puts_selected_first_dedupes_and_keeps_limits() {
+        let rows = pi_catalog_models(
+            "z-ai/glm-5.2",
+            &[
+                pi_row("anyrouter/free", None, None),
+                pi_row("z-ai/glm-5.2", Some(200_000), Some(16_384)),
+                pi_row("anyrouter/free", None, None),
+            ],
+        );
+        let ids: Vec<&str> = rows.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, vec!["z-ai/glm-5.2", "anyrouter/free"]);
+        assert_eq!(rows[0].context_length, Some(200_000));
+        assert_eq!(rows[0].max_completion_tokens, Some(16_384));
+    }
+
+    #[test]
+    fn pi_models_config_declares_each_models_context_window() {
         let json = pi_models_config(
             "https://anyrouter.dev/api/v1",
-            &["a/b".into(), "c/d".into()],
+            &[
+                pi_row("a/b", Some(1_000_000), Some(524_288)),
+                pi_row("c/d", None, None),
+            ],
         );
         let models = json["providers"]["anyrouter"]["models"]
             .as_array()
             .expect("models array");
         assert_eq!(models.len(), 2);
         assert_eq!(models[0]["id"], "a/b");
+        assert_eq!(models[0]["contextWindow"], 1_000_000);
+        assert_eq!(models[0]["maxTokens"], 524_288);
         assert_eq!(models[1]["id"], "c/d");
+        assert!(models[1].get("contextWindow").is_none());
     }
 
     #[test]
@@ -1582,12 +1634,14 @@ mod tests {
             name: None,
             owned_by: None,
             context_length: Some(200_000),
+            max_completion_tokens: None,
         };
         let ox = crate::http::CatalogModel {
             id: "stealth/ox-alpha".into(),
             name: None,
             owned_by: None,
             context_length: Some(1_000_000),
+            max_completion_tokens: None,
         };
         assert_eq!(
             catalog_context_window("anyrouter/auto[1m]", &[auto_row.clone(), ox.clone()]),

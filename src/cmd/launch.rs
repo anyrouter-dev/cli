@@ -133,8 +133,7 @@ pub(crate) fn run_launch(
     apply_routing_env(&mut env_map, &routing, tool_name);
     if tool_name == "pi" {
         let catalog = fetch_models(&base, Some(&key)).unwrap_or_default();
-        let catalog_ids: Vec<String> = catalog.iter().map(|m| m.id.clone()).collect();
-        prepare_pi_wrapper(&mut env_map, &path, &profile, &tool, &model, &catalog_ids)?;
+        prepare_pi_wrapper(&mut env_map, &path, &profile, &tool, &model, &catalog)?;
     }
     let mut args = Vec::new();
     args.extend(effort_args_for(tool_name, effort.as_deref()));
