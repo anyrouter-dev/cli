@@ -11,7 +11,9 @@ use std::io::IsTerminal;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
-use crate::api::{confirm, context, exit_for, read_file_capped, read_stdin, request, request_with, Ctx};
+use crate::api::{
+    confirm, context, exit_for, read_file_capped, read_stdin, request, request_with, Ctx,
+};
 use crate::cmd::dispatch::USAGE;
 use crate::key::no_key_error;
 use crate::parse::{get_string_flag, ParsedArgs};
