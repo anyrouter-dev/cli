@@ -10,6 +10,17 @@ GitHub Releases use this file as the release notes (full history through that ta
 
 * **cli:** add `anyr decision` for typed `POST /api/v1/decisions` requests with flag or stdin JSON input. Known Decisions models are refused by chat-agent launchers. ([duyet/anyrouter#3550](https://github.com/duyet/anyrouter/issues/3550))
 
+## [0.1.21](https://github.com/anyrouter-dev/cli/compare/v0.1.20...v0.1.21) (2026-10-21)
+
+
+### Bug Fixes
+
+* **claude:** declare the model context window to Claude Code ([#102](https://github.com/anyrouter-dev/cli/issues/102)) ([6e969b2](https://github.com/anyrouter-dev/cli/commit/6e969b23fc30b424f5b679ffe148a875ef76abff))
+* **cli:** default pi and claude aliases to anyrouter/free ([#107](https://github.com/anyrouter-dev/cli/issues/107)) ([e52c171](https://github.com/anyrouter-dev/cli/commit/e52c171072ad3b8e78d3aa430e2f2a784f994129))
+* **cli:** review round 6 — help text, usage errors ([#96](https://github.com/anyrouter-dev/cli/issues/96)) ([3b9909b](https://github.com/anyrouter-dev/cli/commit/3b9909b17dad21e4be0e57190a54e178985f8946))
+* **pi:** declare each model's context window in Pi models.json ([#106](https://github.com/anyrouter-dev/cli/issues/106)) ([3302bc6](https://github.com/anyrouter-dev/cli/commit/3302bc6e078b8e0e83bac55651f2a8dff61542c9))
+* **relay:** connect with the sk-ar key directly and stop on 401/403 ([#97](https://github.com/anyrouter-dev/cli/issues/97)) ([283516b](https://github.com/anyrouter-dev/cli/commit/283516be34791a3d9d0b6488269d56e701b6b853))
+
 ## [0.1.20](https://github.com/anyrouter-dev/cli/compare/v0.1.19...v0.1.20) (2026-10-02)
 
 
