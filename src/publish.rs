@@ -11,7 +11,7 @@ use std::io::IsTerminal;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
-use crate::api::{confirm, context, exit_for, read_stdin, request, request_with, Ctx};
+use crate::api::{confirm, context, exit_for, read_file_capped, read_stdin, request, request_with, Ctx};
 use crate::cmd::dispatch::USAGE;
 use crate::key::no_key_error;
 use crate::parse::{get_string_flag, ParsedArgs};
@@ -184,11 +184,9 @@ fn call(
 
 fn read_document(source: Option<&&str>) -> Result<Value, String> {
     let text = match source {
-        Some(&"-") => read_stdin()?,
-        Some(path) => {
-            std::fs::read_to_string(path).map_err(|e| usage(format!("cannot read {path}: {e}")))?
-        }
-        None if !std::io::stdin().is_terminal() => read_stdin()?,
+        Some(&"-") => read_stdin().map_err(usage)?,
+        Some(path) => read_file_capped(path).map_err(usage)?,
+        None if !std::io::stdin().is_terminal() => read_stdin().map_err(usage)?,
         None => {
             return Err(usage(
                 "no document: pass a <file>, or pipe JSON and use `-`",

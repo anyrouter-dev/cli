@@ -7,7 +7,7 @@
 //! stdout on raw calls) prints the server JSON unchanged.
 
 use std::collections::BTreeMap;
-use std::io::IsTerminal;
+use std::io::{IsTerminal, Read};
 
 use serde_json::{Map, Value};
 
@@ -722,20 +722,37 @@ fn data_flag(parsed: &ParsedArgs) -> Result<Option<Value>, String> {
     let text = if spec == "-" {
         read_stdin()?
     } else if let Some(path) = spec.strip_prefix('@') {
-        std::fs::read_to_string(path).map_err(|e| format!("cannot read {path}: {e}"))?
+        read_file_capped(path)?
     } else {
         spec
     };
     parse_json(&text).map(Some)
 }
 
-pub(crate) fn read_stdin() -> Result<String, String> {
-    use std::io::Read;
+/// Largest document read from a file or stdin (the server caps bodies at 256 KiB).
+pub(crate) const MAX_INPUT_BYTES: u64 = 256 * 1024;
+
+fn read_capped(r: impl std::io::Read, what: &str) -> Result<String, String> {
     let mut buf = String::new();
-    std::io::stdin()
+    r.take(MAX_INPUT_BYTES + 1)
         .read_to_string(&mut buf)
-        .map_err(|e| format!("cannot read stdin: {e}"))?;
+        .map_err(|e| format!("cannot read {what}: {e}"))?;
+    if buf.len() as u64 > MAX_INPUT_BYTES {
+        return Err(format!(
+            "{what} is larger than {} KiB, the server limit",
+            MAX_INPUT_BYTES / 1024
+        ));
+    }
     Ok(buf)
+}
+
+pub(crate) fn read_stdin() -> Result<String, String> {
+    read_capped(std::io::stdin(), "stdin")
+}
+
+pub(crate) fn read_file_capped(path: &str) -> Result<String, String> {
+    let f = std::fs::File::open(path).map_err(|e| format!("cannot read {path}: {e}"))?;
+    read_capped(f, path)
 }
 
 /// Pull `-H key:value` pairs (repeatable) out of the positional words.
