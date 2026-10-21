@@ -10,10 +10,13 @@ pub const DEFAULT_PROFILE: &str = "default";
 pub const DEFAULT_PRESET: &str = "@preset/coding-stack";
 /// Documented gateway auto preset. Never invent a catalog SKU for this slot.
 pub const DEFAULT_MODEL: &str = "anyrouter/auto";
-pub const DEFAULT_CLAUDE_HAIKU: &str = "anthropic/claude-haiku-4.5";
-pub const DEFAULT_CLAUDE_SONNET: &str = "anthropic/claude-sonnet-4.6";
-pub const DEFAULT_CLAUDE_OPUS: &str = "anthropic/claude-opus-4.6";
-pub const DEFAULT_CLAUDE_FABLE: &str = "anthropic/claude-fable-5";
+/// Free-tier defaults: work for a brand-new account (no credits, no BYOK).
+/// Switch with `--model` or `anyr models use`. Keep as string literals; the
+/// anyrouter repo check parses them.
+pub const DEFAULT_CLAUDE_HAIKU: &str = "anyrouter/free";
+pub const DEFAULT_CLAUDE_SONNET: &str = "anyrouter/free";
+pub const DEFAULT_CLAUDE_OPUS: &str = "anyrouter/free";
+pub const DEFAULT_CLAUDE_FABLE: &str = "anyrouter/free";
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum YamlValue {
