@@ -3173,3 +3173,77 @@ fn usage_errors_print_clean_message_without_marker() {
     assert_eq!(code, 0);
     assert!(out.contains("anyr relay start"), "{out}");
 }
+
+/// `anyr` with telemetry in debug mode: payload goes to stderr, nothing is
+/// sent, and the host's own CI / opt-out env cannot change the result.
+fn telemetry_debug(args: &[&str]) -> (i32, String, String) {
+    let out = anyr()
+        .args(args)
+        .env_remove("CI")
+        .env_remove("DO_NOT_TRACK")
+        .env_remove("ANYR_TELEMETRY_DISABLED")
+        .env("ANYR_TELEMETRY_DEBUG", "1")
+        .env("ANYROUTER_HOME", temp_home())
+        .output()
+        .expect("spawn anyr");
+    (
+        out.status.code().unwrap_or(1),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+#[test]
+fn telemetry_debug_prints_the_payload_and_the_first_run_notice() {
+    let (code, out, err) = telemetry_debug(&["help"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        out.contains("point any coding agent"),
+        "help output untouched: {out}"
+    );
+    assert!(err.contains("anyr collects anonymous usage data"), "{err}");
+    let line = err
+        .lines()
+        .find(|l| l.starts_with("anyr telemetry (debug, not sent): "))
+        .unwrap_or_else(|| panic!("no payload line: {err}"));
+    let json = line.trim_start_matches("anyr telemetry (debug, not sent): ");
+    for needle in [
+        "\"event\":\"ping\"",
+        "\"ci\":false",
+        "\"props\":{\"command\":\"help\"}",
+    ] {
+        assert!(json.contains(needle), "{needle} missing in {json}");
+    }
+}
+
+#[test]
+fn telemetry_never_reports_what_the_user_typed() {
+    // WHY: `props.command` comes from argv; a mistyped command or a pasted
+    // key must not leave the machine.
+    let (code, _, err) = telemetry_debug(&["sk-ar-v1-leak-me"]);
+    assert_eq!(code, 2, "{err}");
+    let line = err
+        .lines()
+        .find(|l| l.starts_with("anyr telemetry (debug, not sent): "))
+        .unwrap_or_else(|| panic!("no payload line: {err}"));
+    assert!(
+        line.contains("\"props\":{\"command\":\"unknown\"}"),
+        "{line}"
+    );
+    assert!(!line.contains("leak-me"), "{line}");
+}
+
+#[test]
+fn telemetry_opt_out_silences_debug_output_too() {
+    let out = anyr()
+        .arg("help")
+        .env_remove("CI")
+        .env("DO_NOT_TRACK", "1")
+        .env("ANYR_TELEMETRY_DEBUG", "1")
+        .env("ANYROUTER_HOME", temp_home())
+        .output()
+        .expect("spawn anyr");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!err.contains("telemetry"), "{err}");
+    assert!(!err.contains("anonymous usage data"), "{err}");
+}

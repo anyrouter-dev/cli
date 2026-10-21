@@ -104,6 +104,22 @@ pub fn http_post(
     into_status_body(req.send_string(json_body.unwrap_or("{}")))
 }
 
+/// One-shot JSON POST on a fresh agent with a short `timeout`, for
+/// fire-and-forget calls that must never hold up the CLI.
+#[cfg(feature = "native")]
+pub fn http_post_json_timeout(
+    url: &str,
+    json_body: &str,
+    timeout: std::time::Duration,
+) -> Result<(u16, String), String> {
+    let agent = ureq::AgentBuilder::new()
+        .timeout(timeout)
+        .user_agent(&format!("anyr-cli/{VERSION}"))
+        .build();
+    let req = agent.post(url).set("Content-Type", "application/json");
+    into_status_body(req.send_string(json_body))
+}
+
 #[cfg(feature = "native")]
 pub fn http_delete(url: &str, api_key: Option<&str>) -> Result<(u16, String), String> {
     into_status_body(with_auth(agent().delete(url), api_key).call())
