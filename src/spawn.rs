@@ -7,7 +7,7 @@ use crate::config::{
     Profile, YamlValue, DEFAULT_BASE_URL, DEFAULT_MODEL, DEFAULT_PRESET, DEFAULT_TIMEOUT_MS,
 };
 
-pub const PI_DEFAULT_MODEL: &str = "anthropic/claude-sonnet-4.6";
+pub const PI_DEFAULT_MODEL: &str = "anyrouter/free";
 /// Historical 1M-context suffix used by Claude Code. Claude Code used to strip
 /// it before the gateway, but third-party catalog ids (e.g.
 /// `meituan/longcat-2.0`) are forwarded verbatim to the provider and 404 on
@@ -1174,16 +1174,16 @@ mod tests {
         );
         assert_eq!(
             env.get("ANTHROPIC_DEFAULT_HAIKU_MODEL").map(String::as_str),
-            Some("anthropic/claude-haiku-4.5")
+            Some("anyrouter/free")
         );
         assert_eq!(
             env.get("ANTHROPIC_DEFAULT_SONNET_MODEL")
                 .map(String::as_str),
-            Some("anthropic/claude-sonnet-4.6")
+            Some("anyrouter/free")
         );
         assert_eq!(
             env.get("ANTHROPIC_DEFAULT_OPUS_MODEL").map(String::as_str),
-            Some("anthropic/claude-opus-4.6")
+            Some("anyrouter/free")
         );
     }
 

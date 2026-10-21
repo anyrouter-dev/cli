@@ -706,15 +706,15 @@ fn claude_dry_run_with_key_prints_base_and_redacts_secret() {
         "{stdout}"
     );
     assert!(
-        stdout.contains("ANTHROPIC_DEFAULT_HAIKU_MODEL=anthropic/claude-haiku-4.5"),
+        stdout.contains("ANTHROPIC_DEFAULT_HAIKU_MODEL=anyrouter/free"),
         "{stdout}"
     );
     assert!(
-        stdout.contains("ANTHROPIC_DEFAULT_SONNET_MODEL=anthropic/claude-sonnet-4.6"),
+        stdout.contains("ANTHROPIC_DEFAULT_SONNET_MODEL=anyrouter/free"),
         "{stdout}"
     );
     assert!(
-        stdout.contains("ANTHROPIC_DEFAULT_OPUS_MODEL=anthropic/claude-opus-4.6"),
+        stdout.contains("ANTHROPIC_DEFAULT_OPUS_MODEL=anyrouter/free"),
         "{stdout}"
     );
     assert!(!stdout.contains(key), "full key leaked:\n{stdout}");
@@ -963,7 +963,7 @@ fn claude_dry_run_haiku_flag_overrides_alias() {
         "{stdout}"
     );
     assert!(
-        stdout.contains("ANTHROPIC_DEFAULT_SONNET_MODEL=anthropic/claude-sonnet-4.6"),
+        stdout.contains("ANTHROPIC_DEFAULT_SONNET_MODEL=anyrouter/free"),
         "{stdout}"
     );
 }
