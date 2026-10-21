@@ -214,7 +214,8 @@ pub(crate) fn cmd_kind(command: &str) -> Option<CmdKind> {
         "setup" | "login" | "auth" | "menu" | "models" | "config" | "keys" | "whoami"
         | "status" | "logout" | "account" | "usage" | "claude" | "codex" | "grok" | "opencode"
         | "pool" | "pi" | "upgrade" | "onboard" | "impl" | "plan" | "fix" | "deploy" | "cp"
-        | "relay" | "decision" | "commands" | "api" | "completion" | "byok" => CmdKind::Implemented,
+        | "relay" | "decision" | "commands" | "api" | "completion" | "byok" | "publish"
+        | "apps" => CmdKind::Implemented,
         "cursor" | "cline" | "windsurf" => CmdKind::HelpOnly,
         "chat" | "task" | "delegate" | "audit" | "logs" | "transactions" | "skills" | "prompt" => {
             CmdKind::Stub
@@ -255,6 +256,14 @@ pub(crate) const COMMANDS: &[(&str, &str)] = &[
     (
         "api",
         "Dashboard from the terminal: keys, credits, presets…",
+    ),
+    (
+        "publish",
+        "Publish a JSON document to an app: <app> [file|-]",
+    ),
+    (
+        "apps",
+        "Manage published documents: schema, ls, rm, visibility",
     ),
     ("decision", "Structured decisions (Decisions API)"),
     ("models", "List catalog and set the default"),
@@ -447,6 +456,8 @@ pub(crate) fn allowed_flags(command: &str) -> Option<&'static [&'static str]> {
         "prompt" => &["base-url", "json"],
         "menu" => &["dump-tui", "config", "profile", "key", "base-url"],
         "api" => crate::api::FLAGS,
+        "publish" => crate::publish::PUBLISH_FLAGS,
+        "apps" => crate::publish::APPS_FLAGS,
         "completion" => &[],
         "onboard" | "impl" | "plan" | "fix" | "deploy" | "cp" => &["json", "copy"],
         "upgrade" => &[
@@ -756,6 +767,8 @@ mod tests {
             "pi",
             "pool",
             "api",
+            "publish",
+            "apps",
             "decision",
             "models",
             "usage",

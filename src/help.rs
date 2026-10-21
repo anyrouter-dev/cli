@@ -252,6 +252,8 @@ pub fn command_help(command: &str) -> Option<String> {
         ),
         "commands" => commands_help(),
         "api" => crate::api::help(),
+        "publish" => crate::publish::publish_help(),
+        "apps" => crate::publish::apps_help(),
         "completion" => fill(&bin, COMPLETION),
         "prompt" => fill(
             &bin,

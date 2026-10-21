@@ -104,6 +104,25 @@ pub fn http_post(
     into_status_body(req.send_string(json_body.unwrap_or("{}")))
 }
 
+/// Any method with extra request headers (`anyr api -H k:v`, Idempotency-Key).
+#[cfg(feature = "native")]
+pub fn http_send(
+    method: &str,
+    url: &str,
+    api_key: Option<&str>,
+    headers: &[(String, String)],
+    body: Option<&str>,
+) -> Result<(u16, String), String> {
+    let mut req = with_auth(agent().request(method, url), api_key);
+    for (k, v) in headers {
+        req = req.set(k, v);
+    }
+    match body {
+        Some(b) => into_status_body(req.set("Content-Type", "application/json").send_string(b)),
+        None => into_status_body(req.call()),
+    }
+}
+
 #[cfg(feature = "native")]
 pub fn http_delete(url: &str, api_key: Option<&str>) -> Result<(u16, String), String> {
     into_status_body(with_auth(agent().delete(url), api_key).call())
@@ -162,6 +181,17 @@ pub fn http_post(
     _url: &str,
     _api_key: Option<&str>,
     _json_body: Option<&str>,
+) -> Result<(u16, String), String> {
+    no_network()
+}
+
+#[cfg(not(feature = "native"))]
+pub fn http_send(
+    _method: &str,
+    _url: &str,
+    _api_key: Option<&str>,
+    _headers: &[(String, String)],
+    _body: Option<&str>,
 ) -> Result<(u16, String), String> {
     no_network()
 }
