@@ -137,7 +137,7 @@ uploaded), then sends it and prints the URL.
 ```bash
 anyr apps schema explain > schema.json        # what an agent must produce
 <agent produces explain json> | anyr publish explain -
-anyr publish explain fig.json --dry-run       # validate only
+anyr publish explain fig.json --dry-run       # server checks it; nothing uploaded
 anyr publish explain fig.json --visibility public --yes
 anyr apps ls explain                          # what you published
 anyr apps visibility explain <id> private

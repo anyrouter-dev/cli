@@ -150,8 +150,29 @@ fn failure(status: u16, text: &str, what: &str) -> (String, i32) {
         403 => format!("\n{} this key cannot use this endpoint", term::dim("hint:")),
         _ => String::new(),
     };
+    let issues = v
+        .pointer("/error/metadata/issues")
+        .and_then(Value::as_array)
+        .map(|list| {
+            list.iter()
+                .map(|i| {
+                    let field = |k: &str| i.get(k).and_then(Value::as_str).unwrap_or("");
+                    let fix = field("fix");
+                    let fix = if fix.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" {} {fix}", term::dim("fix:"))
+                    };
+                    format!("\n  {}: {}{fix}", field("path"), field("message"))
+                })
+                .collect::<String>()
+        })
+        .unwrap_or_default();
     (
-        format!("{} HTTP {status} {what}: {msg}{hint}", term::err("error:")),
+        format!(
+            "{} HTTP {status} {what}: {msg}{issues}{hint}",
+            term::err("error:")
+        ),
         exit_for(status),
     )
 }
@@ -247,7 +268,17 @@ fn publish_inner(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<
         );
         return Ok(2);
     }
+    let mut body = json!({ "payload": payload });
+    if let Some(v) = &visibility {
+        body["visibility"] = json!(v);
+    }
+    let path = format!("/v1/apps/{app}/submissions");
     if parsed.flag_true("dry-run") {
+        // The server runs every check (the schema covers types only); nothing is stored.
+        let check = format!("{path}?validate_only=1");
+        if let Err(code) = call(&ctx, "POST", &check, Some(&body.to_string()), &[], true)? {
+            return Ok(code);
+        }
         let version = spec
             .get("version")
             .map(|v| {
@@ -272,15 +303,10 @@ fn publish_inner(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<
         )?;
     }
 
-    let mut body = json!({ "payload": payload });
-    if let Some(v) = &visibility {
-        body["visibility"] = json!(v);
-    }
     let headers = [(
         "Idempotency-Key".to_string(),
         idempotency_key(&app, &payload),
     )];
-    let path = format!("/v1/apps/{app}/submissions");
     let (status, out) = match call(&ctx, "POST", &path, Some(&body.to_string()), &headers, true)? {
         Ok(r) => r,
         Err(code) => return Ok(code),

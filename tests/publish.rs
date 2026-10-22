@@ -184,12 +184,12 @@ fn non_json_input_is_a_usage_error() {
 }
 
 #[test]
-fn dry_run_reads_a_file_and_does_not_upload() {
+fn dry_run_asks_the_server_to_validate_and_does_not_upload() {
     let dir = std::env::temp_dir().join("anyr-publish-dry");
     std::fs::create_dir_all(&dir).unwrap();
     let file = dir.join("doc.json");
     std::fs::write(&file, r#"{"title":"Lock"}"#).unwrap();
-    let (base, rx) = serve(vec![(200, SCHEMA)]);
+    let (base, rx) = serve(vec![(200, SCHEMA), (200, r#"{"valid":true}"#)]);
     let cmd = cli(
         &base,
         &["publish", "demo", file.to_str().unwrap(), "--dry-run"],
@@ -198,7 +198,27 @@ fn dry_run_reads_a_file_and_does_not_upload() {
     assert_eq!(code, 0, "{err}");
     assert!(out.starts_with("ok: valid against demo v1"), "{out}");
     rx.recv().unwrap();
+    let check = rx.recv().unwrap();
+    assert!(
+        check.starts_with("POST /api/v1/apps/demo/submissions?validate_only=1"),
+        "{check}"
+    );
+    assert!(
+        check.ends_with(r#"{"payload":{"title":"Lock"}}"#),
+        "{check}"
+    );
     assert!(rx.try_recv().is_err());
+}
+
+#[test]
+fn dry_run_prints_each_server_issue_with_its_path_and_fix() {
+    let refused = r#"{"error":{"code":"invalid_payload","message":"Payload failed the demo checks (1 issue).","metadata":{"issues":[{"path":"steps[1]","code":"too_small","message":"step too small","fix":"Use at least 2."}]}}}"#;
+    let (base, _rx) = serve(vec![(200, SCHEMA), (422, refused)]);
+    let cmd = cli(&base, &["publish", "demo", "-", "--dry-run"]);
+    let (code, out, err) = run_with_stdin(cmd, r#"{"title":"Lock","steps":[1,2]}"#);
+    assert_ne!(code, 0, "{out}");
+    assert!(err.contains("steps[1]: step too small"), "{err}");
+    assert!(err.contains("fix: Use at least 2."), "{err}");
 }
 
 #[test]
