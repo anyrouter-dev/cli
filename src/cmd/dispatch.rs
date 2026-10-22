@@ -215,7 +215,7 @@ pub(crate) fn cmd_kind(command: &str) -> Option<CmdKind> {
         | "status" | "logout" | "account" | "usage" | "claude" | "codex" | "grok" | "opencode"
         | "pool" | "pi" | "upgrade" | "onboard" | "impl" | "plan" | "fix" | "deploy" | "cp"
         | "relay" | "decision" | "commands" | "api" | "completion" | "byok" | "publish"
-        | "apps" => CmdKind::Implemented,
+        | "apps" | "artifact" => CmdKind::Implemented,
         "cursor" | "cline" | "windsurf" => CmdKind::HelpOnly,
         "chat" | "task" | "delegate" | "audit" | "logs" | "transactions" | "skills" | "prompt" => {
             CmdKind::Stub
@@ -271,6 +271,7 @@ pub(crate) const COMMANDS: &[(&str, &str)] = &[
     ("usage", "Credits remaining"),
     ("keys", "Manage API keys"),
     ("byok", "Provider keys: list, add, --donate to the pool"),
+    ("artifact", "Publish a file or folder to a shareable URL"),
     ("account", "Manage multiple accounts"),
     ("auth", "Authenticate with AnyRouter"),
     ("config", "Print current settings"),
@@ -466,6 +467,7 @@ pub(crate) fn allowed_flags(command: &str) -> Option<&'static [&'static str]> {
         "claude" | "codex" | "grok" | "opencode" | "pool" | "pi" => LAUNCH_FLAGS,
         "cursor" | "cline" | "windsurf" => &["profile", "key", "base-url", "config", "yes"],
         "byok" => &["profile", "config", "base-url", "json", "yes", "donate"],
+        "artifact" => crate::artifact::FLAGS,
         _ => return None,
     })
 }

@@ -42,6 +42,9 @@ pub static VALUE_FLAGS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
         "method",
         "idempotency-key",
         "visibility",
+        "title",
+        "id",
+        "label",
     ])
 });
 

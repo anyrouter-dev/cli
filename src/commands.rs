@@ -228,6 +228,7 @@ fn dispatch(
         "api" => crate::api::run(parsed, env),
         "publish" => crate::publish::run_publish(parsed, env),
         "apps" => crate::publish::run_apps(parsed, env),
+        "artifact" => crate::artifact::run(parsed, env),
         "completion" => run_completion(parsed),
         "onboard" | "impl" | "plan" | "fix" | "deploy" | "cp" => {
             crate::onboard::run(command, parsed)

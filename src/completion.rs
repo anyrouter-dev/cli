@@ -57,6 +57,7 @@ pub fn subcommands(command: &str) -> &'static [(&'static str, &'static str)] {
         ],
         "api" => crate::api::RESOURCES,
         "apps" => crate::publish::APPS_VERBS,
+        "artifact" => crate::artifact::VERBS,
         _ => &[],
     }
 }

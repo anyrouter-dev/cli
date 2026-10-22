@@ -94,7 +94,7 @@ pub(crate) struct Ctx {
 }
 
 impl Ctx {
-    fn key(&self) -> Result<&str, String> {
+    pub(crate) fn key(&self) -> Result<&str, String> {
         self.key.as_deref().ok_or_else(no_key_error)
     }
 }
