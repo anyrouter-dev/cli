@@ -218,10 +218,7 @@ pub fn command_help(command: &str) -> Option<String> {
         ),
         "models" => fill(&bin, MODELS),
         "config" => fill(&bin, CONFIG),
-        "chat" => fill(
-            &bin,
-            "{bin} chat — not yet in the native CLI. Use {bin} claude / codex / … to launch an agent.\n",
-        ),
+        "chat" => fill(&bin, CHAT),
         "skills" => fill(
             &bin,
             "{bin} skills — not yet in the native CLI (coming later).\n",
@@ -574,6 +571,8 @@ Examples:
   {bin} relay start --model apple/foundation-model --no-pool
   {bin} relay start --all --target http://localhost:11434/v1
 ";
+
+const CHAT: &str = "{bin} chat [prompt] [--model ID] [--system TEXT]\n\nStream a reply from /v1/chat/completions. With a prompt (or piped stdin) it answers once;\nin a terminal with no prompt it opens a REPL (/exit or Ctrl-D to quit).\n";
 
 const ARTIFACT: &str = "{bin} artifact — publish a page or folder to a shareable URL
 

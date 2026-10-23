@@ -5,6 +5,8 @@ pub mod artifact;
 pub mod auth;
 pub mod buildinfo;
 pub mod channel;
+#[cfg(feature = "native")]
+pub mod chat;
 pub mod cmd;
 pub mod commands;
 pub mod completion;
