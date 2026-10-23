@@ -534,42 +534,58 @@ good release on the same channel is installed instead of aborting.
 ";
 
 const RELAY: &str = "\
-{bin} relay — pair this machine and serve a local OpenAI-compatible server to the cloud
+{bin} relay — serve this machine's local models through https://anyrouter.dev
 
 Runs your local models (fm serve on Apple Silicon, Ollama, LM Studio, …)
 behind one https://anyrouter.dev endpoint. The CLI dials out; no ports open.
 
-On start it detects the on-device models this Mac can serve and serves them:
+Usage:
+  {bin} relay                     status and the next command to run
+  {bin} relay start [--detach]    serve; live status at a terminal, Ctrl-C stops
+  {bin} relay stop                stop the running relay
+  {bin} relay status [--json]     running?, connection, models, requests, tokens, pool
+  {bin} relay logs [--follow] [--lines N]   log of the background relay
+  {bin} relay models [--json]     local models and which ones are served
+  {bin} relay models enable|disable <id>    choose on-device models (saved)
+  {bin} relay pool [on|off]       show or set pool sharing (saved, updates the device)
+  {bin} relay pair [--name <device>]        pair this device (start pairs too)
+  {bin} relay unpair [--yes]      remove this device from your account
+  {bin} relay doctor [--json]     check macOS, fm serve, Decider, network and auth
+
+On-device models it detects:
   apple/foundation-model              macOS 26+, Apple Intelligence on, `fm serve`
   perplexity/pplx-decider-flash-v1.2  the Decider for Mac app (:8080)
-At a terminal you pick them from a checklist (all available pre-checked).
-
-Subcommands:
-  {bin} relay start   connect and keep serving (Ctrl-C to stop)
-  {bin} relay pair    pair this device only (start auto-pairs)
-  {bin} relay status  show local endpoints, their models, and pairing
+The first start at a terminal asks which to serve and saves the answer.
 
 Start options:
+  --detach               run in the background (log: `{bin} relay logs`)
   --model <id>           serve this on-device model; repeat for several
-                         (skips the checklist)
   --all                  serve every on-device model, no checklist
   --no-pool              do not donate idle capacity to the shared pool
-                         (pool is on by default: https://anyrouter.dev/pool)
-  --pool                 accepted for old commands; pool is already on
+  --pool                 donate idle capacity (the default; see
+                         https://anyrouter.dev/pool). Both override
+                         the saved `{bin} relay pool on|off`
   --target <url>         local base URL; repeat for several (default:
                          probe fm serve :1976, :8000, Ollama :11434,
                          LM Studio :1234, Perplexity Decider :8080)
   --token <rk_…>         pairing token (else $ANYROUTER_RELAY_TOKEN or the
                          stored relay_token; an sk-ar key also works)
   --url <wss://…>        relay websocket URL
-  --name <device>        device name when auto-pairing (default \"My Mac\")
+  --name <device>        device name when pairing (default \"My Mac\")
   --max-concurrency <n>  concurrent requests advertised to the pool
+  --quiet                print errors only
   --verbose              show relay transport diagnostics
 
+Live screen keys: p pool on/off, r rescan local servers, q or Ctrl-C quit.
+State lives in the relay/ folder next to your AnyRouter config.
+Exit codes: 0 ok, 1 failure (doctor: a check failed), 2 usage error,
+130 stopped with Ctrl-C.
+
 Examples:
-  {bin} relay start
+  {bin} relay start --detach
   {bin} relay start --model apple/foundation-model --no-pool
-  {bin} relay start --all --target http://localhost:11434/v1
+  {bin} relay status --json
+  {bin} relay doctor
 ";
 
 const CHAT: &str = "{bin} chat [prompt] [--model ID] [--system TEXT]\n\nStream a reply from /v1/chat/completions. With a prompt (or piped stdin) it answers once;\nin a terminal with no prompt it opens a REPL (/exit or Ctrl-D to quit).\n";

@@ -179,30 +179,51 @@ prompt, never from argv.
 still pending ([duyet/anyrouter#4220](https://github.com/duyet/anyrouter/issues/4220)),
 so treat `--donate` as not yet effective.
 
-### Serve this Mac's models: `anyr relay start`
+### Serve this Mac's models: `anyr relay`
 
 ```bash
-anyr relay start                                   # detect, pick, serve
-anyr relay start --all                             # serve every on-device model, no checklist
-anyr relay start --model apple/foundation-model    # repeat --model for several
-anyr relay start --no-pool                         # serve only your own account
+anyr relay                                  # where you stand + the next command
+anyr relay start                            # serve, with a live status screen
+anyr relay start --detach                   # serve in the background
+anyr relay status [--json]                  # running?, connection, models, requests, tokens, pool
+anyr relay logs --follow                    # background log
+anyr relay stop                             # graceful stop (same as Ctrl-C)
+anyr relay models [--json]                  # local models and which are served
+anyr relay models disable apple/foundation-model
+anyr relay pool off                         # stop donating idle capacity (saved)
+anyr relay doctor                           # macOS, fm serve, Decider, network, auth
+anyr relay unpair --yes                     # remove this device from your account
 ```
 
-On start the relay detects the on-device models this Mac can serve and serves
-them with no other setup:
+The relay detects the on-device models this Mac can serve:
 
 - `apple/foundation-model`: macOS 26+ with Apple Intelligence on, via `fm serve`.
 - `perplexity/pplx-decider-flash-v1.2`: the Decider for Mac app (port 8080).
 
-At a terminal a checklist opens with every available model checked; space
-toggles, enter starts. Without a TTY (or with `--model` / `--all`) there is no
-checklist. Other local servers (Ollama, LM Studio, `--target <url>`) are served
-as before.
+The first `start` at a terminal opens a checklist (space toggles, enter
+starts) and saves the answer; change it later with `anyr relay models
+enable|disable <id>`. `--model <id>` (repeatable) and `--all` override the saved
+choice for one run. Other local servers (Ollama, LM Studio, `--target <url>`)
+are always served.
+
+At a terminal, `start` shows one live screen: connection, models, requests,
+tokens and pool, with keys `p` (pool on/off), `r` (rescan local servers) and
+`q` / Ctrl-C (stop). Piped, with `--quiet`, or with `TERM=dumb` it prints plain
+log lines instead. `NO_COLOR` turns color off.
+
+`--detach` runs the relay in the background on macOS and Linux. Its pidfile,
+state and log live in `relay/` next to your AnyRouter config
+(`~/.anyrouter/relay/`, or `$ANYROUTER_HOME/relay/`). `status`, `stop` and
+`logs` work from any terminal, for background and foreground runs alike.
 
 Pool sharing is on by default: when your own requests leave the device idle,
-it serves other users' requests and earns you credits. `--no-pool` opts out;
-`--pool` is still accepted and does nothing. See https://anyrouter.dev/pool and
-manage devices at https://dash.anyrouter.dev/devices.
+it serves other users' requests and earns you credits. `anyr relay pool off`
+saves the opt-out and updates the paired device; `--pool` / `--no-pool`
+override it for one run. See https://anyrouter.dev/pool and manage devices at
+https://dash.anyrouter.dev/devices.
+
+Exit codes: 0 ok, 1 failure (for `doctor`, a failed check), 2 usage error, 130
+after Ctrl-C.
 
 ### Models: `anyr model list`
 
