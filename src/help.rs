@@ -542,12 +542,23 @@ const RELAY: &str = "\
 Runs your local models (fm serve on Apple Silicon, Ollama, LM Studio, …)
 behind one https://anyrouter.dev endpoint. The CLI dials out; no ports open.
 
+On start it detects the on-device models this Mac can serve and serves them:
+  apple/foundation-model              macOS 26+, Apple Intelligence on, `fm serve`
+  perplexity/pplx-decider-flash-v1.2  the Decider for Mac app (:8080)
+At a terminal you pick them from a checklist (all available pre-checked).
+
 Subcommands:
   {bin} relay start   connect and keep serving (Ctrl-C to stop)
   {bin} relay pair    pair this device only (start auto-pairs)
   {bin} relay status  show local endpoints, their models, and pairing
 
 Start options:
+  --model <id>           serve this on-device model; repeat for several
+                         (skips the checklist)
+  --all                  serve every on-device model, no checklist
+  --no-pool              do not donate idle capacity to the shared pool
+                         (pool is on by default: https://anyrouter.dev/pool)
+  --pool                 accepted for old commands; pool is already on
   --target <url>         local base URL; repeat for several (default:
                          probe fm serve :1976, :8000, Ollama :11434,
                          LM Studio :1234, Perplexity Decider :8080)
@@ -555,13 +566,13 @@ Start options:
                          stored relay_token; an sk-ar key also works)
   --url <wss://…>        relay websocket URL
   --name <device>        device name when auto-pairing (default \"My Mac\")
-  --pool                 donate idle capacity to the shared pool, earn credits
   --max-concurrency <n>  concurrent requests advertised to the pool
   --verbose              show relay transport diagnostics
 
 Examples:
-  fm serve && {bin} relay start
-  {bin} relay start --pool --target http://localhost:11434/v1
+  {bin} relay start
+  {bin} relay start --model apple/foundation-model --no-pool
+  {bin} relay start --all --target http://localhost:11434/v1
 ";
 
 const ARTIFACT: &str = "{bin} artifact — publish a page or folder to a shareable URL

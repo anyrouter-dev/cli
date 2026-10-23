@@ -200,7 +200,12 @@ struct StartArgs {
     token: Option<String>,
     url: Option<String>,
     name: String,
+    /// On by default; only `--no-pool` turns it off. `--pool` is a no-op kept
+    /// so old commands still parse.
     pool: bool,
+    /// Comma-joined `--model` values (the parser joins repeats for relay).
+    models: Option<String>,
+    all: bool,
     max_concurrency: Option<u32>,
 }
 
@@ -213,7 +218,9 @@ fn parse_start_args(parsed: &crate::parse::ParsedArgs) -> StartArgs {
         name: get("name")
             .filter(|s| !s.trim().is_empty())
             .unwrap_or_else(|| DEFAULT_DEVICE_NAME.into()),
-        pool: parsed.flag_true("pool"),
+        pool: !parsed.flag_true("no-pool"),
+        models: get("model"),
+        all: parsed.flag_true("all"),
         max_concurrency: get("max-concurrency")
             .and_then(|s| s.parse::<u32>().ok())
             .filter(|n| *n > 0),
@@ -576,10 +583,222 @@ fn discover_targets() -> Vec<Target> {
     out
 }
 
+// ---------------------------------------------------------------------------
+// On-device models: detect, choose, and filter discovery
+// ---------------------------------------------------------------------------
+
+/// A model this Mac can serve with no extra setup beyond its own app.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum OnDeviceModel {
+    AppleFoundation,
+    DeciderFlash,
+}
+
+impl OnDeviceModel {
+    const ALL: [OnDeviceModel; 2] = [OnDeviceModel::AppleFoundation, OnDeviceModel::DeciderFlash];
+
+    /// Public catalog id, the one `--model` takes and the summary prints.
+    fn id(self) -> &'static str {
+        match self {
+            OnDeviceModel::AppleFoundation => "apple/foundation-model",
+            OnDeviceModel::DeciderFlash => "perplexity/pplx-decider-flash-v1.2",
+        }
+    }
+
+    /// The id the relay advertises in its hello frame (pool join key).
+    fn local_id(self) -> &'static str {
+        match self {
+            OnDeviceModel::AppleFoundation => FM_SERVE_ADVERTISED_MODEL_ID,
+            OnDeviceModel::DeciderFlash => DECIDER_ADVERTISED_MODEL_ID,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            OnDeviceModel::AppleFoundation => "Apple Foundation Models",
+            OnDeviceModel::DeciderFlash => "PPLX Decider Flash v1.2",
+        }
+    }
+
+    /// The local endpoint discovery finds this model at.
+    fn base(self) -> &'static str {
+        match self {
+            OnDeviceModel::AppleFoundation => FM_SERVE_TARGET,
+            OnDeviceModel::DeciderFlash => DECIDER_TARGET,
+        }
+    }
+
+    /// Accepts the catalog id or the local id, any case.
+    fn from_id(raw: &str) -> Option<Self> {
+        let raw = raw.trim();
+        Self::ALL
+            .into_iter()
+            .find(|m| m.id().eq_ignore_ascii_case(raw) || m.local_id().eq_ignore_ascii_case(raw))
+    }
+}
+
+/// Whether one on-device model is reachable right now. Behind a trait so
+/// selection is testable off-Mac.
+trait OnDeviceDetector {
+    /// `Ok(())` when servable now, else a short sentence on how to enable it.
+    fn detect(&self, model: OnDeviceModel) -> Result<(), String>;
+}
+
+/// The real detector: the same probes the relay routes through.
+struct SystemDetector;
+
+impl OnDeviceDetector for SystemDetector {
+    fn detect(&self, model: OnDeviceModel) -> Result<(), String> {
+        match model {
+            OnDeviceModel::AppleFoundation => {
+                if let Some(major) = macos_major_version() {
+                    if major < 26 {
+                        return Err(format!("needs macOS 26 or later (this Mac runs {major})"));
+                    }
+                } else if !cfg!(target_os = "macos") {
+                    return Err("needs a Mac on macOS 26+".into());
+                }
+                if http_probe_listening(FM_SERVE_HEALTH_URL) {
+                    Ok(())
+                } else {
+                    Err("turn on Apple Intelligence and run `fm serve`".into())
+                }
+            }
+            OnDeviceModel::DeciderFlash => {
+                if probe_decider(DECIDER_TARGET) {
+                    Ok(())
+                } else {
+                    Err("open the Decider for Mac app (serves on :8080)".into())
+                }
+            }
+        }
+    }
+}
+
+/// macOS major version from `sw_vers`, None off-Mac or when it fails.
+fn macos_major_version() -> Option<u32> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    let out = std::process::Command::new("sw_vers")
+        .arg("-productVersion")
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .split('.')
+        .next()?
+        .parse()
+        .ok()
+}
+
+/// One detection result, in `OnDeviceModel::ALL` order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Detected {
+    model: OnDeviceModel,
+    unavailable: Option<String>,
+}
+
+fn detect_all(detector: &dyn OnDeviceDetector) -> Vec<Detected> {
+    OnDeviceModel::ALL
+        .into_iter()
+        .map(|model| Detected {
+            model,
+            unavailable: detector.detect(model).err(),
+        })
+        .collect()
+}
+
+/// What the user asked for on the command line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ModelChoice {
+    /// No `--model` / `--all`: picker at a TTY, else everything.
+    Default,
+    All,
+    Only(Vec<OnDeviceModel>),
+}
+
+fn parse_model_choice(models: Option<&str>, all: bool) -> Result<ModelChoice, String> {
+    let ids: Vec<&str> = models
+        .map(|s| {
+            s.split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    if all && !ids.is_empty() {
+        return Err("Pass --model or --all, not both.".into());
+    }
+    if all {
+        return Ok(ModelChoice::All);
+    }
+    if ids.is_empty() {
+        return Ok(ModelChoice::Default);
+    }
+    let mut out = Vec::new();
+    for id in ids {
+        let model = OnDeviceModel::from_id(id).ok_or_else(|| {
+            let known: Vec<&str> = OnDeviceModel::ALL.iter().map(|m| m.id()).collect();
+            format!(
+                "Unknown on-device model \"{id}\" (known: {}).",
+                known.join(", ")
+            )
+        })?;
+        if !out.contains(&model) {
+            out.push(model);
+        }
+    }
+    Ok(ModelChoice::Only(out))
+}
+
+/// Picker callback: gets the available models (all pre-checked), returns
+/// the ones the user kept.
+type Picker<'a> = &'a dyn Fn(&[OnDeviceModel]) -> Result<Vec<OnDeviceModel>, String>;
+
+/// Resolve the set of on-device models to serve. A chosen model that is not
+/// reachable yet stays in the set: discovery re-runs on every reconnect, so
+/// it is served as soon as its app comes up.
+fn select_models(
+    choice: &ModelChoice,
+    detected: &[Detected],
+    picker: Option<Picker<'_>>,
+) -> Result<BTreeSet<OnDeviceModel>, String> {
+    match choice {
+        ModelChoice::All => Ok(OnDeviceModel::ALL.into_iter().collect()),
+        ModelChoice::Only(list) => Ok(list.iter().copied().collect()),
+        ModelChoice::Default => {
+            let available: Vec<OnDeviceModel> = detected
+                .iter()
+                .filter(|d| d.unavailable.is_none())
+                .map(|d| d.model)
+                .collect();
+            match picker {
+                Some(pick) if !available.is_empty() => Ok(pick(&available)?.into_iter().collect()),
+                _ => Ok(OnDeviceModel::ALL.into_iter().collect()),
+            }
+        }
+    }
+}
+
+/// Drop discovered on-device endpoints the user did not choose. Other local
+/// servers (Ollama, LM Studio, …) are untouched.
+fn keep_selected(targets: Vec<Target>, serve: &BTreeSet<OnDeviceModel>) -> Vec<Target> {
+    targets
+        .into_iter()
+        .filter(|t| {
+            OnDeviceModel::ALL
+                .into_iter()
+                .find(|m| m.base() == t.base)
+                .is_none_or(|m| serve.contains(&m))
+        })
+        .collect()
+}
+
 /// Build the router: explicit `--target` URLs (comma-separated; repeated
 /// flags are joined by the parser) override discovery. With nothing found,
 /// fall back to the historical default so the relay still starts.
-fn build_router(explicit: Option<&str>) -> Router {
+fn build_router(explicit: Option<&str>, serve: &BTreeSet<OnDeviceModel>) -> Router {
     let urls: Vec<&str> = explicit
         .map(|s| {
             s.split(',')
@@ -589,7 +808,7 @@ fn build_router(explicit: Option<&str>) -> Router {
         })
         .unwrap_or_default();
     let mut targets = if urls.is_empty() {
-        discover_targets()
+        keep_selected(discover_targets(), serve)
     } else {
         urls.iter()
             .map(|u| {
@@ -882,19 +1101,20 @@ fn resolve_relay_device_id(
     Ok(id)
 }
 
-/// PATCH /relay/devices/:id { pool_enabled: true } with the resolved sk-ar
-/// key. Opting in lets this device serve OTHER users' requests when its own
+/// PATCH /relay/devices/:id { pool_enabled } with the resolved sk-ar key.
+/// Opting in lets this device serve OTHER users' requests when its own
 /// capacity is idle, earning credits per served request.
-fn enable_relay_pool(
+fn set_relay_pool(
     device_id: &str,
+    enabled: bool,
     parsed: &crate::parse::ParsedArgs,
     env: &BTreeMap<String, String>,
 ) -> Result<(), String> {
     let api_key = resolve_sk_ar_key(parsed, env).ok_or_else(|| {
-        "Could not resolve an AnyRouter API key to enable pool sharing.".to_string()
+        "Could not resolve an AnyRouter API key to change pool sharing.".to_string()
     })?;
     let url = format!("{DEFAULT_API_BASE}/relay/devices/{device_id}");
-    let body = json!({ "pool_enabled": true }).to_string();
+    let body = json!({ "pool_enabled": enabled }).to_string();
     let (status, resp) = crate::http::http_patch(&url, Some(&api_key), Some(&body))?;
     if !(200..300).contains(&status) {
         let value: serde_json::Value =
@@ -903,7 +1123,7 @@ fn enable_relay_pool(
             .pointer("/error/message")
             .and_then(|v| v.as_str())
             .unwrap_or("unexpected response");
-        return Err(format!("Could not enable pool sharing ({status}): {msg}"));
+        return Err(format!("Could not change pool sharing ({status}): {msg}"));
     }
     Ok(())
 }
@@ -1204,24 +1424,37 @@ fn run_relay_start(
 ) -> Result<i32, String> {
     let args = parse_start_args(parsed);
     VERBOSE.store(parsed.flag_true("verbose"), Ordering::Relaxed);
+    let choice = parse_model_choice(args.models.as_deref(), args.all)?;
 
     let token = resolve_relay_credential(args.token.as_deref(), parsed, env)?;
 
-    if args.pool {
-        match resolve_relay_device_id(parsed, env)
-            .and_then(|id| enable_relay_pool(&id, parsed, env))
-        {
-            Ok(()) => println!(
-                "Pool sharing enabled — this device will serve other users' requests when your \
-                 own capacity is idle, and you'll earn credits for each one. Manage it anytime: \
-                 https://dash.anyrouter.dev/devices"
-            ),
-            Err(err) => {
-                eprintln!("Could not enable pool sharing: {err}");
-                eprintln!("Continuing without pool sharing — your own-device relay still works.");
-            }
+    let detected = detect_all(&SystemDetector);
+    for d in &detected {
+        if let Some(why) = &d.unavailable {
+            ulog(&format!("{} not available: {why}", d.model.id()));
         }
     }
+    let picker = |available: &[OnDeviceModel]| -> Result<Vec<OnDeviceModel>, String> {
+        let items: Vec<String> = available
+            .iter()
+            .map(|m| format!("{}  {}", m.id(), crate::term::dim(m.label())))
+            .collect();
+        let checked = crate::term::pick_checkboxes(
+            "Serve which on-device models? (space toggles, enter starts)",
+            &items,
+            &vec![true; items.len()],
+        )?;
+        Ok(available
+            .iter()
+            .zip(checked)
+            .filter_map(|(m, on)| on.then_some(*m))
+            .collect())
+    };
+    let serve = select_models(
+        &choice,
+        &detected,
+        crate::term::is_interactive().then_some(&picker as Picker<'_>),
+    )?;
 
     let url = relay_url_with_name(
         args.url
@@ -1230,7 +1463,10 @@ fn run_relay_start(
             .unwrap_or(DEFAULT_WS_URL),
         &args.name,
     );
-    println!("Starting relay: url={url}");
+    vlog(&format!("relay url={url}"));
+
+    let mut router = build_router(args.target.as_deref(), &serve);
+    print_start_summary(&args, &router, env);
 
     let (tx, rx) = mpsc::channel();
     let conn = ConnState {
@@ -1240,11 +1476,8 @@ fn run_relay_start(
     };
 
     let mut attempt: u32 = 0;
+    let mut pool_synced = false;
     loop {
-        // Re-discover before every (re)connect so endpoints started or
-        // stopped since the last connect are picked up, and so no socket
-        // sits open and unread while probes run.
-        let router = build_router(args.target.as_deref());
         for t in &router.targets {
             ulog(&format!(
                 "endpoint {} ({}) at {}",
@@ -1256,6 +1489,12 @@ fn run_relay_start(
         match connect_ws(&url, &token) {
             Ok(mut ws) => {
                 attempt = 0;
+                // After the first connect the cloud has paired this device,
+                // so its id resolves even on a brand-new Mac.
+                if !pool_synced {
+                    pool_synced = true;
+                    sync_pool_in_background(args.pool, parsed.clone(), env.clone());
+                }
                 set_read_timeouts(&ws, Duration::from_millis(SOCKET_POLL_MS));
                 serve_connection(&mut ws, &router, &conn, args.max_concurrency);
                 abort_in_flight(&conn.in_flight);
@@ -1272,7 +1511,68 @@ fn run_relay_start(
             .min(MAX_BACKOFF_MS);
         vlog(&format!("reconnecting in {delay}ms"));
         std::thread::sleep(Duration::from_millis(delay));
+        // Re-discover before every reconnect so endpoints started or stopped
+        // since the last connect are picked up, and so no socket sits open
+        // and unread while probes run.
+        router = build_router(args.target.as_deref(), &serve);
     }
+}
+
+const POOL_URL: &str = "https://anyrouter.dev/pool";
+const DEVICES_URL: &str = "https://dash.anyrouter.dev/devices";
+
+/// The one line that says whether this device donates to the shared pool.
+fn pool_line(pool: bool) -> String {
+    if pool {
+        format!(
+            "Pool: on. Donating idle capacity to the shared pool and earning credits. \
+             Opt out with --no-pool. Learn more: {POOL_URL}"
+        )
+    } else {
+        format!("Pool: off (--no-pool). Only your own account uses this device. {POOL_URL}")
+    }
+}
+
+fn print_start_summary(args: &StartArgs, router: &Router, env: &BTreeMap<String, String>) {
+    let models = router.all_models();
+    println!("AnyRouter relay");
+    println!("  Account:   {}", load_active_profile_name(env));
+    println!(
+        "  Models:    {}",
+        if models.is_empty() {
+            "none detected".to_string()
+        } else {
+            models.join(", ")
+        }
+    );
+    println!("  {}", pool_line(args.pool));
+    println!("  Dashboard: {DEVICES_URL}");
+}
+
+/// Apply the pool setting to this device without blocking the socket loop.
+/// Failure never stops the relay: own-device serving still works.
+fn sync_pool_in_background(
+    pool: bool,
+    parsed: crate::parse::ParsedArgs,
+    env: BTreeMap<String, String>,
+) {
+    std::thread::spawn(move || {
+        let result = resolve_relay_device_id(&parsed, &env)
+            .and_then(|id| set_relay_pool(&id, pool, &parsed, &env));
+        match (result, pool) {
+            (Ok(()), _) => vlog(&format!("pool_enabled={pool} saved for this device")),
+            (Err(err), true) => {
+                ulog(&format!("could not turn on pool sharing: {err}"));
+                ulog(&format!(
+                    "still serving your own requests. Manage it at {DEVICES_URL}"
+                ));
+            }
+            (Err(err), false) => {
+                ulog(&format!("could not confirm pool sharing is off: {err}"));
+                ulog(&format!("check this device at {DEVICES_URL}"));
+            }
+        }
+    });
 }
 
 /// `anyr relay pair [--name <device>]` — explicit pairing (start auto-pairs).
@@ -1306,7 +1606,8 @@ fn run_relay_status(
     env: &BTreeMap<String, String>,
 ) -> Result<i32, String> {
     let args = parse_start_args(parsed);
-    let router = build_router(args.target.as_deref());
+    let all: BTreeSet<OnDeviceModel> = OnDeviceModel::ALL.into_iter().collect();
+    let router = build_router(args.target.as_deref(), &all);
     println!("Local endpoints:");
     for t in &router.targets {
         println!("  {} ({}) {}", t.label, t.kind.name(), t.base);
@@ -1545,7 +1846,10 @@ mod tests {
         let args = parse_start_args(&bare);
         assert!(args.target.is_none());
         assert_eq!(args.name, DEFAULT_DEVICE_NAME);
-        assert!(!args.pool);
+        // WHY: donating is the default now; only --no-pool opts out.
+        assert!(args.pool);
+        assert!(args.models.is_none());
+        assert!(!args.all);
         assert!(args.max_concurrency.is_none());
 
         let full = mk(vec![
@@ -1566,9 +1870,170 @@ mod tests {
         assert!(args.pool);
         assert_eq!(args.max_concurrency, Some(4));
 
+        // --no-pool opts out; --pool stays an accepted no-op.
+        assert!(!parse_start_args(&mk(vec![("no-pool", FlagValue::Bool(true))])).pool);
+        let both = mk(vec![
+            (
+                "model",
+                FlagValue::Value("apple/foundation-model,foundation-model".into()),
+            ),
+            ("all", FlagValue::Bool(true)),
+        ]);
+        let args = parse_start_args(&both);
+        assert_eq!(
+            args.models.as_deref(),
+            Some("apple/foundation-model,foundation-model")
+        );
+        assert!(args.all);
+
         // Non-positive / non-numeric max-concurrency is ignored, not an error.
         let bad = mk(vec![("max-concurrency", FlagValue::Value("0".into()))]);
         assert!(parse_start_args(&bad).max_concurrency.is_none());
+    }
+
+    /// Fake detector: the listed models are reachable, the rest are not.
+    struct FakeDetector(Vec<OnDeviceModel>);
+    impl OnDeviceDetector for FakeDetector {
+        fn detect(&self, model: OnDeviceModel) -> Result<(), String> {
+            if self.0.contains(&model) {
+                Ok(())
+            } else {
+                Err("not running".into())
+            }
+        }
+    }
+
+    fn set(models: &[OnDeviceModel]) -> BTreeSet<OnDeviceModel> {
+        models.iter().copied().collect()
+    }
+
+    use OnDeviceModel::{AppleFoundation as Fm, DeciderFlash as Dec};
+
+    #[test]
+    fn model_choice_parses_ids_aliases_and_rejects_bad_input() {
+        assert_eq!(
+            parse_model_choice(None, false).unwrap(),
+            ModelChoice::Default
+        );
+        assert_eq!(parse_model_choice(None, true).unwrap(), ModelChoice::All);
+        // Catalog id, local id and case variants all resolve; duplicates fold.
+        assert_eq!(
+            parse_model_choice(Some("apple/foundation-model,FOUNDATION-MODEL"), false).unwrap(),
+            ModelChoice::Only(vec![Fm])
+        );
+        assert_eq!(
+            parse_model_choice(
+                Some("pplx-decider-flash-v1.2, apple/foundation-model"),
+                false
+            )
+            .unwrap(),
+            ModelChoice::Only(vec![Dec, Fm])
+        );
+        let err = parse_model_choice(Some("gpt-5"), false).unwrap_err();
+        assert!(
+            err.contains("gpt-5") && err.contains("apple/foundation-model"),
+            "{err}"
+        );
+        assert!(parse_model_choice(Some("foundation-model"), true).is_err());
+    }
+
+    #[test]
+    fn detection_reports_why_a_model_is_unavailable() {
+        let d = detect_all(&FakeDetector(vec![Dec]));
+        assert_eq!(d.len(), 2);
+        assert_eq!(d[0].model, Fm);
+        assert_eq!(d[0].unavailable.as_deref(), Some("not running"));
+        assert_eq!(d[1].model, Dec);
+        assert!(d[1].unavailable.is_none());
+    }
+
+    #[test]
+    fn picker_sees_only_available_models_and_its_answer_wins() {
+        let detected = detect_all(&FakeDetector(vec![Fm]));
+        let seen = Mutex::new(Vec::new());
+        let pick = |avail: &[OnDeviceModel]| {
+            seen.lock().unwrap().extend_from_slice(avail);
+            Ok(Vec::new())
+        };
+        let got = select_models(&ModelChoice::Default, &detected, Some(&pick)).unwrap();
+        assert_eq!(*seen.lock().unwrap(), vec![Fm]);
+        // User unchecked everything: serve no on-device model.
+        assert!(got.is_empty());
+    }
+
+    #[test]
+    fn without_a_tty_every_on_device_model_is_served() {
+        // No picker (stdin not a TTY): serve all, so an app started later
+        // is picked up on reconnect with no restart.
+        let detected = detect_all(&FakeDetector(vec![Dec]));
+        assert_eq!(
+            select_models(&ModelChoice::Default, &detected, None).unwrap(),
+            set(&[Fm, Dec])
+        );
+    }
+
+    #[test]
+    fn picker_is_skipped_when_nothing_is_available_or_flags_decide() {
+        let none = detect_all(&FakeDetector(vec![]));
+        let boom = |_: &[OnDeviceModel]| -> Result<Vec<OnDeviceModel>, String> {
+            panic!("picker must not run")
+        };
+        assert_eq!(
+            select_models(&ModelChoice::Default, &none, Some(&boom)).unwrap(),
+            set(&[Fm, Dec])
+        );
+        let both = detect_all(&FakeDetector(vec![Fm, Dec]));
+        assert_eq!(
+            select_models(&ModelChoice::Only(vec![Dec]), &both, Some(&boom)).unwrap(),
+            set(&[Dec])
+        );
+        assert_eq!(
+            select_models(&ModelChoice::All, &none, Some(&boom)).unwrap(),
+            set(&[Fm, Dec])
+        );
+    }
+
+    #[test]
+    fn picker_cancel_stops_start() {
+        let both = detect_all(&FakeDetector(vec![Fm, Dec]));
+        let cancel = |_: &[OnDeviceModel]| Err("Cancelled.".to_string());
+        assert!(select_models(&ModelChoice::Default, &both, Some(&cancel)).is_err());
+    }
+
+    #[test]
+    fn unselected_on_device_endpoints_are_dropped_others_kept() {
+        let targets = vec![
+            Target {
+                label: "fm".into(),
+                base: FM_SERVE_TARGET.into(),
+                kind: TargetKind::Chat,
+                models: vec!["foundation-model".into()],
+            },
+            decider_target(DECIDER_TARGET),
+            Target {
+                label: "Ollama".into(),
+                base: OLLAMA_TARGET.into(),
+                kind: TargetKind::Chat,
+                models: vec!["llama3".into()],
+            },
+        ];
+        let kept: Vec<String> = keep_selected(targets.clone(), &set(&[Dec]))
+            .into_iter()
+            .map(|t| t.label)
+            .collect();
+        assert_eq!(kept, vec!["Perplexity Decider", "Ollama"]);
+        assert_eq!(keep_selected(targets, &set(&[Fm, Dec])).len(), 3);
+    }
+
+    #[test]
+    fn pool_line_names_the_opt_out_and_the_pool_page() {
+        let on = pool_line(true);
+        assert!(
+            on.contains("Donating") && on.contains("--no-pool") && on.contains(POOL_URL),
+            "{on}"
+        );
+        let off = pool_line(false);
+        assert!(off.starts_with("Pool: off"), "{off}");
     }
 
     #[test]

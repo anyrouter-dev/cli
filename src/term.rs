@@ -544,6 +544,115 @@ fn pick_inline_raw(
     }
 }
 
+/// Render a checkbox list: `[x]`/`[ ]` per item, cursor row highlighted.
+pub fn render_checkboxes(
+    question: &str,
+    items: &[String],
+    checked: &[bool],
+    cursor: usize,
+) -> String {
+    let mut lines = vec![dim(question)];
+    for (i, item) in items.iter().enumerate() {
+        let mark = if checked.get(i).copied().unwrap_or(false) {
+            "[x]"
+        } else {
+            "[ ]"
+        };
+        if i == cursor {
+            lines.push(format!("{} {} {item}", accent(">"), accent(mark)));
+        } else {
+            lines.push(format!("  {mark} {item}"));
+        }
+    }
+    lines.join("\n")
+}
+
+/// Multi-select on the current screen: arrows move, space toggles, `a`
+/// toggles all, enter confirms. Returns the final checked state. Without a
+/// TTY the initial state is returned unchanged.
+pub fn pick_checkboxes(
+    question: &str,
+    items: &[String],
+    checked: &[bool],
+) -> Result<Vec<bool>, String> {
+    let state: Vec<bool> = (0..items.len())
+        .map(|i| checked.get(i).copied().unwrap_or(false))
+        .collect();
+    #[cfg(feature = "native")]
+    if is_interactive() && !items.is_empty() {
+        return pick_checkboxes_raw(question, items, state);
+    }
+    Ok(state)
+}
+
+#[cfg(feature = "native")]
+fn pick_checkboxes_raw(
+    question: &str,
+    items: &[String],
+    mut state: Vec<bool>,
+) -> Result<Vec<bool>, String> {
+    use std::io::{stderr, Write as _};
+
+    use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+    use crossterm::terminal::{self, Clear, ClearType};
+    use crossterm::{cursor, execute, queue};
+
+    terminal::enable_raw_mode().map_err(|e| e.to_string())?;
+    struct Restore;
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let mut out = stderr();
+            let _ = execute!(out, cursor::Show);
+            let _ = terminal::disable_raw_mode();
+        }
+    }
+    let _restore = Restore;
+    let mut out = stderr();
+    let _ = execute!(out, cursor::Hide);
+
+    let mut cursor_i = 0usize;
+    let mut last_lines: u16 = 0;
+    loop {
+        let frame = render_checkboxes(question, items, &state, cursor_i);
+        if last_lines > 0 {
+            queue!(
+                out,
+                cursor::MoveToColumn(0),
+                cursor::MoveUp(last_lines),
+                Clear(ClearType::FromCursorDown),
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        // Raw mode: lines need an explicit carriage return.
+        write!(out, "{}\r\n", frame.replace('\n', "\r\n")).map_err(|e| e.to_string())?;
+        out.flush().map_err(|e| e.to_string())?;
+        last_lines = frame.lines().count().max(1) as u16;
+
+        if let Event::Key(ev) = event::read().map_err(|e| e.to_string())? {
+            if ev.kind != KeyEventKind::Press {
+                continue;
+            }
+            match ev.code {
+                KeyCode::Up | KeyCode::Char('k') => {
+                    cursor_i = cursor_i.checked_sub(1).unwrap_or(items.len() - 1);
+                }
+                KeyCode::Down | KeyCode::Char('j') => cursor_i = (cursor_i + 1) % items.len(),
+                KeyCode::Char(' ') => state[cursor_i] = !state[cursor_i],
+                KeyCode::Char('a') => {
+                    let all = state.iter().all(|b| *b);
+                    state.iter_mut().for_each(|b| *b = !all);
+                }
+                KeyCode::Enter => return Ok(state),
+                KeyCode::Char('c') if ev.modifiers.contains(KeyModifiers::CONTROL) => {
+                    return Err("Cancelled.".into());
+                }
+                KeyCode::Esc | KeyCode::Char('q') => return Err("Cancelled.".into()),
+                _ => {}
+            }
+        }
+    }
+}
+
 /// Compact HUD prompt on the current screen — no alt-screen.
 pub fn pick_numbered(
     title: &str,
