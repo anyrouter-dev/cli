@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use crate::config::write_config;
-use crate::http::{create_key, delete_key, fetch_keys, is_active_key_row, reveal_key};
+use crate::http::{delete_key, fetch_keys, is_active_key_row, reveal_key};
 use crate::key::{
     config_for_credential, load_config_if_present, mask_api_key, profile_or_default,
     resolve_api_key, resolve_base_url,
@@ -10,7 +10,9 @@ use crate::key::{
 use crate::parse::{get_string_flag, ParsedArgs};
 use crate::term;
 
+use crate::api::{get, send, Ctx};
 use crate::cmd::dispatch::{config_path, hint};
+use crate::cmd::key_scope::{render_show, scope_fields};
 use crate::cmd::models::{flag_agent, pick_list, save_agent_key};
 
 pub(crate) fn keys_credential(
@@ -26,6 +28,42 @@ pub(crate) fn keys_credential(
     let api_key = resolve_api_key(&parsed.flags, env, Some(&profile))
         .ok_or_else(|| hint("No stored credential. Run \"{bin} login\" first."))?;
     Ok((path, cfg, base, api_key))
+}
+
+fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64)
+}
+
+fn key_ctx(parsed: &ParsedArgs, base: &str, cred: &str) -> Ctx {
+    Ctx {
+        base: base.to_string(),
+        key: Some(cred.to_string()),
+        management_key: None,
+        json: parsed.flag_true("json"),
+    }
+}
+
+/// The one key whose hash equals or starts with `hash`.
+fn resolve_key(
+    rows: &[crate::http::RemoteKey],
+    hash: &str,
+) -> Result<crate::http::RemoteKey, String> {
+    let matches: Vec<_> = rows
+        .iter()
+        .filter(|r| r.hash == hash || r.hash.starts_with(hash))
+        .collect();
+    match matches.as_slice() {
+        [one] => Ok((*one).clone()),
+        [] => Err(hint(&format!(
+            "No key matches \"{hash}\". See: {{bin}} keys list"
+        ))),
+        _ => Err(format!(
+            "\"{hash}\" matches {} keys — use a longer hash prefix.",
+            matches.len()
+        )),
+    }
 }
 
 pub(crate) fn default_key_name() -> String {
@@ -104,7 +142,27 @@ pub(crate) fn run_keys(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> R
                 .cloned()
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(default_key_name);
-            let key = create_key(&base, &cred, &name)?;
+            let mut body = scope_fields(parsed, now_secs())?;
+            body.remove("disabled");
+            body.insert("name".into(), serde_json::Value::String(name.clone()));
+            let ctx = key_ctx(parsed, &base, &cred);
+            let created = send(
+                &ctx,
+                "POST",
+                "/v1/keys",
+                Some(&serde_json::Value::Object(body).to_string()),
+                true,
+            )?;
+            let key = created
+                .get("key")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .ok_or("Create-key response did not include a key.")?
+                .to_string();
+            if parsed.flag_true("quiet") {
+                println!("{key}");
+                return Ok(0);
+            }
             println!("Created \"{name}\":\n\n  {key}\n\nShown once — store it now.");
             let save = parsed.skip_confirm()
                 || (term::is_interactive()
@@ -116,6 +174,48 @@ pub(crate) fn run_keys(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> R
                 }
                 write_config(&cfg, &path)?;
                 println!("{}  saved to config.yaml", term::ok("Saved"));
+            }
+            Ok(0)
+        }
+        "show" | "update" => {
+            let hash = parsed.passthrough.get(1).cloned().ok_or_else(|| {
+                hint(&format!(
+                    "Usage: {{bin}} keys {sub} <hash>   (find hashes: {{bin}} keys list)"
+                ))
+            })?;
+            let (_path, _cfg, base, cred) = keys_credential(parsed, env)?;
+            let ctx = key_ctx(parsed, &base, &cred);
+            let row = resolve_key(&fetch_keys(&base, &cred)?, &hash)?;
+            let url = format!("/v1/keys/{}", row.hash);
+            if sub == "update" {
+                let body = scope_fields(parsed, now_secs())?;
+                if body.is_empty() {
+                    return Err(hint(
+                        "Nothing to update. Pass --limit, --reset, --endpoints, --expires, --disable or --enable.",
+                    ));
+                }
+                send(
+                    &ctx,
+                    "PATCH",
+                    &url,
+                    Some(&serde_json::Value::Object(body).to_string()),
+                    true,
+                )?;
+                if !ctx.json {
+                    println!(
+                        "{}  updated \"{}\" ({})",
+                        term::ok("Updated"),
+                        row.name,
+                        row.masked
+                    );
+                    return Ok(0);
+                }
+            }
+            let key = get(&ctx, &url, true)?;
+            if ctx.json {
+                crate::cmd::view::print_json(&key);
+            } else {
+                print!("{}", render_show(&key));
             }
             Ok(0)
         }
@@ -237,7 +337,7 @@ pub(crate) fn run_keys(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> R
             Ok(0)
         }
         other => Err(format!(
-            "Unknown keys subcommand \"{other}\". Try: list | create | use | revoke"
+            "Unknown keys subcommand \"{other}\". Try: list | create | show | update | use | revoke"
         )),
     }
 }

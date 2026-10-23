@@ -30,6 +30,8 @@ pub fn subcommands(command: &str) -> &'static [(&'static str, &'static str)] {
             ("list", "List API keys"),
             ("create", "Create an API key"),
             ("use", "Store a key on this machine"),
+            ("show", "Limit, spent, endpoints and expiry of a key"),
+            ("update", "Change a key's limit, endpoints, expiry or state"),
             ("revoke", "Revoke an API key"),
         ],
         "config" => &[

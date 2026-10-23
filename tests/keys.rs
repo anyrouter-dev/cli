@@ -1,0 +1,154 @@
+//! `anyr keys create|show|update` scoping flags against a local scripted server.
+
+mod common;
+use common::{run, serve};
+use std::time::Duration;
+
+const LIST: &str = r#"{"data":[{"hash":"abc123def456","name":"ci-bot","label":"sk-ar-v1-abc"}]}"#;
+const SECRET: &str = "sk-ar-v1-brandnewsecret0001";
+
+fn created() -> (u16, String) {
+    (
+        201,
+        format!(r#"{{"key":"{SECRET}","data":{{"hash":"h2"}}}}"#),
+    )
+}
+
+#[test]
+fn create_sends_scope_fields_and_quiet_prints_only_the_secret() {
+    // WHY: `KEY=$(anyr keys create ... --quiet)` must capture just the secret,
+    // and the body must carry the scope the user asked for.
+    let (base, rx) = serve(vec![created()]);
+    let (code, out, err) = run(
+        &base,
+        &[
+            "keys",
+            "create",
+            "ci-bot",
+            "--limit",
+            "25",
+            "--reset",
+            "monthly",
+            "--endpoints",
+            "chat,embeddings",
+            "--expires",
+            "30d",
+            "--quiet",
+        ],
+        None,
+    );
+    assert_eq!(code, 0, "{out}{err}");
+    assert_eq!(out.trim(), SECRET);
+    assert!(!err.contains(SECRET), "{err}");
+    let seen = rx.recv().unwrap();
+    assert_eq!(
+        (seen.method.as_str(), seen.path.as_str()),
+        ("POST", "/api/v1/keys")
+    );
+    let b: serde_json::Value = serde_json::from_str(&seen.body).unwrap();
+    assert_eq!(b["name"], "ci-bot");
+    assert_eq!(b["limit"], 25.0);
+    assert_eq!(b["limit_reset"], "monthly");
+    assert_eq!(
+        b["allowed_endpoints"],
+        serde_json::json!([
+            "/api/v1/chat/completions",
+            "/api/v1/messages",
+            "/api/v1/responses",
+            "/api/v1/embeddings"
+        ])
+    );
+    assert!(b["expires_at"].as_str().unwrap().ends_with('Z'), "{b}");
+    assert!(b.get("disabled").is_none());
+}
+
+#[test]
+fn create_without_flags_sends_only_the_name() {
+    let (base, rx) = serve(vec![created()]);
+    let (code, out, err) = run(&base, &["keys", "create", "plain", "--quiet"], None);
+    assert_eq!(code, 0, "{out}{err}");
+    let b: serde_json::Value = serde_json::from_str(&rx.recv().unwrap().body).unwrap();
+    assert_eq!(b, serde_json::json!({"name": "plain"}));
+}
+
+#[test]
+fn bad_scope_flags_are_exit_2_and_send_nothing() {
+    let (base, rx) = serve(vec![created()]);
+    for args in [
+        ["keys", "create", "x", "--endpoints", "teleport"].as_slice(),
+        ["keys", "create", "x", "--expires", "soon"].as_slice(),
+        ["keys", "create", "x", "--limit", "-3"].as_slice(),
+        ["keys", "create", "x", "--reset", "hourly"].as_slice(),
+    ] {
+        let (code, _, err) = run(&base, args, None);
+        assert_eq!(code, 2, "{args:?}: {err}");
+    }
+    assert!(rx.recv_timeout(Duration::from_millis(300)).is_err());
+}
+
+#[test]
+fn update_patches_only_given_fields_by_hash_prefix() {
+    let (base, rx) = serve(vec![
+        (200, LIST.into()),
+        (200, r#"{"ok":true}"#.into()),
+        (
+            200,
+            r#"{"name":"ci-bot","hash":"abc123def456","limit":50.0,"disabled":true}"#.into(),
+        ),
+    ]);
+    let (code, out, err) = run(
+        &base,
+        &[
+            "keys",
+            "update",
+            "abc123",
+            "--limit",
+            "50",
+            "--disable",
+            "--json",
+        ],
+        None,
+    );
+    assert_eq!(code, 0, "{out}{err}");
+    assert_eq!(rx.recv().unwrap().path, "/api/v1/keys");
+    let patch = rx.recv().unwrap();
+    assert_eq!(
+        (patch.method.as_str(), patch.path.as_str()),
+        ("PATCH", "/api/v1/keys/abc123def456")
+    );
+    let b: serde_json::Value = serde_json::from_str(&patch.body).unwrap();
+    assert_eq!(b, serde_json::json!({"limit": 50.0, "disabled": true}));
+}
+
+#[test]
+fn update_with_nothing_to_change_is_a_usage_error() {
+    let (base, _rx) = serve(vec![(200, LIST.into())]);
+    let (code, _, err) = run(&base, &["keys", "update", "abc123"], None);
+    assert_eq!(code, 2, "{err}");
+}
+
+#[test]
+fn show_prints_limit_spent_endpoints_expiry() {
+    let key = r#"{"name":"ci-bot","hash":"abc123def456","limit":25.0,"limit_reset":"monthly","real_usage":1.5,"limit_remaining":23.5,"allowed_endpoints":["/api/v1/embeddings"],"expires_at":"2026-11-23T01:51:16Z"}"#;
+    let (base, rx) = serve(vec![(200, LIST.into()), (200, key.into())]);
+    let (code, out, err) = run(&base, &["keys", "show", "abc123"], None);
+    assert_eq!(code, 0, "{out}{err}");
+    rx.recv().unwrap();
+    assert_eq!(rx.recv().unwrap().path, "/api/v1/keys/abc123def456");
+    for want in [
+        "$25.00 (monthly)",
+        "$1.50",
+        "embeddings",
+        "2026-11-23T01:51:16Z",
+    ] {
+        assert!(out.contains(want), "{want} in {out}");
+    }
+}
+
+#[test]
+fn restricted_key_exits_4() {
+    let (base, _rx) = serve(vec![(403, r#"{"error":{"message":"no scope"}}"#.into())]);
+    let (code, _, err) = run(&base, &["keys", "create", "x", "--quiet"], None);
+    assert_eq!(code, 4, "{err}");
+    assert!(err.starts_with("error:"), "{err}");
+}

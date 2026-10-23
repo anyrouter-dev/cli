@@ -8,6 +8,7 @@ pub(crate) mod config_tui;
 pub(crate) mod decision;
 pub(crate) mod dispatch;
 pub(crate) mod embed;
+pub(crate) mod key_scope;
 pub(crate) mod keys;
 pub(crate) mod launch;
 pub(crate) mod login;
