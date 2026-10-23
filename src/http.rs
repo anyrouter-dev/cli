@@ -691,23 +691,6 @@ pub fn fetch_keys(base_url: &str, credential: &str) -> Result<Vec<RemoteKey>, St
     parse_key_list(&body)
 }
 
-pub fn create_key(base_url: &str, credential: &str, name: &str) -> Result<String, String> {
-    let url = join_api(base_url, "/v1/keys");
-    let body = serde_json::json!({ "name": name }).to_string();
-    let (status, resp) = http_post(&url, Some(credential), Some(&body))?;
-    if !(200..300).contains(&status) {
-        return Err(format!("Could not create key (HTTP {status})."));
-    }
-    let value: serde_json::Value =
-        serde_json::from_str(&resp).map_err(|e| format!("Invalid create-key response: {e}"))?;
-    value
-        .get("key")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .ok_or_else(|| "Create-key response did not include a key.".into())
-}
-
 pub fn reveal_key(base_url: &str, credential: &str, hash: &str) -> Result<String, String> {
     let url = join_api(base_url, &format!("/v1/keys/{hash}/reveal"));
     let (status, resp) = http_post(&url, Some(credential), None)?;

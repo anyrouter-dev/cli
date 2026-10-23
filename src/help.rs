@@ -474,10 +474,22 @@ const KEYS: &str = "\
 
 Usage:
   {bin} keys list [--json]
-  {bin} keys create [name]
+  {bin} keys create [name] [--limit USD] [--reset daily|weekly|monthly]
+                        [--endpoints chat,embeddings,...] [--expires 30d] [--quiet]
+  {bin} keys show <hash> [--json]
+  {bin} keys update <hash> [--limit USD] [--reset ...] [--endpoints ...] [--expires 30d]
+                           [--disable|--enable]
   {bin} keys use [hash]
   {bin} keys use [hash] --agent <claude|codex|grok|opencode|pi|pool>
   {bin} keys revoke <hash> [--yes]
+
+Scoped keys for CI: `--limit` caps spend in USD, `--reset` sets its window,
+`--endpoints` restricts the key to named endpoints (chat covers chat,
+messages and responses, which share one grant), `--expires` takes 30d, 12h,
+45m or 2w. `--quiet` prints only the secret on stdout and does not save it:
+  KEY=$({bin} keys create ci-bot --limit 5 --quiet)
+Endpoint names: chat, embeddings, moderations, rerank, documents, speech,
+decisions, mcp, me, relay, models, keys, credits, logs, dashboard, trace.
 
 The signed-in API key must have Key Management permission.
 CLI login (`{bin} auth login`) creates a key with full access.

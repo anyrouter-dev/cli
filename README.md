@@ -164,6 +164,21 @@ A file is sent inline; a folder uploads file by file and skips dotfiles,
 builds on the current version; if someone published first the command exits 2
 and prints the current version. `public` asks for confirmation unless `--yes`.
 
+### Scoped keys for CI: `anyr keys`
+
+```bash
+anyr keys create ci-bot --limit 25 --reset monthly --endpoints chat,embeddings --expires 30d
+KEY=$(anyr keys create ci-bot --limit 5 --quiet)   # secret only on stdout, not saved
+anyr keys update <hash> --limit 50 --disable       # --enable turns it back on
+anyr keys show <hash>                              # limit, spent, endpoints, expiry
+```
+
+`--limit` is a USD cap, `--reset` its window (daily, weekly, monthly),
+`--expires` takes `30d`, `12h`, `45m` or `2w`. `--endpoints` takes names (chat,
+embeddings, moderations, rerank, documents, speech, decisions, mcp, me, relay,
+models, keys, credits, logs, dashboard, trace). `chat`, `messages` and
+`responses` share one grant on the server, so each covers all three.
+
 ### Request logs: `anyr logs`
 
 ```bash
