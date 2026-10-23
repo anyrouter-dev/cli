@@ -361,7 +361,7 @@ pub(crate) fn allowed_flags(command: &str) -> Option<&'static [&'static str]> {
         ],
         "models" => &[
             "profile", "config", "json", "key", "base-url", "pick", "haiku", "sonnet", "opus",
-            "fable", "agent", "dump-tui",
+            "fable", "agent", "dump-tui", "free", "type", "owner", "search", "sort",
         ],
         "usage" => &["profile", "base-url", "config", "json", "key", "no-detail"],
         "decision" => &[

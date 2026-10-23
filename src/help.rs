@@ -418,6 +418,8 @@ const MODELS: &str = "\
 
 Usage:
   {bin} models [list|ls] [options]     (alias: {bin} model)
+  {bin} models [--free] [--type chat|embedding|decision] [--owner <org>] [--search <text>] [--sort price|context|new]
+  {bin} models show <id> [--json]
   {bin} models use <id>
   {bin} models use <id> --agent <claude|codex|grok|opencode|pi|pool>
   {bin} models use --haiku|--sonnet|--opus|--fable <id>
@@ -432,7 +434,16 @@ this command does not invent catalog ids).
 The inline picker pins `anyrouter/auto` as a selectable preset. Type to
 filter catalog ids. It does not dump a most-used / usage ranking.
 
+Filters print id, type, context, $/1M in, $/1M out and free. `free` means an
+explicit $0 platform price (BYOK list prices never count). `show` prints pricing,
+context, modalities, the free route and the providers a request tries in order.
+
 Options:
+  --free            Only $0 models
+  --type <t>        chat | embedding | decision
+  --owner <org>     Only models from this owner (nvidia, z-ai, ...)
+  --search <text>   Match on id or name
+  --sort <s>        price (cheapest first) | context (largest first) | new
   --json            Print as JSON
   --pick            Interactive picker (TTY) — default / haiku / sonnet / opus / fable
   --agent <id>     Pin the model on one coding agent instead of the session default
