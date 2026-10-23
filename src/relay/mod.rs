@@ -2263,9 +2263,10 @@ fn run_relay_unpair(
         None => println!("Unpaired: removed this device from your account and forgot its token."),
         Some(w) => {
             println!("Forgot the pairing on this machine.");
+            let why = w.lines().next().unwrap_or_default();
             eprintln!(
-                "warning: could not remove the device from your account: {w}\n\
-                 Remove it at {DEVICES_URL}"
+                "note: nothing removed from your account ({}). Check {DEVICES_URL}",
+                why.trim_start_matches("error: ")
             );
         }
     }
