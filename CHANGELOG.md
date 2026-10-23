@@ -10,6 +10,16 @@ GitHub Releases use this file as the release notes (full history through that ta
 
 * **cli:** add `anyr decision` for typed `POST /api/v1/decisions` requests with flag or stdin JSON input. Known Decisions models are refused by chat-agent launchers. ([duyet/anyrouter#3550](https://github.com/duyet/anyrouter/issues/3550))
 
+## [0.1.27](https://github.com/anyrouter-dev/cli/compare/v0.1.26...v0.1.27) (2026-10-23)
+
+
+### Features
+
+* **byok:** add rm, test and providers ([#151](https://github.com/anyrouter-dev/cli/issues/151)) ([e1c5d83](https://github.com/anyrouter-dev/cli/commit/e1c5d832e867b80d3716973cc77121655fa5e34e))
+* **embed:** add anyr embed ([#149](https://github.com/anyrouter-dev/cli/issues/149)) ([a5c9453](https://github.com/anyrouter-dev/cli/commit/a5c9453440e317a32f6bcef84a6d39abde30be4d))
+* **keys:** scoping flags on create, plus keys show and update ([#153](https://github.com/anyrouter-dev/cli/issues/153)) ([b910aa6](https://github.com/anyrouter-dev/cli/commit/b910aa6187e30ba7d3f5c83cd66b8c6d55ec0820))
+* **models:** add --free/--type/--owner/--search/--sort filters and models show ([#152](https://github.com/anyrouter-dev/cli/issues/152)) ([878c35c](https://github.com/anyrouter-dev/cli/commit/878c35cacd162e1964f79034778ef72e416db627))
+
 ## [0.1.26](https://github.com/anyrouter-dev/cli/compare/v0.1.25...v0.1.26) (2026-10-23)
 
 
