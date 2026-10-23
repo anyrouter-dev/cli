@@ -127,6 +127,18 @@ fn visibility_arg(v: &str) -> Result<&str, String> {
 }
 
 /// Server message for a failed call, plus the exit code it maps to.
+/// What the new visibility means, from the server's `status`.
+fn visibility_note(visibility: &str, status: Option<&str>) -> &'static str {
+    match (visibility, status) {
+        ("public", Some("pending_review")) => ": pending review before it is listed publicly",
+        ("public", Some("accepted")) => ": listed publicly",
+        ("public", Some("rejected")) => ": rejected in review, so it is not listed",
+        ("unlisted", _) => ": anyone with the link can open it; not listed",
+        ("private", _) => ": only you can open it",
+        _ => "",
+    }
+}
+
 fn failure(status: u16, text: &str, what: &str) -> (String, i32) {
     let v: Value = serde_json::from_str(text).unwrap_or(Value::Null);
     let msg = v
@@ -458,7 +470,9 @@ fn apps_inner(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32
                     if parsed.flag_true("json") {
                         println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default());
                     } else {
-                        eprintln!("{app}/{id} is now {want}");
+                        let got = v.get("visibility").and_then(Value::as_str).unwrap_or(want);
+                        let status = v.get("status").and_then(Value::as_str);
+                        eprintln!("{app}/{id} is now {got}{}", visibility_note(got, status));
                     }
                     Ok(0)
                 }

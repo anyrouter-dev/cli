@@ -297,6 +297,10 @@ fn apps_verbs_hit_the_generic_routes() {
     let cmd = cli(&base, &["apps", "visibility", "demo", "k1", "private"]);
     let (code, _, err) = run(cmd);
     assert_eq!(code, 0, "{err}");
+    assert!(
+        err.contains("demo/k1 is now private: only you can open it"),
+        "{err}"
+    );
     let seen = rx.recv().unwrap();
     assert!(
         seen.starts_with("PATCH /api/v1/apps/demo/submissions/k1"),
@@ -312,6 +316,45 @@ fn apps_verbs_hit_the_generic_routes() {
         .recv()
         .unwrap()
         .starts_with("DELETE /api/v1/apps/demo/submissions/k1"));
+}
+
+#[test]
+fn apps_visibility_public_says_whether_it_waits_for_review_or_is_listed() {
+    let (base, _rx) = serve(vec![(
+        200,
+        r#"{"id":"k1","visibility":"public","status":"pending_review"}"#,
+    )]);
+    let cmd = cli(&base, &["apps", "visibility", "demo", "k1", "public"]);
+    let (code, _, err) = run(cmd);
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        err.contains("demo/k1 is now public: pending review before it is listed publicly"),
+        "{err}"
+    );
+
+    // Already approved: going public again lists it with no second review.
+    let (base, _rx) = serve(vec![(
+        200,
+        r#"{"id":"k1","visibility":"public","status":"accepted"}"#,
+    )]);
+    let cmd = cli(&base, &["apps", "visibility", "demo", "k1", "public"]);
+    let (code, _, err) = run(cmd);
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        err.contains("demo/k1 is now public: listed publicly"),
+        "{err}"
+    );
+
+    let (base, _rx) = serve(vec![(
+        200,
+        r#"{"id":"k1","visibility":"unlisted","status":"accepted"}"#,
+    )]);
+    let cmd = cli(&base, &["apps", "visibility", "demo", "k1", "unlisted"]);
+    let (_, _, err) = run(cmd);
+    assert!(
+        err.contains("demo/k1 is now unlisted: anyone with the link can open it; not listed"),
+        "{err}"
+    );
 }
 
 #[test]
