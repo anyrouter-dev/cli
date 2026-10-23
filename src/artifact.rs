@@ -160,13 +160,13 @@ fn publish(ctx: &Ctx, parsed: &ParsedArgs, path: &str) -> Res<()> {
     if let Some(v) = &visibility {
         body.insert("visibility".into(), json!(v));
     }
+    if let Some(l) = get_string_flag(&parsed.flags, "label") {
+        body.insert("label".into(), json!(l));
+    }
     let versions_path = match &id {
         Some(id) => {
             let current = current_version(ctx, id)?;
             body.insert("base_version".into(), json!(current));
-            if let Some(l) = get_string_flag(&parsed.flags, "label") {
-                body.insert("label".into(), json!(l));
-            }
             format!("/v1/artifacts/{id}/versions")
         }
         None => "/v1/artifacts".to_string(),
@@ -258,7 +258,7 @@ fn upload_missing(ctx: &Ctx, upload: &str, started: &Value, entries: &[Entry]) -
         let url = crate::http::join_api(&ctx.base, &path);
         let (status, text) =
             crate::http::http_put_file(&url, Some(key), &entry.abs).map_err(|e| Fail::new(1, e))?;
-        check(status, &text)?;
+        check(ctx.key.as_deref(), status, &text)?;
     }
     Ok(())
 }
@@ -281,12 +281,23 @@ fn print_published(ctx: &Ctx, done: &Value) -> Res<()> {
 
 fn list(ctx: &Ctx, parsed: &ParsedArgs) -> Res<()> {
     let q = match get_string_flag(&parsed.flags, "limit") {
-        Some(n) => format!("?limit={}", n.trim()),
+        Some(n) => {
+            let n: u32 = n
+                .trim()
+                .parse()
+                .ok()
+                .filter(|n| *n > 0)
+                .ok_or_else(|| usage("--limit must be a positive whole number."))?;
+            format!("?limit={n}")
+        }
         None => String::new(),
     };
-    let (_, mut v) = call(ctx, "GET", &format!("/v1/artifacts{q}"), None)?;
-    if let Some(items) = v.get("artifacts").cloned() {
-        v = json!({ "data": items });
+    let (_, v) = call(ctx, "GET", &format!("/v1/artifacts{q}"), None)?;
+    if v.get("next_cursor").is_some_and(|c| !c.is_null()) {
+        eprintln!(
+            "{}",
+            term::dim("more artifacts exist; raise --limit to see them.")
+        );
     }
     crate::api::list(
         ctx,
@@ -354,12 +365,22 @@ fn call(ctx: &Ctx, method: &str, path: &str, body: Option<&Value>) -> Res<(u16, 
     let body = body.map(Value::to_string);
     let (status, text) =
         request(ctx, method, path, body.as_deref(), Some(key)).map_err(|e| Fail::new(1, e))?;
-    check(status, &text)?;
+    check(ctx.key.as_deref(), status, &text)?;
     let value = serde_json::from_str(&text).unwrap_or(Value::Null);
     Ok((status, value))
 }
 
-fn check(status: u16, text: &str) -> Res<()> {
+/// Server error text must never echo the caller's key back to a terminal or log.
+fn redact_key(text: &str, key: Option<&str>) -> String {
+    match key {
+        Some(k) if k.len() >= 4 => text.replace(k, "[redacted]"),
+        _ => text.to_string(),
+    }
+}
+
+fn check(key: Option<&str>, status: u16, text: &str) -> Res<()> {
+    let redacted = redact_key(text, key);
+    let text = redacted.as_str();
     if (200..300).contains(&status) {
         return Ok(());
     }
@@ -466,6 +487,10 @@ fn scan_dir(root: &Path) -> Res<Vec<Entry>> {
             "{total} bytes found; the limit is {MAX_TOTAL_BYTES} per publish."
         )));
     }
+    // Hash only once the count and size caps pass.
+    for entry in &mut found {
+        entry.sha256 = hash_file(&entry.abs)?;
+    }
     Ok(found)
 }
 
@@ -474,7 +499,12 @@ fn walk(root: &Path, dir: &Path, out: &mut Vec<Entry>) -> Res<()> {
         fs::read_dir(dir).map_err(|e| usage(format!("Cannot read {}: {e}", dir.display())))?;
     for item in read {
         let item = item.map_err(|e| usage(format!("Cannot read {}: {e}", dir.display())))?;
-        let name = item.file_name().to_string_lossy().to_string();
+        let Some(name) = item.file_name().to_str().map(str::to_string) else {
+            return Err(usage(format!(
+                "{} has a file name that is not valid UTF-8; rename it before publishing.",
+                item.path().display()
+            )));
+        };
         if name.starts_with('.') || name == "node_modules" {
             continue;
         }
@@ -502,12 +532,11 @@ fn walk(root: &Path, dir: &Path, out: &mut Vec<Entry>) -> Res<()> {
                 .map(|c| c.as_os_str().to_string_lossy().to_string())
                 .collect::<Vec<_>>()
                 .join("/");
-            let sha256 = hash_file(&abs)?;
             out.push(Entry {
                 rel,
                 abs,
                 size,
-                sha256,
+                sha256: String::new(),
             });
         }
     }
@@ -550,6 +579,7 @@ mod tests {
     #[test]
     fn conflict_reports_current_version_and_exits_2() {
         let f = check(
+            None,
             409,
             r#"{"error":{"code":"version_conflict","message":"stale","current_version":4}}"#,
         )
@@ -561,9 +591,9 @@ mod tests {
 
     #[test]
     fn statuses_map_to_exit_codes() {
-        assert_eq!(check(401, "{}").err().unwrap().code, 4);
-        assert_eq!(check(404, "{}").err().unwrap().code, 3);
-        assert_eq!(check(500, "{}").err().unwrap().code, 1);
-        assert!(check(201, "{}").is_ok());
+        assert_eq!(check(None, 401, "{}").err().unwrap().code, 4);
+        assert_eq!(check(None, 404, "{}").err().unwrap().code, 3);
+        assert_eq!(check(None, 500, "{}").err().unwrap().code, 1);
+        assert!(check(None, 201, "{}").is_ok());
     }
 }

@@ -432,7 +432,7 @@ fn visibility_patches_and_ls_lists() {
     assert!(s.ends_with(r#"{"visibility":"unlisted"}"#), "{s}");
     let (base, _) = serve(vec![(
         200,
-        r#"{"artifacts":[{"id":"abc123","title":"Sales","visibility":"link","current_version":2,"url":"https://anyrouter.dev/a/abc123"}]}"#.into(),
+        r#"{"data":[{"id":"abc123","title":"Sales","visibility":"link","current_version":2,"url":"https://anyrouter.dev/a/abc123"}]}"#.into(),
     )]);
     let (code, out, err) = anyr(
         &dir,
@@ -465,4 +465,143 @@ fn bad_id_and_bad_visibility_are_usage_errors() {
         ],
     );
     assert_eq!(code, 2, "{err}");
+}
+
+#[cfg(unix)]
+#[test]
+fn dir_publish_skips_symlinks_so_nothing_outside_the_folder_leaves() {
+    // WHY: a symlink to ~/.ssh or /etc must never be followed into an upload.
+    let dir = tmp("symlink");
+    let site = dir.join("site");
+    std::fs::create_dir_all(&site).unwrap();
+    std::fs::write(site.join("index.html"), "hi").unwrap();
+    std::fs::write(dir.join("secret.txt"), "TOP SECRET").unwrap();
+    std::os::unix::fs::symlink(dir.join("secret.txt"), site.join("link.txt")).unwrap();
+    std::os::unix::fs::symlink(&dir, site.join("up")).unwrap();
+    let (base, seen) = serve(vec![
+        (200, r#"{"upload_id":"u","missing":[]}"#.into()),
+        (201, OK.into()),
+    ]);
+    let (code, _, err) = anyr(
+        &dir,
+        &[
+            "artifact",
+            "publish",
+            site.to_str().unwrap(),
+            "--base-url",
+            &base,
+            "--key",
+            "sk-ar-test",
+        ],
+    );
+    assert_eq!(code, 0, "{err}");
+    let seen = seen.lock().unwrap();
+    assert!(
+        !seen[0].contains("link.txt") && !seen[0].contains("secret"),
+        "{}",
+        seen[0]
+    );
+    assert!(seen[0].contains("index.html"), "{}", seen[0]);
+}
+
+#[cfg(unix)]
+#[test]
+fn dir_publish_rejects_non_utf8_file_names_locally() {
+    use std::os::unix::ffi::OsStrExt;
+    let dir = tmp("nonutf8");
+    let site = dir.join("site");
+    std::fs::create_dir_all(&site).unwrap();
+    let bad = std::ffi::OsStr::from_bytes(b"bad\xff.txt");
+    std::fs::write(site.join(bad), "x").unwrap();
+    let (base, seen) = serve(vec![]);
+    let (code, _, err) = anyr(
+        &dir,
+        &[
+            "artifact",
+            "publish",
+            site.to_str().unwrap(),
+            "--base-url",
+            &base,
+            "--key",
+            "sk-ar-test",
+        ],
+    );
+    assert_eq!(code, 2, "{err}");
+    assert!(err.contains("not valid UTF-8"), "{err}");
+    assert!(seen.lock().unwrap().is_empty());
+}
+
+#[test]
+fn label_is_sent_on_a_first_publish() {
+    let dir = tmp("label");
+    let f = dir.join("a.html");
+    std::fs::write(&f, "<p>x</p>").unwrap();
+    let (base, seen) = serve(vec![(201, OK.into())]);
+    let (code, _, err) = anyr(
+        &dir,
+        &[
+            "artifact",
+            "publish",
+            f.to_str().unwrap(),
+            "--label",
+            "v1 draft",
+            "--base-url",
+            &base,
+            "--key",
+            "sk-ar-test",
+        ],
+    );
+    assert_eq!(code, 0, "{err}");
+    assert!(seen.lock().unwrap()[0].contains(r#""label":"v1 draft""#));
+}
+
+#[test]
+fn ls_rejects_a_bad_limit_before_any_request() {
+    let dir = tmp("limit");
+    let (base, seen) = serve(vec![]);
+    let (code, _, err) = anyr(
+        &dir,
+        &[
+            "artifact",
+            "ls",
+            "--limit",
+            "5&x=1",
+            "--base-url",
+            &base,
+            "--key",
+            "sk-ar-test",
+        ],
+    );
+    assert_eq!(code, 2, "{err}");
+    assert!(seen.lock().unwrap().is_empty());
+}
+
+#[test]
+fn server_413_is_reported_and_the_key_is_redacted() {
+    // WHY: an error body that echoes the bearer token must not reach the terminal.
+    let dir = tmp("413");
+    let f = dir.join("a.html");
+    std::fs::write(&f, "<p>x</p>").unwrap();
+    let (base, _seen) = serve(vec![(
+        413,
+        r#"{"error":{"message":"too large for key sk-ar-test"}}"#.into(),
+    )]);
+    let (code, _, err) = anyr(
+        &dir,
+        &[
+            "artifact",
+            "publish",
+            f.to_str().unwrap(),
+            "--base-url",
+            &base,
+            "--key",
+            "sk-ar-test",
+        ],
+    );
+    assert_eq!(code, 1, "{err}");
+    assert!(err.contains("HTTP 413: too large"), "{err}");
+    assert!(
+        !err.contains("sk-ar-test\n") && err.contains("[redacted]"),
+        "{err}"
+    );
 }
