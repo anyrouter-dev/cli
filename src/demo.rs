@@ -171,6 +171,7 @@ fn demo_models(json: bool) -> String {
             owned_by: Some("anthropic".into()),
             context_length: Some(200_000),
             max_completion_tokens: None,
+            ..Default::default()
         },
         CatalogModel {
             id: "openai/gpt-5.4-mini".into(),
@@ -178,6 +179,7 @@ fn demo_models(json: bool) -> String {
             owned_by: Some("openai".into()),
             context_length: Some(128_000),
             max_completion_tokens: None,
+            ..Default::default()
         },
         CatalogModel {
             id: "z-ai/glm-4.7-flash".into(),
@@ -185,6 +187,7 @@ fn demo_models(json: bool) -> String {
             owned_by: Some("z-ai".into()),
             context_length: Some(128_000),
             max_completion_tokens: None,
+            ..Default::default()
         },
     ];
     let pinned = vec!["anthropic/claude-sonnet-4.6".into()];

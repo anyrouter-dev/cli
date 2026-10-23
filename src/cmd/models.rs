@@ -605,6 +605,7 @@ mod picker_catalog_tests {
             owned_by: None,
             context_length,
             max_completion_tokens: None,
+            ..Default::default()
         }
     }
 

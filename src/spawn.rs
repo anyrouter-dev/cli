@@ -807,6 +807,7 @@ pub fn pi_catalog_models(
             owned_by: None,
             context_length: row.and_then(|m| m.context_length),
             max_completion_tokens: row.and_then(|m| m.max_completion_tokens),
+            ..Default::default()
         }
     };
     let mut out = Vec::with_capacity(catalog.len().saturating_add(1));
@@ -1515,6 +1516,7 @@ mod tests {
             owned_by: None,
             context_length: ctx,
             max_completion_tokens: max,
+            ..Default::default()
         }
     }
 
@@ -1686,6 +1688,7 @@ mod tests {
             owned_by: None,
             context_length: Some(200_000),
             max_completion_tokens: None,
+            ..Default::default()
         };
         let ox = crate::http::CatalogModel {
             id: "stealth/ox-alpha".into(),
@@ -1693,6 +1696,7 @@ mod tests {
             owned_by: None,
             context_length: Some(1_000_000),
             max_completion_tokens: None,
+            ..Default::default()
         };
         assert_eq!(
             catalog_context_window("anyrouter/auto[1m]", &[auto_row.clone(), ox.clone()]),

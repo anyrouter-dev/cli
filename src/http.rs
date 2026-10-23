@@ -272,13 +272,14 @@ pub fn validate_key(base_url: &str, api_key: &str) -> Result<(), String> {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct CatalogModel {
     pub id: String,
     pub name: Option<String>,
     pub owned_by: Option<String>,
     pub context_length: Option<i64>,
     pub max_completion_tokens: Option<i64>,
+    pub capabilities: Vec<String>,
 }
 
 pub fn fetch_models(base_url: &str, api_key: Option<&str>) -> Result<Vec<CatalogModel>, String> {
@@ -342,22 +343,46 @@ fn parse_models_body(body: &str) -> Result<Vec<CatalogModel>, String> {
                 max_completion_tokens: item
                     .pointer("/top_provider/max_completion_tokens")
                     .and_then(|v| v.as_i64().or_else(|| v.as_u64().map(|n| n as i64))),
+                capabilities: item
+                    .get("capabilities")
+                    .and_then(|v| v.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|c| c.as_str().map(str::to_string))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
             })
         })
         .collect())
 }
 
-/// `id\towner\tcontext_length\tpinned` per model, for pipes.
+impl CatalogModel {
+    /// `chat`, `embedding` or `decisions`; launchers only accept `chat`.
+    pub fn kind(&self) -> &'static str {
+        let has = |c: &str| self.capabilities.iter().any(|x| x == c);
+        if has("embedding") {
+            "embedding"
+        } else if has("systemone") || self.id == "anyrouter/decision" {
+            "decisions"
+        } else {
+            "chat"
+        }
+    }
+}
+
+/// `id\towner\tcontext_length\tpinned\ttype` per model, for pipes.
 pub fn format_models_tsv(models: &[CatalogModel], pinned_ids: &[String]) -> String {
     models
         .iter()
         .map(|m| {
             format!(
-                "{}\t{}\t{}\t{}\n",
+                "{}\t{}\t{}\t{}\t{}\n",
                 m.id,
                 m.owned_by.as_deref().unwrap_or(""),
                 m.context_length.map(|n| n.to_string()).unwrap_or_default(),
-                pinned_ids.iter().any(|id| id == &m.id)
+                pinned_ids.iter().any(|id| id == &m.id),
+                m.kind()
             )
         })
         .collect()
@@ -729,6 +754,19 @@ pub fn keys_newest_first(mut keys: Vec<RemoteKey>) -> Vec<RemoteKey> {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn models_tsv_has_type_column_chat_embedding_decisions() {
+        let body = r#"{"data":[
+            {"id":"a/chat","capabilities":["chat"]},
+            {"id":"n/embed","capabilities":["embedding"]},
+            {"id":"anyrouter/decision","capabilities":["systemone"]},
+            {"id":"b/nocaps"}]}"#;
+        let models = super::parse_models_body(body).unwrap();
+        let tsv = super::format_models_tsv(&models, &[]);
+        let types: Vec<&str> = tsv.lines().map(|l| l.split('\t').nth(4).unwrap()).collect();
+        assert_eq!(types, ["chat", "embedding", "decisions", "chat"]);
+    }
+
+    #[test]
     fn decision_error_shows_the_server_message() {
         let body = r#"{"error":{"code":"invalid_questions","message":"Question \"urgent\" requires instructions as a string, object, or array."}}"#;
         assert_eq!(
@@ -793,6 +831,7 @@ mod tests {
                 owned_by: Some("anthropic".into()),
                 context_length: Some(200_000),
                 max_completion_tokens: None,
+                ..Default::default()
             },
             CatalogModel {
                 id: "openai/gpt-5.4-mini".into(),
@@ -800,6 +839,7 @@ mod tests {
                 owned_by: Some("openai".into()),
                 context_length: Some(128_000),
                 max_completion_tokens: None,
+                ..Default::default()
             },
         ];
         let pinned = vec!["anthropic/claude-sonnet-4.6".into()];
