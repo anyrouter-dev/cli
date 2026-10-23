@@ -248,7 +248,7 @@ fn model_alias_list_and_ls_pipe_tsv_like_api() {
         assert!(rx.recv().unwrap().contains("/models"), "{argv:?}");
         assert_eq!(
             out,
-            "anthropic/claude-sonnet-4.6\tanthropic\t200000\tfalse\nopenai/gpt-5.4-mini\topenai\t128000\tfalse\n",
+            "anthropic/claude-sonnet-4.6\tanthropic\t200000\tfalse\tchat\nopenai/gpt-5.4-mini\topenai\t128000\tfalse\tchat\n",
             "{argv:?}"
         );
     }
