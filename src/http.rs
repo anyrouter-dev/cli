@@ -132,9 +132,21 @@ pub fn create_decision(
         .map_err(|err| format!("Could not encode decision request: {err}"))?;
     let (status, response) = http_post(&url, Some(api_key), Some(&json))?;
     if !(200..300).contains(&status) {
-        return Err(format!("Decision request failed (HTTP {status})."));
+        return Err(decision_error(status, &response));
     }
     serde_json::from_str(&response).map_err(|err| format!("Invalid decision response: {err}"))
+}
+
+/// The server's `error.message` says what to fix (for example a question with
+/// no `instructions`); a bare status code does not.
+fn decision_error(status: u16, body: &str) -> String {
+    let detail = serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| v.pointer("/error/message")?.as_str().map(str::to_string));
+    match detail {
+        Some(msg) => format!("Decision request failed (HTTP {status}): {msg}"),
+        None => format!("Decision request failed (HTTP {status})."),
+    }
 }
 
 #[cfg(not(feature = "native"))]
@@ -658,6 +670,19 @@ pub fn keys_newest_first(mut keys: Vec<RemoteKey>) -> Vec<RemoteKey> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn decision_error_shows_the_server_message() {
+        let body = r#"{"error":{"code":"invalid_questions","message":"Question \"urgent\" requires instructions as a string, object, or array."}}"#;
+        assert_eq!(
+            super::decision_error(400, body),
+            "Decision request failed (HTTP 400): Question \"urgent\" requires instructions as a string, object, or array."
+        );
+        assert_eq!(
+            super::decision_error(502, "<html>bad gateway</html>"),
+            "Decision request failed (HTTP 502)."
+        );
+    }
+
     use super::*;
     use crate::config::DEFAULT_BASE_URL;
 
