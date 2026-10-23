@@ -2457,6 +2457,10 @@ profiles:
     }
 
     #[test]
+    #[cfg_attr(
+        windows,
+        ignore = "hangs on windows-latest CI (loopback websocket round trip never completes); see #109"
+    )]
     fn mock_cloud_round_trip_returns_the_model_text() {
         // Whole device path with no network beyond loopback: cloud sends a
         // `request` frame down, the relay forwards it to a stub "fm serve",

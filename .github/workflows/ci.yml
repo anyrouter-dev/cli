@@ -109,6 +109,7 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: cargo test
+        timeout-minutes: 20
         run: cargo test --locked --all-targets
 
       - name: stamp beta version (main)
