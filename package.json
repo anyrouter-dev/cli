@@ -1,6 +1,6 @@
 {
   "name": "@anyr/cli",
-  "version": "0.1.21",
+  "version": "0.1.22",
   "description": "AnyRouter CLI — native binary",
   "license": "MIT",
   "homepage": "https://anyrouter.dev/cli",

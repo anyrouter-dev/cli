@@ -10,6 +10,24 @@ GitHub Releases use this file as the release notes (full history through that ta
 
 * **cli:** add `anyr decision` for typed `POST /api/v1/decisions` requests with flag or stdin JSON input. Known Decisions models are refused by chat-agent launchers. ([duyet/anyrouter#3550](https://github.com/duyet/anyrouter/issues/3550))
 
+## [0.1.22](https://github.com/anyrouter-dev/cli/compare/v0.1.21...v0.1.22) (2026-10-23)
+
+
+### Features
+
+* **apps:** say whether a visibility change waits for review or is listed ([#118](https://github.com/anyrouter-dev/cli/issues/118)) ([4d538cd](https://github.com/anyrouter-dev/cli/commit/4d538cdfe2f07eee0a1f2acffc6ffc13e13f8979))
+* **artifact:** add anyr artifact publish, ls, rm, visibility ([#110](https://github.com/anyrouter-dev/cli/issues/110)) ([c6fb883](https://github.com/anyrouter-dev/cli/commit/c6fb8838db662df70b44d8819a4111ad220a6cb0))
+* **publish:** generic anyr publish and apps, api --data @file/- ([#108](https://github.com/anyrouter-dev/cli/issues/108)) ([3662f3f](https://github.com/anyrouter-dev/cli/commit/3662f3f0a1663ececa4269d1ae909eb5b0f4fd75))
+* **relay:** serve several local endpoints and route by model ([#117](https://github.com/anyrouter-dev/cli/issues/117)) ([27769e4](https://github.com/anyrouter-dev/cli/commit/27769e43a14ba9a13f2113de289410b15d6b299b))
+
+
+### Bug Fixes
+
+* **artifact:** send unlisted, keep link as an alias ([#119](https://github.com/anyrouter-dev/cli/issues/119)) ([1921961](https://github.com/anyrouter-dev/cli/commit/1921961ed0de033131153f07ae595483ee1ac63e))
+* **decision:** show the server error and a working help example ([#112](https://github.com/anyrouter-dev/cli/issues/112)) ([1dcc4b5](https://github.com/anyrouter-dev/cli/commit/1dcc4b5d9a25da645490fafc4f6ced6def152340))
+* **relay:** treat a Windows read timeout as a poll, not a disconnect ([#113](https://github.com/anyrouter-dev/cli/issues/113)) ([3bf61f0](https://github.com/anyrouter-dev/cli/commit/3bf61f0403ef3ce09e05a25941988cfdbf86c8f2))
+* **upgrade:** let the beta channel take a newer stable release ([#111](https://github.com/anyrouter-dev/cli/issues/111)) ([7332487](https://github.com/anyrouter-dev/cli/commit/733248744527d79fb049df2e69c9ba2a2a2663df))
+
 ## [0.1.21](https://github.com/anyrouter-dev/cli/compare/v0.1.20...v0.1.21) (2026-10-21)
 
 
