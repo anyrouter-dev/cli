@@ -43,6 +43,17 @@ use std::time::Duration;
 #[cfg(feature = "native")]
 use serde_json::json;
 
+mod cli;
+mod daemon;
+mod doctor;
+mod live;
+mod state;
+mod view;
+
+use live::Stats;
+use state::Conn;
+use view::{Paint, DEVICES_URL, POOL_URL};
+
 /// Profile field storing the rk_ pairing token (~/.anyrouter/config.yaml).
 pub const RELAY_TOKEN_FIELD: &str = "relay_token";
 pub const RELAY_TOKEN_ENV_VAR: &str = "ANYROUTER_RELAY_TOKEN";
@@ -81,12 +92,12 @@ static VERBOSE: AtomicBool = AtomicBool::new(false);
 
 fn vlog(msg: &str) {
     if VERBOSE.load(Ordering::Relaxed) {
-        eprintln!("[relay] {msg}");
+        live::log(&format!("[relay] {msg}"));
     }
 }
 
 fn ulog(msg: &str) {
-    eprintln!("{msg}");
+    live::log(msg);
 }
 
 // ---------------------------------------------------------------------------
@@ -200,9 +211,6 @@ struct StartArgs {
     token: Option<String>,
     url: Option<String>,
     name: String,
-    /// On by default; only `--no-pool` turns it off. `--pool` is a no-op kept
-    /// so old commands still parse.
-    pool: bool,
     /// Comma-joined `--model` values (the parser joins repeats for relay).
     models: Option<String>,
     all: bool,
@@ -218,7 +226,6 @@ fn parse_start_args(parsed: &crate::parse::ParsedArgs) -> StartArgs {
         name: get("name")
             .filter(|s| !s.trim().is_empty())
             .unwrap_or_else(|| DEFAULT_DEVICE_NAME.into()),
-        pool: !parsed.flag_true("no-pool"),
         models: get("model"),
         all: parsed.flag_true("all"),
         max_concurrency: get("max-concurrency")
@@ -294,9 +301,10 @@ fn resolve_relay_credential(
     // piped output) must not sit polling a device code.
     if !crate::term::is_interactive() {
         let bin = crate::help::invoked_bin();
-        return Err(format!(
-            "No relay token and no AnyRouter key. Run `{bin} login`, \
-or set ANYROUTER_API_KEY / {RELAY_TOKEN_ENV_VAR}, or pass --token."
+        return Err(view::error(
+            "no AnyRouter key or relay token",
+            &format!("not at a terminal, so `{bin} relay start` cannot open a browser to log in"),
+            &format!("`{bin} login`, or set ANYROUTER_API_KEY / {RELAY_TOKEN_ENV_VAR}"),
         ));
     }
     ulog("No AnyRouter credentials found — starting device login.");
@@ -829,14 +837,13 @@ fn build_router(explicit: Option<&str>, serve: &BTreeSet<OnDeviceModel>) -> Rout
             .collect()
     };
     if targets.is_empty() {
-        ulog(&format!(
-            "no local server auto-detected — falling back to {DEFAULT_TARGET}. \
-             Start `fm serve` (or Ollama / LM Studio), or pass --target explicitly."
-        ));
-        targets.push(chat_target("default target", DEFAULT_TARGET));
+        targets.push(chat_target(FALLBACK_LABEL, DEFAULT_TARGET));
     }
     Router::new(targets)
 }
+
+/// Label of the endpoint used when nothing was detected.
+const FALLBACK_LABEL: &str = "default target";
 
 /// True when something answers within PROBE_TIMEOUT_MS (any status counts).
 fn http_probe_listening(url: &str) -> bool {
@@ -1069,9 +1076,13 @@ fn resolve_relay_device_id(
             }
         }
     }
+    let bin = crate::help::invoked_bin();
     let api_key = resolve_sk_ar_key(parsed, env).ok_or_else(|| {
-        "Could not resolve this device's id for --pool (no key found). Run: anyr relay pair."
-            .to_string()
+        view::error(
+            "no AnyRouter key to look up this device",
+            "",
+            &format!("`{bin} login`"),
+        )
     })?;
     let url = format!("{DEFAULT_API_BASE}/relay/devices");
     let (status, body) = crate::http::http_get(&url, Some(&api_key))?;
@@ -1087,14 +1098,20 @@ fn resolve_relay_device_id(
         })
         .unwrap_or_default();
     if !(200..300).contains(&status) || active_ids.is_empty() {
-        return Err("No paired device found for --pool. Run: anyr relay pair".into());
+        return Err(view::error(
+            "this device is not paired yet",
+            "it pairs on its first connect",
+            &format!("`{bin} relay start` (or `{bin} relay pair`)"),
+        ));
     }
     if active_ids.len() > 1 {
-        return Err(
-            "Multiple paired devices found — can't tell which one to enable pool sharing for. \
-             Manage pool sharing from the dashboard instead: https://dash.anyrouter.dev/devices"
-                .into(),
-        );
+        return Err(view::error(
+            "several paired devices found; cannot tell which one this is",
+            "this machine has no cached device id",
+            &format!(
+                "manage it at {DEVICES_URL}, or `{bin} relay unpair --yes` then `{bin} relay pair`"
+            ),
+        ));
     }
     let id = active_ids[0].to_string();
     write_profile_field(RELAY_DEVICE_ID_FIELD, &id, env)?;
@@ -1249,11 +1266,41 @@ struct ConnState {
     rx: Receiver<ClientFrame>,
     /// Cancel flags keyed by request id; `cancel` frames flip them.
     in_flight: Arc<Mutex<BTreeMap<String, Arc<AtomicBool>>>>,
+    /// Counters the status screen and state file show.
+    stats: Arc<Stats>,
+}
+
+impl ConnState {
+    fn new(stats: Arc<Stats>) -> Self {
+        let (tx, rx) = mpsc::channel();
+        ConnState {
+            tx,
+            rx,
+            in_flight: Arc::new(Mutex::new(BTreeMap::new())),
+            stats,
+        }
+    }
+}
+
+/// Why `serve_connection` returned.
+#[derive(Debug, PartialEq, Eq)]
+enum ConnEnd {
+    /// Socket closed or failed: reconnect with backoff.
+    Dropped,
+    /// Ctrl-C, SIGTERM or `q`.
+    Stop,
+    /// `r` key: rediscover local servers and reconnect now.
+    Rescan,
 }
 
 /// One full connection lifecycle: handshake → hello → serve frames until the
-/// socket dies. Returns when disconnected (caller reconnects with backoff).
-fn serve_connection(ws: &mut Ws, router: &Router, state: &ConnState, max_concurrency: Option<u32>) {
+/// socket dies or a stop/rescan is requested.
+fn serve_connection(
+    ws: &mut Ws,
+    router: &Router,
+    state: &ConnState,
+    max_concurrency: Option<u32>,
+) -> ConnEnd {
     vlog("connected");
 
     // Capability advertisement on every connect/reconnect (#1128), so models
@@ -1266,7 +1313,7 @@ fn serve_connection(ws: &mut Ws, router: &Router, state: &ConnState, max_concurr
             max_concurrency,
         },
     );
-    ulog(&format!(
+    vlog(&format!(
         "advertised {} model(s): {}",
         models.len(),
         if models.is_empty() {
@@ -1276,21 +1323,48 @@ fn serve_connection(ws: &mut Ws, router: &Router, state: &ConnState, max_concurr
         }
     ));
 
+    // Largest usage total seen per request; added to the counter on `done`.
+    let mut tokens: BTreeMap<String, u64> = BTreeMap::new();
     loop {
+        if live::stop_requested() != 0 {
+            let _ = ws.close(None);
+            let _ = ws.flush();
+            return ConnEnd::Stop;
+        }
+        if live::take_rescan() {
+            let _ = ws.close(None);
+            let _ = ws.flush();
+            return ConnEnd::Rescan;
+        }
         // 1. Drain worker output first so streamed chunks go out promptly.
         loop {
             match state.rx.try_recv() {
                 Ok(frame) => {
                     match &frame {
-                        ClientFrame::Done { id } | ClientFrame::Error { id, .. } => {
+                        ClientFrame::Chunk { id, data } => {
+                            if let Some(n) = live::total_tokens(data) {
+                                let e = tokens.entry(id.clone()).or_insert(0);
+                                *e = (*e).max(n);
+                            }
+                        }
+                        ClientFrame::Done { id } => {
                             lock_in_flight(&state.in_flight).remove(id);
+                            if let Some(n) = tokens.remove(id) {
+                                state.stats.add_tokens(n);
+                            }
+                            state.stats.finish_request(false);
+                        }
+                        ClientFrame::Error { id, .. } => {
+                            lock_in_flight(&state.in_flight).remove(id);
+                            tokens.remove(id);
+                            state.stats.finish_request(true);
                         }
                         _ => {}
                     }
                     send_frame(ws, &frame);
                 }
                 Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => return, // unreachable; workers outlive rx
+                Err(TryRecvError::Disconnected) => return ConnEnd::Dropped, // unreachable; workers outlive rx
             }
         }
 
@@ -1298,37 +1372,50 @@ fn serve_connection(ws: &mut Ws, router: &Router, state: &ConnState, max_concurr
         //    (read timeout) is not fatal — just loop back to the queue drain.
         match ws.read() {
             Ok(tungstenite::Message::Text(text)) => match parse_server_frame(&text) {
-                Some(Ok(frame)) => match router.route(&frame.path, &frame.body) {
-                    Ok(t) => spawn_request(state, frame, t.base.clone()),
-                    Err(message) => send_frame(
-                        ws,
-                        &ClientFrame::Error {
-                            id: frame.id,
-                            message,
-                        },
-                    ),
-                },
+                Some(Ok(frame)) => {
+                    state.stats.requests.fetch_add(1, Ordering::Relaxed);
+                    match router.route(&frame.path, &frame.body) {
+                        Ok(t) => {
+                            state.stats.in_flight.fetch_add(1, Ordering::Relaxed);
+                            spawn_request(state, frame, t.base.clone())
+                        }
+                        Err(message) => {
+                            state.stats.errors.fetch_add(1, Ordering::Relaxed);
+                            vlog(&format!("rejected request: {message}"));
+                            send_frame(
+                                ws,
+                                &ClientFrame::Error {
+                                    id: frame.id,
+                                    message,
+                                },
+                            )
+                        }
+                    }
+                }
                 Some(Err(id)) => {
                     if let Some(flag) = lock_in_flight(&state.in_flight).remove(&id) {
                         flag.store(true, Ordering::SeqCst);
+                        tokens.remove(&id);
+                        state.stats.finish_request(false);
                     }
                 }
                 None => vlog("ignoring malformed frame from cloud"),
             },
             Ok(tungstenite::Message::Close(_)) => {
                 vlog("server closed connection");
-                return;
+                return ConnEnd::Dropped;
             }
             Ok(_) => {}
             Err(tungstenite::Error::Io(ref e)) if is_poll_timeout(e.kind()) => {
                 continue;
             }
             Err(tungstenite::Error::ConnectionClosed) | Err(tungstenite::Error::AlreadyClosed) => {
-                return
+                return ConnEnd::Dropped
             }
             Err(err) => {
                 vlog(&format!("ws error: {err}"));
-                return;
+                state.stats.set_error(Some(err.to_string()));
+                return ConnEnd::Dropped;
             }
         }
     }
@@ -1336,10 +1423,14 @@ fn serve_connection(ws: &mut Ws, router: &Router, state: &ConnState, max_concurr
 
 /// A read timeout surfaces as `WouldBlock` on Unix but `TimedOut` on Windows.
 /// Treating `TimedOut` as fatal dropped the relay socket every poll there.
+/// `Interrupted` is a signal (Ctrl-C, SIGTERM) landing mid-read: the loop
+/// then sees the stop flag instead of treating it as a dropped socket.
 fn is_poll_timeout(kind: std::io::ErrorKind) -> bool {
     matches!(
         kind,
-        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+        std::io::ErrorKind::WouldBlock
+            | std::io::ErrorKind::TimedOut
+            | std::io::ErrorKind::Interrupted
     )
 }
 
@@ -1417,24 +1508,68 @@ fn set_read_timeouts(ws: &Ws, timeout: Duration) {
 // Entry points
 // ---------------------------------------------------------------------------
 
-/// `anyr relay start` — resolve credentials, detect target, connect forever.
-fn run_relay_start(
-    parsed: &crate::parse::ParsedArgs,
-    env: &BTreeMap<String, String>,
-) -> Result<i32, String> {
-    let args = parse_start_args(parsed);
-    VERBOSE.store(parsed.flag_true("verbose"), Ordering::Relaxed);
-    let choice = parse_model_choice(args.models.as_deref(), args.all)?;
+/// Discover local servers, publish them to the status screen, and log the
+/// endpoint list only when it changed, so a flapping network does not flood
+/// the terminal with the same lines on every reconnect.
+fn refresh_router(
+    explicit: Option<&str>,
+    serve: &BTreeSet<OnDeviceModel>,
+    stats: &Stats,
+    last_sig: &mut String,
+) -> Router {
+    let router = build_router(explicit, serve);
+    let endpoints: Vec<(String, String)> = router
+        .targets
+        .iter()
+        .map(|t| (t.label.clone(), t.base.clone()))
+        .collect();
+    let sig = format!("{endpoints:?}{:?}", router.all_models());
+    if sig != *last_sig {
+        for t in &router.targets {
+            if t.label == FALLBACK_LABEL && explicit.is_none() {
+                ulog(&format!(
+                    "no local server detected; trying {DEFAULT_TARGET}. Start `fm serve`, \
+                     Ollama or LM Studio, or pass --target <url>."
+                ));
+            } else {
+                ulog(&format!(
+                    "serving {} ({}) at {}",
+                    t.label,
+                    t.kind.name(),
+                    t.base
+                ));
+            }
+        }
+        *last_sig = sig;
+    }
+    stats.set_router(router.all_models(), endpoints);
+    router
+}
 
-    let token = resolve_relay_credential(args.token.as_deref(), parsed, env)?;
-
+/// Which on-device models to serve: `--model` / `--all`, then the saved
+/// choice, then the checklist at a terminal (its answer is saved), else all.
+fn resolve_serve(
+    choice: &ModelChoice,
+    paths: &state::Paths,
+) -> Result<BTreeSet<OnDeviceModel>, String> {
     let detected = detect_all(&SystemDetector);
     for d in &detected {
         if let Some(why) = &d.unavailable {
             ulog(&format!("{} not available: {why}", d.model.id()));
         }
     }
+    let mut prefs = state::load_prefs(paths);
+    if *choice == ModelChoice::Default {
+        if let Some(saved) = &prefs.models {
+            return Ok(saved
+                .iter()
+                .filter_map(|id| OnDeviceModel::from_id(id))
+                .collect());
+        }
+    }
+    let asked = std::cell::Cell::new(false);
     let picker = |available: &[OnDeviceModel]| -> Result<Vec<OnDeviceModel>, String> {
+        asked.set(true);
         let items: Vec<String> = available
             .iter()
             .map(|m| format!("{}  {}", m.id(), crate::term::dim(m.label())))
@@ -1451,89 +1586,310 @@ fn run_relay_start(
             .collect())
     };
     let serve = select_models(
-        &choice,
+        choice,
         &detected,
         crate::term::is_interactive().then_some(&picker as Picker<'_>),
     )?;
+    if asked.get() {
+        prefs.models = Some(serve.iter().map(|m| m.id().to_string()).collect());
+        state::save_prefs(paths, &prefs)?;
+        ulog(&format!(
+            "Saved. Change it later with `{} relay models enable|disable <id>`.",
+            crate::help::invoked_bin()
+        ));
+    }
+    Ok(serve)
+}
+
+/// `anyr relay start [--detach]`.
+fn run_relay_start(
+    parsed: &crate::parse::ParsedArgs,
+    env: &BTreeMap<String, String>,
+    detach: bool,
+) -> Result<i32, String> {
+    let bin = crate::help::invoked_bin();
+    let args = parse_start_args(parsed);
+    let pool_flag = cli::pool_flag(parsed)?;
+    let quiet = parsed.flag_true("quiet");
+    VERBOSE.store(parsed.flag_true("verbose"), Ordering::Relaxed);
+    live::set_quiet(quiet);
+    let detached_child = env.get(daemon::ENV_DETACHED).is_some_and(|v| v == "1");
+    let paths = state::paths(env);
+
+    match state::running(&paths) {
+        state::Running::Yes(s) => {
+            return Err(view::error(
+                &format!("a relay is already running (pid {})", s.pid),
+                "one relay runs per AnyRouter config",
+                &format!("`{bin} relay status`, or `{bin} relay stop` first"),
+            ))
+        }
+        state::Running::Unresponsive(pid) => {
+            return Err(view::error(
+                &format!("a relay process (pid {pid}) is not responding"),
+                "",
+                &format!("`{bin} relay stop`, then start again"),
+            ))
+        }
+        state::Running::No => {}
+    }
+
+    let choice = parse_model_choice(args.models.as_deref(), args.all).map_err(|e| {
+        crate::cmd::dispatch::hint(&format!("{e}\nSee the list with `{{bin}} relay models`."))
+    })?;
+    let token = resolve_relay_credential(args.token.as_deref(), parsed, env)?;
+    let serve = if detached_child {
+        env.get(daemon::ENV_SERVE)
+            .map(|s| s.split(',').filter_map(OnDeviceModel::from_id).collect())
+            .unwrap_or_default()
+    } else {
+        resolve_serve(&choice, &paths)?
+    };
+    let (pool, _) = state::effective_pool(pool_flag, &state::load_prefs(&paths));
+
+    if detach && !detached_child {
+        let mut child: Vec<String> = vec!["relay".into(), "start".into()];
+        child.push(if pool { "--pool" } else { "--no-pool" }.into());
+        for (flag, value) in [
+            ("--name", Some(args.name.clone())),
+            ("--url", args.url.clone()),
+            ("--target", args.target.clone()),
+            (
+                "--max-concurrency",
+                args.max_concurrency.map(|n| n.to_string()),
+            ),
+        ] {
+            if let Some(v) = value {
+                child.push(flag.into());
+                child.push(v);
+            }
+        }
+        if parsed.flag_true("verbose") {
+            child.push("--verbose".into());
+        }
+        return daemon::spawn(
+            &paths,
+            daemon::Handoff {
+                args: child,
+                credential: token,
+                api_key: resolve_sk_ar_key(parsed, env),
+                serve: serve.iter().map(|m| m.id().to_string()).collect(),
+            },
+            &bin,
+        );
+    }
+
+    run_foreground(Foreground {
+        parsed,
+        env,
+        args: &args,
+        token: &token,
+        serve: &serve,
+        pool,
+        follow_pool_pref: pool_flag.is_none(),
+        paths,
+        detached: detached_child,
+        quiet,
+    })
+}
+
+struct Foreground<'a> {
+    parsed: &'a crate::parse::ParsedArgs,
+    env: &'a BTreeMap<String, String>,
+    args: &'a StartArgs,
+    token: &'a str,
+    serve: &'a BTreeSet<OnDeviceModel>,
+    pool: bool,
+    follow_pool_pref: bool,
+    paths: state::Paths,
+    detached: bool,
+    quiet: bool,
+}
+
+/// Connect and serve until stopped. Reconnects with backoff; a refused
+/// credential ends the run.
+fn run_foreground(f: Foreground<'_>) -> Result<i32, String> {
+    let bin = crate::help::invoked_bin();
+    let stats = Arc::new(Stats::default());
+    stats.pool.store(f.pool, Ordering::Relaxed);
+    let meta = live::Meta {
+        pid: std::process::id(),
+        started_at: state::now_secs(),
+        detached: f.detached,
+        device: f.args.name.clone(),
+    };
+    state::write_pid(&f.paths, meta.pid)?;
+    live::install_signal_handlers(f.detached);
+    let live_screen =
+        live::wants_live_screen(f.quiet, f.detached, f.env.get("TERM").map(String::as_str));
 
     let url = relay_url_with_name(
-        args.url
+        f.args
+            .url
             .as_deref()
             .filter(|s| !s.trim().is_empty())
             .unwrap_or(DEFAULT_WS_URL),
-        &args.name,
+        &f.args.name,
     );
     vlog(&format!("relay url={url}"));
 
-    let mut router = build_router(args.target.as_deref(), &serve);
-    print_start_summary(&args, &router, env);
+    let mut last_sig = String::new();
+    let mut router = refresh_router(f.args.target.as_deref(), f.serve, &stats, &mut last_sig);
+    if !live_screen && !f.quiet {
+        print_start_summary(&router, f.pool, f.detached, f.env);
+    }
 
-    let (tx, rx) = mpsc::channel();
-    let conn = ConnState {
-        tx,
-        rx,
-        in_flight: Arc::new(Mutex::new(BTreeMap::new())),
+    let on_pool: live::PoolToggle = {
+        let (parsed, env) = (f.parsed.clone(), f.env.clone());
+        let prefs_path = state::paths(f.env);
+        Box::new(move |on| {
+            let mut prefs = state::load_prefs(&prefs_path);
+            prefs.pool = Some(on);
+            let _ = state::save_prefs(&prefs_path, &prefs);
+            ulog(&format!(
+                "pool turned {} (saved)",
+                if on { "on" } else { "off" }
+            ));
+            sync_pool_in_background(on, parsed.clone(), env.clone());
+        })
     };
+    let ticker = live::Ticker::start(
+        Arc::clone(&stats),
+        meta.clone(),
+        state::paths(f.env),
+        live_screen,
+        f.follow_pool_pref,
+        on_pool,
+    );
+    let conn = ConnState::new(Arc::clone(&stats));
 
     let mut attempt: u32 = 0;
     let mut pool_synced = false;
+    let mut last_err = String::new();
+    let mut refused = None;
     loop {
-        for t in &router.targets {
-            ulog(&format!(
-                "endpoint {} ({}) at {}",
-                t.label,
-                t.kind.name(),
-                t.base
-            ));
+        if live::stop_requested() != 0 {
+            break;
         }
-        match connect_ws(&url, &token) {
+        match connect_ws(&url, f.token) {
             Ok(mut ws) => {
                 attempt = 0;
+                last_err.clear();
+                stats.set_conn(Conn::Connected);
+                stats.set_error(None);
+                ulog(&format!("connected as \"{}\"", f.args.name));
                 // After the first connect the cloud has paired this device,
                 // so its id resolves even on a brand-new Mac.
                 if !pool_synced {
                     pool_synced = true;
-                    sync_pool_in_background(args.pool, parsed.clone(), env.clone());
+                    sync_pool_in_background(
+                        stats.pool.load(Ordering::Relaxed),
+                        f.parsed.clone(),
+                        f.env.clone(),
+                    );
                 }
                 set_read_timeouts(&ws, Duration::from_millis(SOCKET_POLL_MS));
-                serve_connection(&mut ws, &router, &conn, args.max_concurrency);
+                let end = serve_connection(&mut ws, &router, &conn, f.args.max_concurrency);
                 abort_in_flight(&conn.in_flight);
+                stats.in_flight.store(0, Ordering::Relaxed);
+                match end {
+                    ConnEnd::Stop => break,
+                    ConnEnd::Rescan => {
+                        stats.set_conn(Conn::Connecting);
+                        router = refresh_router(
+                            f.args.target.as_deref(),
+                            f.serve,
+                            &stats,
+                            &mut last_sig,
+                        );
+                        continue;
+                    }
+                    ConnEnd::Dropped => ulog("disconnected; reconnecting"),
+                }
             }
-            Err(ConnectError::Refused(msg)) => return Err(format!("Relay connect failed: {msg}")),
+            Err(ConnectError::Refused(msg)) => {
+                refused = Some(msg);
+                break;
+            }
             Err(ConnectError::Transient(err)) => {
-                vlog(&err);
-                ulog(&format!("relay connect failed: {err}"));
+                if err != last_err {
+                    ulog(&format!("relay connect failed: {err}"));
+                    last_err = err.clone();
+                }
+                stats.set_error(Some(err));
             }
         }
         attempt += 1;
         let delay = BASE_BACKOFF_MS
             .saturating_mul(1 << (attempt - 1).min(20))
             .min(MAX_BACKOFF_MS);
+        stats.set_conn(Conn::Reconnecting {
+            attempt,
+            retry_at: state::now_secs() + delay.div_ceil(1000),
+        });
         vlog(&format!("reconnecting in {delay}ms"));
-        std::thread::sleep(Duration::from_millis(delay));
+        live::interruptible_sleep(Duration::from_millis(delay));
+        if live::stop_requested() != 0 {
+            break;
+        }
+        let _ = live::take_rescan();
+        stats.set_conn(Conn::Connecting);
         // Re-discover before every reconnect so endpoints started or stopped
         // since the last connect are picked up, and so no socket sits open
         // and unread while probes run.
-        router = build_router(args.target.as_deref(), &serve);
+        router = refresh_router(f.args.target.as_deref(), f.serve, &stats, &mut last_sig);
     }
-}
 
-const POOL_URL: &str = "https://anyrouter.dev/pool";
-const DEVICES_URL: &str = "https://dash.anyrouter.dev/devices";
+    stats.set_conn(Conn::Stopping);
+    ticker.finish();
+    state::clear_if_owned(&f.paths, meta.pid);
+    if let Some(msg) = refused {
+        return Err(view::error(
+            "the relay refused this credential",
+            &msg,
+            &format!("`{bin} login` for a fresh key, or `{bin} relay doctor`"),
+        ));
+    }
+    let snap = stats.snapshot(&meta, state::now_secs());
+    if !f.quiet {
+        let tokens = snap
+            .tokens
+            .map(|t| format!(", {} tokens", view::thousands(t)))
+            .unwrap_or_default();
+        eprintln!(
+            "Relay stopped after {}. Served {} request(s){tokens}.",
+            view::duration(snap.updated_at.saturating_sub(snap.started_at)),
+            view::thousands(snap.requests)
+        );
+    }
+    Ok(if live::stop_requested() == live::STOP_INT {
+        130
+    } else {
+        0
+    })
+}
 
 /// The one line that says whether this device donates to the shared pool.
 fn pool_line(pool: bool) -> String {
+    let bin = crate::help::invoked_bin();
     if pool {
         format!(
             "Pool: on. Donating idle capacity to the shared pool and earning credits. \
-             Opt out with --no-pool. Learn more: {POOL_URL}"
+             Turn off: `{bin} relay pool off`. Learn more: {POOL_URL}"
         )
     } else {
-        format!("Pool: off (--no-pool). Only your own account uses this device. {POOL_URL}")
+        format!(
+            "Pool: off. Only your own account uses this device. Turn on: `{bin} relay pool on`."
+        )
     }
 }
 
-fn print_start_summary(args: &StartArgs, router: &Router, env: &BTreeMap<String, String>) {
+fn print_start_summary(
+    router: &Router,
+    pool: bool,
+    detached: bool,
+    env: &BTreeMap<String, String>,
+) {
     let models = router.all_models();
     println!("AnyRouter relay");
     println!("  Account:   {}", load_active_profile_name(env));
@@ -1545,8 +1901,14 @@ fn print_start_summary(args: &StartArgs, router: &Router, env: &BTreeMap<String,
             models.join(", ")
         }
     );
-    println!("  {}", pool_line(args.pool));
+    println!("  {}", pool_line(pool));
     println!("  Dashboard: {DEVICES_URL}");
+    if !detached {
+        println!(
+            "  Stop with Ctrl-C. Run it in the background: `{} relay start --detach`",
+            crate::help::invoked_bin()
+        );
+    }
 }
 
 /// Apply the pool setting to this device without blocking the socket loop.
@@ -1558,7 +1920,8 @@ fn sync_pool_in_background(
 ) {
     std::thread::spawn(move || {
         let result = resolve_relay_device_id(&parsed, &env)
-            .and_then(|id| set_relay_pool(&id, pool, &parsed, &env));
+            .and_then(|id| set_relay_pool(&id, pool, &parsed, &env))
+            .map_err(|e| e.trim_start_matches("error: ").to_string());
         match (result, pool) {
             (Ok(()), _) => vlog(&format!("pool_enabled={pool} saved for this device")),
             (Err(err), true) => {
@@ -1580,72 +1943,439 @@ fn run_relay_pair(
     parsed: &crate::parse::ParsedArgs,
     env: &BTreeMap<String, String>,
 ) -> Result<i32, String> {
+    let bin = crate::help::invoked_bin();
     let name = crate::parse::get_string_flag(&parsed.flags, "name")
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| DEFAULT_DEVICE_NAME.into());
-    let api_key = match resolve_sk_ar_key(parsed, env) {
-        Some(k) => k,
-        None => {
-            return Err(format!(
-                "Not logged in. Run: {} login (or just: {} relay start)",
-                crate::help::invoked_bin(),
-                crate::help::invoked_bin()
-            ));
-        }
+    let Some(api_key) = resolve_sk_ar_key(parsed, env) else {
+        return Err(view::error(
+            "not logged in",
+            "pairing needs an AnyRouter key",
+            &format!("`{bin} login` (or just `{bin} relay start`, which logs in and pairs)"),
+        ));
     };
     let _ = pair_device(&api_key, &name, env)?;
     println!("Paired as \"{name}\". Token saved to your AnyRouter config.");
-    println!("Run: {} relay start", crate::help::invoked_bin());
+    println!("Next: `{bin} relay start`");
     Ok(0)
 }
 
-/// `anyr relay status` — show discovered endpoints, their models, and whether
-/// a relay token is stored for the active profile. No cloud call.
+/// Where the relay credential comes from, without any network call.
+fn credential_kind(
+    parsed: &crate::parse::ParsedArgs,
+    env: &BTreeMap<String, String>,
+) -> Option<String> {
+    let profile = load_active_profile_name(env);
+    let set = |k: &str| env.get(k).is_some_and(|v| !v.trim().is_empty());
+    if crate::parse::get_string_flag(&parsed.flags, "token").is_some() {
+        return Some("relay token (--token)".into());
+    }
+    if set(RELAY_TOKEN_ENV_VAR) {
+        return Some(format!("relay token ({RELAY_TOKEN_ENV_VAR})"));
+    }
+    if read_stored_relay_token(env).is_some_and(|t| !t.trim().is_empty()) {
+        return Some(format!("relay token (profile {profile})"));
+    }
+    if set("ANYROUTER_API_KEY") {
+        return Some("AnyRouter key (ANYROUTER_API_KEY)".into());
+    }
+    resolve_sk_ar_key(parsed, env).map(|_| format!("AnyRouter key (profile {profile})"))
+}
+
+/// `anyr relay` and `anyr relay status [--json]`. Reads the state file only:
+/// no probes, so it answers instantly.
 fn run_relay_status(
     parsed: &crate::parse::ParsedArgs,
     env: &BTreeMap<String, String>,
+    json_out: bool,
 ) -> Result<i32, String> {
-    let args = parse_start_args(parsed);
-    let all: BTreeSet<OnDeviceModel> = OnDeviceModel::ALL.into_iter().collect();
-    let router = build_router(args.target.as_deref(), &all);
-    println!("Local endpoints:");
-    for t in &router.targets {
-        println!("  {} ({}) {}", t.label, t.kind.name(), t.base);
-        if t.models.is_empty() {
-            println!("    models: (none listed)");
-        } else {
-            println!("    models: {}", t.models.join(", "));
+    let bin = crate::help::invoked_bin();
+    let paths = state::paths(env);
+    let running = state::running(&paths);
+    let prefs = state::load_prefs(&paths);
+    let pool = state::effective_pool(None, &prefs);
+    let credential = credential_kind(parsed, env);
+    let (snap, unresponsive) = match &running {
+        state::Running::Yes(s) => (Some(s), None),
+        state::Running::Unresponsive(pid) => (None, Some(*pid)),
+        state::Running::No => (None, None),
+    };
+    let next = view::next_step(&bin, credential.is_some(), snap, unresponsive.is_some());
+    if json_out {
+        let v = json!({
+            "running": snap.is_some() || unresponsive.is_some(),
+            "responding": snap.is_some(),
+            "pid": snap.map(|s| s.pid).or(unresponsive),
+            "relay": snap.map(state::Snapshot::to_value),
+            "credential": credential,
+            "pool": match snap {
+                Some(s) => json!({ "enabled": s.pool, "source": "running" }),
+                None => json!({ "enabled": pool.0, "source": pool.1.name() }),
+            },
+            "models": prefs.models,
+            "next": next.replace('`', ""),
+        });
+        println!("{v:#}");
+        return Ok(0);
+    }
+    let p = Paint(crate::term::color_enabled());
+    match snap {
+        Some(s) => print!("{}", view::render_running(s, state::now_secs(), p)),
+        None => print!(
+            "{}",
+            view::render_idle(
+                &view::Idle {
+                    credential: credential.as_deref(),
+                    pool,
+                    models: prefs.models.as_deref(),
+                    unresponsive_pid: unresponsive,
+                },
+                p,
+            )
+        ),
+    }
+    print!("{}", view::render_next(&next, p));
+    Ok(0)
+}
+
+/// Every model `relay` can serve on this machine, with its saved toggle.
+fn model_rows(prefs: &state::Prefs) -> Vec<view::ModelRow> {
+    let mut rows: Vec<view::ModelRow> = detect_all(&SystemDetector)
+        .into_iter()
+        .map(|d| view::ModelRow {
+            id: d.model.id().to_string(),
+            source: d.model.label().to_string(),
+            unavailable: d.unavailable,
+            enabled: prefs.models.as_ref().is_none_or(|m| {
+                m.iter()
+                    .any(|id| OnDeviceModel::from_id(id) == Some(d.model))
+            }),
+            toggleable: true,
+        })
+        .collect();
+    for (label, base, health) in CHAT_PROBES.iter().skip(1) {
+        if !http_probe_listening(health) {
+            continue;
+        }
+        for id in fetch_local_models(base) {
+            rows.push(view::ModelRow {
+                id,
+                source: label.to_string(),
+                unavailable: None,
+                enabled: true,
+                toggleable: false,
+            });
         }
     }
-    if read_stored_relay_token(env).is_some() {
-        println!("Relay: paired");
+    rows
+}
+
+fn run_relay_models(env: &BTreeMap<String, String>, json_out: bool) -> Result<i32, String> {
+    let bin = crate::help::invoked_bin();
+    let prefs = state::load_prefs(&state::paths(env));
+    let rows = model_rows(&prefs);
+    if json_out {
+        let v = json!({
+            "models": rows.iter().map(|r| json!({
+                "id": r.id,
+                "source": r.source,
+                "available": r.unavailable.is_none(),
+                "reason": r.unavailable,
+                "enabled": r.enabled,
+                "toggleable": r.toggleable,
+            })).collect::<Vec<_>>(),
+        });
+        println!("{v:#}");
+        return Ok(0);
+    }
+    let p = Paint(crate::term::color_enabled());
+    print!("{}", view::render_models(&rows, p));
+    print!(
+        "{}",
+        view::render_next(
+            &format!("`{bin} relay models disable <id>` or `{bin} relay models enable <id>`"),
+            p
+        )
+    );
+    Ok(0)
+}
+
+fn run_relay_model_set(
+    env: &BTreeMap<String, String>,
+    id: &str,
+    enable: bool,
+) -> Result<i32, String> {
+    let bin = crate::help::invoked_bin();
+    let Some(model) = OnDeviceModel::from_id(id) else {
+        let known: Vec<&str> = OnDeviceModel::ALL.iter().map(|m| m.id()).collect();
+        return Err(crate::cmd::dispatch::hint(&format!(
+            "Unknown on-device model \"{id}\" (known: {}).\nOther local servers are always served; \
+             stop them to stop serving their models.",
+            known.join(", ")
+        )));
+    };
+    let paths = state::paths(env);
+    let mut prefs = state::load_prefs(&paths);
+    let mut list: Vec<String> = prefs
+        .models
+        .clone()
+        .unwrap_or_else(|| {
+            OnDeviceModel::ALL
+                .iter()
+                .map(|m| m.id().to_string())
+                .collect()
+        })
+        .into_iter()
+        .filter(|m| OnDeviceModel::from_id(m) != Some(model))
+        .collect();
+    if enable {
+        list.push(model.id().to_string());
+    }
+    list.sort();
+    prefs.models = Some(list);
+    state::save_prefs(&paths, &prefs)?;
+    println!(
+        "{} {}.",
+        if enable { "Enabled" } else { "Disabled" },
+        model.id()
+    );
+    if matches!(state::running(&paths), state::Running::Yes(_)) {
+        println!("Applies on restart: `{bin} relay stop && {bin} relay start --detach`");
     } else {
-        println!(
-            "Relay: not paired (run `{0} relay pair` or `{0} relay start`)",
-            crate::help::invoked_bin()
-        );
+        println!("Applies on the next `{bin} relay start`.");
     }
     Ok(0)
 }
 
-/// `anyr relay <start|pair|status>` dispatcher. Never returns from start — the relay
-/// loop runs until the process is killed.
+fn run_relay_pool(
+    parsed: &crate::parse::ParsedArgs,
+    env: &BTreeMap<String, String>,
+    set: Option<bool>,
+    json_out: bool,
+) -> Result<i32, String> {
+    let bin = crate::help::invoked_bin();
+    let paths = state::paths(env);
+    let mut prefs = state::load_prefs(&paths);
+    let Some(on) = set else {
+        let (on, src) = state::effective_pool(None, &prefs);
+        if json_out {
+            println!("{:#}", json!({ "enabled": on, "source": src.name() }));
+        } else {
+            println!("Pool {}  ({})", view::pool_text(on), src.name());
+            println!("Learn more: {POOL_URL}");
+            let p = Paint(crate::term::color_enabled());
+            print!(
+                "{}",
+                view::render_next(
+                    &format!("`{bin} relay pool {}`", if on { "off" } else { "on" }),
+                    p
+                )
+            );
+        }
+        return Ok(0);
+    };
+    prefs.pool = Some(on);
+    state::save_prefs(&paths, &prefs)?;
+    let remote =
+        resolve_relay_device_id(parsed, env).and_then(|id| set_relay_pool(&id, on, parsed, env));
+    if json_out {
+        println!(
+            "{:#}",
+            json!({
+                "enabled": on,
+                "source": "saved",
+                "device_updated": remote.is_ok(),
+                "error": remote.as_ref().err(),
+            })
+        );
+        return Ok(0);
+    }
+    println!("Pool {}.", view::pool_text(on));
+    match remote {
+        Ok(()) => println!("Saved, and this device was updated."),
+        Err(e) => {
+            println!("Saved; applies on the next `{bin} relay start`.");
+            eprintln!(
+                "note: the paired device was not updated now: {}",
+                e.trim_start_matches("error: ").replace('\n', "\n  ")
+            );
+        }
+    }
+    Ok(0)
+}
+
+/// Remove the stored pairing token and device id from the active profile.
+fn clear_relay_fields(env: &BTreeMap<String, String>) -> Result<(), String> {
+    let path = crate::config::resolve_config_path(None, env);
+    let Some(mut cfg) = crate::key::load_config_if_present(&path) else {
+        return Ok(());
+    };
+    let active = cfg.active_profile.clone();
+    if let Some(entry) = cfg.profiles.get_mut(&active) {
+        entry.relay_token = None;
+        entry.relay_device_id = None;
+    }
+    crate::config::write_config(&cfg, &path)
+}
+
+fn run_relay_unpair(
+    parsed: &crate::parse::ParsedArgs,
+    env: &BTreeMap<String, String>,
+    yes: bool,
+) -> Result<i32, String> {
+    let bin = crate::help::invoked_bin();
+    let paths = state::paths(env);
+    if !matches!(state::running(&paths), state::Running::No) {
+        return Err(view::error(
+            "the relay is running",
+            "unpairing a live device would drop its connection mid-request",
+            &format!("`{bin} relay stop` first"),
+        ));
+    }
+    if !yes {
+        if !crate::term::is_interactive() {
+            return Err(crate::cmd::dispatch::hint(
+                "`relay unpair` asks for confirmation; pass --yes when not at a terminal.",
+            ));
+        }
+        if !crate::term::confirm("Remove this device from your AnyRouter account?") {
+            eprintln!("Cancelled.");
+            return Ok(1);
+        }
+    }
+    let mut warning = None;
+    match resolve_relay_device_id(parsed, env) {
+        Ok(id) => match resolve_sk_ar_key(parsed, env) {
+            Some(key) => {
+                let url = format!("{DEFAULT_API_BASE}/relay/devices/{id}");
+                match crate::http::http_delete(&url, Some(&key)) {
+                    Ok((s, _)) if (200..300).contains(&s) || s == 404 => {}
+                    Ok((s, _)) => warning = Some(format!("the cloud answered {s}")),
+                    Err(e) => warning = Some(e),
+                }
+            }
+            None => warning = Some("no AnyRouter key to remove it from your account".into()),
+        },
+        Err(e) => warning = Some(e),
+    }
+    clear_relay_fields(env)?;
+    match warning {
+        None => println!("Unpaired: removed this device from your account and forgot its token."),
+        Some(w) => {
+            println!("Forgot the pairing on this machine.");
+            eprintln!(
+                "warning: could not remove the device from your account: {w}\n\
+                 Remove it at {DEVICES_URL}"
+            );
+        }
+    }
+    println!("Next: `{bin} relay start` pairs again.");
+    Ok(0)
+}
+
+/// The real probes behind `relay doctor`.
+struct SystemProbe<'a> {
+    parsed: &'a crate::parse::ParsedArgs,
+    env: &'a BTreeMap<String, String>,
+}
+
+impl doctor::Probe for SystemProbe<'_> {
+    fn is_mac(&self) -> bool {
+        cfg!(target_os = "macos")
+    }
+    fn macos_major(&self) -> Option<u32> {
+        macos_major_version()
+    }
+    fn fm_serve(&self) -> bool {
+        http_probe_listening(FM_SERVE_HEALTH_URL)
+    }
+    fn decider(&self) -> bool {
+        probe_decider(DECIDER_TARGET)
+    }
+    fn other_servers(&self) -> Vec<String> {
+        CHAT_PROBES
+            .iter()
+            .skip(1)
+            .filter(|(_, _, health)| http_probe_listening(health))
+            .map(|(label, base, _)| format!("{label} ({base})"))
+            .collect()
+    }
+    fn network(&self) -> Result<(), String> {
+        match ureq::get(&format!("{DEFAULT_API_BASE}/health"))
+            .timeout(Duration::from_secs(5))
+            .call()
+        {
+            Ok(_) | Err(ureq::Error::Status(_, _)) => Ok(()),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+    fn auth(&self) -> doctor::Auth {
+        let Some(key) = resolve_sk_ar_key(self.parsed, self.env) else {
+            return match credential_kind(self.parsed, self.env) {
+                Some(_) => doctor::Auth::Token,
+                None => doctor::Auth::None,
+            };
+        };
+        match crate::http::http_get(&format!("{DEFAULT_API_BASE}/relay/devices"), Some(&key)) {
+            Ok((s, _)) if (200..300).contains(&s) => doctor::Auth::KeyOk,
+            Ok((s @ (401 | 403), _)) => doctor::Auth::KeyRejected(s),
+            Ok((s, _)) => doctor::Auth::Unverified(format!("HTTP {s}")),
+            Err(e) => doctor::Auth::Unverified(e),
+        }
+    }
+    fn relay_pid(&self) -> Option<u32> {
+        match state::running(&state::paths(self.env)) {
+            state::Running::Yes(s) => Some(s.pid),
+            state::Running::Unresponsive(pid) => Some(pid),
+            state::Running::No => None,
+        }
+    }
+}
+
+fn run_relay_doctor(
+    parsed: &crate::parse::ParsedArgs,
+    env: &BTreeMap<String, String>,
+    json_out: bool,
+) -> Result<i32, String> {
+    let bin = crate::help::invoked_bin();
+    let checks = doctor::run_checks(&SystemProbe { parsed, env }, &bin);
+    let code = i32::from(doctor::failed(&checks));
+    if json_out {
+        println!("{:#}", doctor::to_json(&checks));
+        return Ok(code);
+    }
+    let p = Paint(crate::term::color_enabled());
+    println!("{}", p.bold("AnyRouter relay doctor"));
+    print!("{}", doctor::render(&checks, p));
+    if code == 0 {
+        println!("\nAll required checks passed.");
+    } else {
+        println!("\nSome checks failed. Run each fix above, then `{bin} relay doctor` again.");
+    }
+    Ok(code)
+}
+
+/// `anyr relay [subcommand]` dispatcher.
 pub fn run(
     parsed: &crate::parse::ParsedArgs,
     env: &BTreeMap<String, String>,
 ) -> Result<i32, String> {
-    let sub = parsed.passthrough.first().map(String::as_str);
-    match sub {
-        Some("start") => run_relay_start(parsed, env),
-        Some("pair") => run_relay_pair(parsed, env),
-        Some("status") => run_relay_status(parsed, env),
-        Some(other) if !other.is_empty() => Err(crate::cmd::dispatch::hint(&format!(
-            "Unknown relay subcommand: {other}\nUsage: {{bin}} relay <start|pair|status> (see `{{bin}} relay --help`)"
-        ))),
-        _ => {
-            print!("{}", crate::help::command_help("relay").unwrap_or_default());
-            Ok(0)
+    let cmd = cli::parse_cmd(parsed)?;
+    let paths = state::paths(env);
+    let bin = crate::help::invoked_bin();
+    match cmd {
+        cli::Cmd::Overview { json } | cli::Cmd::Status { json } => {
+            run_relay_status(parsed, env, json)
         }
+        cli::Cmd::Start { detach } => run_relay_start(parsed, env, detach),
+        cli::Cmd::Stop => daemon::stop(&paths, &bin),
+        cli::Cmd::Logs { follow, lines } => daemon::logs(&paths, follow, lines, &bin),
+        cli::Cmd::Models { json } => run_relay_models(env, json),
+        cli::Cmd::ModelSet { id, enable } => run_relay_model_set(env, &id, enable),
+        cli::Cmd::Pool { set, json } => run_relay_pool(parsed, env, set, json),
+        cli::Cmd::Pair => run_relay_pair(parsed, env),
+        cli::Cmd::Unpair { yes } => run_relay_unpair(parsed, env, yes),
+        cli::Cmd::Doctor { json } => run_relay_doctor(parsed, env, json),
     }
 }
 
@@ -1659,6 +2389,7 @@ mod tests {
     fn poll_timeout_covers_unix_and_windows_read_timeouts() {
         assert!(is_poll_timeout(std::io::ErrorKind::WouldBlock));
         assert!(is_poll_timeout(std::io::ErrorKind::TimedOut));
+        assert!(is_poll_timeout(std::io::ErrorKind::Interrupted));
         assert!(!is_poll_timeout(std::io::ErrorKind::ConnectionReset));
     }
 
@@ -1846,8 +2577,6 @@ mod tests {
         let args = parse_start_args(&bare);
         assert!(args.target.is_none());
         assert_eq!(args.name, DEFAULT_DEVICE_NAME);
-        // WHY: donating is the default now; only --no-pool opts out.
-        assert!(args.pool);
         assert!(args.models.is_none());
         assert!(!args.all);
         assert!(args.max_concurrency.is_none());
@@ -1867,11 +2596,9 @@ mod tests {
         assert_eq!(args.target.as_deref(), Some("http://127.0.0.1:1976/v1"));
         assert_eq!(args.token.as_deref(), Some("rk_x"));
         assert_eq!(args.name, "Desk");
-        assert!(args.pool);
         assert_eq!(args.max_concurrency, Some(4));
 
-        // --no-pool opts out; --pool stays an accepted no-op.
-        assert!(!parse_start_args(&mk(vec![("no-pool", FlagValue::Bool(true))])).pool);
+        // --pool / --no-pool live in cli::pool_flag (tested there).
         let both = mk(vec![
             (
                 "model",
@@ -2029,7 +2756,7 @@ mod tests {
     fn pool_line_names_the_opt_out_and_the_pool_page() {
         let on = pool_line(true);
         assert!(
-            on.contains("Donating") && on.contains("--no-pool") && on.contains(POOL_URL),
+            on.contains("Donating") && on.contains("relay pool off") && on.contains(POOL_URL),
             "{on}"
         );
         let off = pool_line(false);
@@ -2515,12 +3242,7 @@ profiles:
 
         let mut ws = connect_ws(&url, "sk-ar-v1-test").expect("connect to mock cloud");
         set_read_timeouts(&ws, Duration::from_millis(20));
-        let (tx, rx) = mpsc::channel();
-        let state = ConnState {
-            tx,
-            rx,
-            in_flight: Arc::new(Mutex::new(BTreeMap::new())),
-        };
+        let state = ConnState::new(Arc::default());
         serve_connection(&mut ws, &router, &state, None);
         cloud_join.join().expect("mock cloud assertions");
         let _ = local_join.join();
@@ -2639,12 +3361,7 @@ profiles:
         });
         let mut ws = connect_ws(&url, "sk-ar-v1-test").expect("connect");
         set_read_timeouts(&ws, Duration::from_millis(20));
-        let (tx, rx) = mpsc::channel();
-        let state = ConnState {
-            tx,
-            rx,
-            in_flight: Arc::new(Mutex::new(BTreeMap::new())),
-        };
+        let state = ConnState::new(Arc::default());
         serve_connection(&mut ws, &r, &state, None);
         cloud_join.join().expect("mock cloud assertions");
     }
