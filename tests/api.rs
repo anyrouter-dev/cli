@@ -439,3 +439,47 @@ fn command_failures_share_one_error_prefix_on_stderr() {
     assert!(out.is_empty(), "{out:?}");
     assert!(err.lines().any(|l| l.starts_with("error:")), "{err:?}");
 }
+
+const CHAT_SSE: &str = "data: {\"choices\":[{\"delta\":{\"content\":\"Hel\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"lo\"}}]}\n\ndata: [DONE]\n\n";
+
+#[test]
+fn chat_one_shot_streams_the_reply_to_stdout() {
+    // WHY: `anyr chat` was a stub; a prompt must hit /chat/completions with
+    // stream=true and print only the model text on stdout.
+    let (base, rx) = serve_once(200, CHAT_SSE);
+    let (code, out, err) = run(&[
+        "chat",
+        "say",
+        "hi",
+        "--model",
+        "z-ai/glm-4.7-flash",
+        "--system",
+        "be brief",
+        "--base-url",
+        &base,
+        "--key",
+        "sk-ar-test",
+    ]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out, "Hello\n");
+    let seen = rx.recv().unwrap();
+    assert!(
+        seen.starts_with("POST /api/v1/chat/completions Bearer sk-ar-test"),
+        "{seen}"
+    );
+    let body: serde_json::Value =
+        serde_json::from_str(seen.splitn(5, ' ').nth(4).unwrap()).unwrap();
+    assert_eq!(body["stream"], true);
+    assert_eq!(body["model"], "z-ai/glm-4.7-flash");
+    assert_eq!(body["messages"][0]["role"], "system");
+    assert_eq!(body["messages"][1]["content"], "say hi");
+}
+
+#[test]
+fn chat_server_error_prints_the_message_and_fails() {
+    let (base, _rx) = serve_once(402, r#"{"error":{"message":"no credits"}}"#);
+    let (code, out, err) = run(&["chat", "hi", "--base-url", &base, "--key", "sk-ar-test"]);
+    assert_eq!(code, 1);
+    assert!(out.is_empty(), "{out:?}");
+    assert!(err.contains("error: HTTP 402: no credits"), "{err}");
+}

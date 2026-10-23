@@ -215,9 +215,9 @@ pub(crate) fn cmd_kind(command: &str) -> Option<CmdKind> {
         | "status" | "logout" | "account" | "usage" | "claude" | "codex" | "grok" | "opencode"
         | "pool" | "pi" | "upgrade" | "onboard" | "impl" | "plan" | "fix" | "deploy" | "cp"
         | "relay" | "decision" | "commands" | "api" | "completion" | "byok" | "publish"
-        | "apps" | "artifact" => CmdKind::Implemented,
+        | "apps" | "artifact" | "chat" => CmdKind::Implemented,
         "cursor" | "cline" | "windsurf" => CmdKind::HelpOnly,
-        "chat" | "task" | "delegate" | "audit" | "logs" | "transactions" | "skills" | "prompt" => {
+        "task" | "delegate" | "audit" | "logs" | "transactions" | "skills" | "prompt" => {
             CmdKind::Stub
         }
         _ => return None,
@@ -398,19 +398,7 @@ pub(crate) fn allowed_flags(command: &str) -> Option<&'static [&'static str]> {
         "transactions" => &[
             "profile", "base-url", "config", "json", "key", "limit", "type",
         ],
-        "chat" => &[
-            "model",
-            "effort",
-            "no-reasoning",
-            "system",
-            "preset",
-            "key",
-            "profile",
-            "base-url",
-            "config",
-            "yes",
-            "otui",
-        ],
+        "chat" => &["model", "system", "key", "profile", "base-url", "config"],
         "skills" => &["profile", "config", "hub", "json", "dry-run", "source"],
         "relay" => &[
             "target",

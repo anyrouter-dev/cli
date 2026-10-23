@@ -226,6 +226,16 @@ fn dispatch(
         "claude" | "codex" | "grok" | "opencode" | "pool" | "pi" => {
             run_launch(command, parsed, env)
         }
+        "chat" => {
+            #[cfg(feature = "native")]
+            {
+                crate::chat::run_chat(parsed, env)
+            }
+            #[cfg(not(feature = "native"))]
+            {
+                stub("chat")
+            }
+        }
         "relay" => {
             #[cfg(feature = "native")]
             {

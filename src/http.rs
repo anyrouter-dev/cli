@@ -104,6 +104,28 @@ pub fn http_post(
     into_status_body(req.send_string(json_body.unwrap_or("{}")))
 }
 
+/// POST JSON and hand back the status plus the unread body, for SSE streams.
+/// No overall timeout: a long answer must not be cut off at 30s.
+#[cfg(feature = "native")]
+pub fn http_post_stream(
+    url: &str,
+    api_key: &str,
+    json_body: &str,
+) -> Result<(u16, Box<dyn std::io::Read + Send + Sync>), String> {
+    let stream_agent = ureq::AgentBuilder::new()
+        .timeout_connect(std::time::Duration::from_secs(15))
+        .user_agent(&format!("anyr-cli/{VERSION}"))
+        .build();
+    let req = with_auth(stream_agent.post(url), Some(api_key))
+        .set("Content-Type", "application/json")
+        .set("Accept", "text/event-stream");
+    match req.send_string(json_body) {
+        Ok(resp) => Ok((resp.status(), resp.into_reader())),
+        Err(ureq::Error::Status(code, resp)) => Ok((code, resp.into_reader())),
+        Err(err) => Err(format!("Could not reach AnyRouter: {err}")),
+    }
+}
+
 /// Any method with extra request headers (`anyr api -H k:v`, Idempotency-Key).
 #[cfg(feature = "native")]
 pub fn http_send(
