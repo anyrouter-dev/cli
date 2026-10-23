@@ -1567,7 +1567,10 @@ fn sync_pool_in_background(
                     "still serving your own requests. Manage it at {DEVICES_URL}"
                 ));
             }
-            (Err(err), false) => vlog(&format!("could not turn off pool sharing: {err}")),
+            (Err(err), false) => {
+                ulog(&format!("could not confirm pool sharing is off: {err}"));
+                ulog(&format!("check this device at {DEVICES_URL}"));
+            }
         }
     });
 }
