@@ -2119,6 +2119,118 @@ fn relay_rejects_unknown_flag_before_running() {
     assert!(stderr.contains("Unknown flag --bogus"), "{stderr}");
 }
 
+/// Run `anyr relay …` against an empty ANYROUTER_HOME with no key, so
+/// nothing reads or writes the developer's real config.
+fn relay_in(home: &std::path::Path, args: &[&str]) -> (i32, String, String) {
+    let out = anyr()
+        .arg("relay")
+        .args(args)
+        .env("ANYROUTER_HOME", home)
+        .env_remove("ANYROUTER_API_KEY")
+        .env_remove("ANYROUTER_RELAY_TOKEN")
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("spawn anyr relay");
+    (
+        out.status.code().unwrap_or(1),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+#[test]
+fn bare_relay_shows_status_and_the_next_command_not_help() {
+    let home = temp_home();
+    let (code, stdout, stderr) = relay_in(&home, &[]);
+    assert_eq!(code, 0, "{stdout}{stderr}");
+    assert!(stdout.contains("not running"), "{stdout}");
+    // No credential: the one thing to do next is log in.
+    assert!(
+        stdout.contains("Next:") && stdout.contains("login"),
+        "{stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn relay_status_json_is_machine_readable_without_probing() {
+    let home = temp_home();
+    let started = std::time::Instant::now();
+    let (code, stdout, _) = relay_in(&home, &["status", "--json"]);
+    assert_eq!(code, 0);
+    let v: serde_json::Value = serde_json::from_str(&stdout).expect("status --json is JSON");
+    assert_eq!(v["running"], false);
+    assert_eq!(v["pool"]["enabled"], true);
+    assert_eq!(v["pool"]["source"], "default");
+    assert!(v["next"].as_str().unwrap().contains("login"));
+    // WHY: status reads the state file; it must not wait on local probes.
+    assert!(started.elapsed() < std::time::Duration::from_secs(3));
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn relay_pool_off_is_saved_and_survives_for_the_next_start() {
+    let home = temp_home();
+    let (code, stdout, _) = relay_in(&home, &["pool", "off"]);
+    assert_eq!(code, 0, "{stdout}");
+    assert!(stdout.contains("Saved"), "{stdout}");
+    let (_, stdout, _) = relay_in(&home, &["pool", "--json"]);
+    let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(v["enabled"], false);
+    assert_eq!(v["source"], "saved");
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn relay_stop_and_logs_explain_themselves_when_nothing_runs() {
+    let home = temp_home();
+    let (code, stdout, _) = relay_in(&home, &["stop"]);
+    assert_eq!(code, 0, "stop is idempotent");
+    assert!(stdout.contains("not running"), "{stdout}");
+    let (code, _, stderr) = relay_in(&home, &["logs"]);
+    assert_eq!(code, 1);
+    assert!(
+        stderr.contains("hint:") && stderr.contains("--detach"),
+        "{stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn relay_usage_errors_exit_2_with_the_fix() {
+    let home = temp_home();
+    for (args, needle) in [
+        (&["unpair"][..], "--yes"),
+        (&["models", "enable", "gpt-5"], "Unknown on-device model"),
+        (&["pool", "maybe"], "on or off"),
+        (&["start", "--model", "gpt-5"], "relay models"),
+        (&["start", "--pool", "--no-pool"], "not both"),
+    ] {
+        let (code, _, stderr) = relay_in(&home, args);
+        assert_eq!(code, 2, "{args:?}: {stderr}");
+        assert!(stderr.contains(needle), "{args:?}: {stderr}");
+    }
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn relay_models_toggle_is_saved() {
+    let home = temp_home();
+    let (code, stdout, _) = relay_in(&home, &["models", "disable", "apple/foundation-model"]);
+    assert_eq!(code, 0, "{stdout}");
+    assert!(
+        stdout.contains("Disabled apple/foundation-model"),
+        "{stdout}"
+    );
+    let prefs = std::fs::read_to_string(home.join("relay/prefs.json")).unwrap();
+    assert!(!prefs.contains("apple/foundation-model"), "{prefs}");
+    assert!(
+        prefs.contains("perplexity/pplx-decider-flash-v1.2"),
+        "{prefs}"
+    );
+    let _ = std::fs::remove_dir_all(&home);
+}
+
 #[test]
 fn relay_start_without_target_or_server_reports_detection_fallback() {
     // No --target and nothing listening on the probed ports: start resolves a
