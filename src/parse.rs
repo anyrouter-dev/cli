@@ -46,6 +46,8 @@ pub static VALUE_FLAGS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
         "title",
         "id",
         "label",
+        "file",
+        "dimensions",
     ])
 });
 

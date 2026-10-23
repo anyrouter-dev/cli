@@ -190,6 +190,20 @@ anyr transactions --json | jq '.data[0]'
 
 Columns: date, type, amount (signed, $), balance after (when present), note.
 
+### Embeddings: `anyr embed`
+
+```bash
+anyr embed "hello world"                         # default embedding model: dims + first 8 values
+anyr embed --model baai/bge-base-en-v1.5 "hello"
+anyr embed --file notes.txt                      # one input per line, one request
+echo "hello" | anyr embed -                      # stdin
+anyr embed --dimensions 256 "hello"
+anyr embed --json hi | jq '.data[0].embedding | length'
+```
+
+Prints model, input count, dimensions, tokens, cost and a truncated vector per
+input. `--json` prints the full response body.
+
 ### Bring your own provider keys: `anyr byok`
 
 ```bash
