@@ -138,7 +138,12 @@ pub(crate) fn run_launch(
     let mut args = Vec::new();
     args.extend(effort_args_for(tool_name, effort.as_deref()));
     args.extend(provider_args_for(tool_name, &profile));
-    args.extend(model_args_for(tool_name, &model, model_mode));
+    args.extend(model_args_for(
+        tool_name,
+        &model,
+        model_mode,
+        resolved.context_window,
+    ));
     // --yolo is shorthand for Claude Code's full-permission flag; other tools
     // don't have an equivalent, so it only maps there.
     if tool_name == "claude" && (parsed.flag_true("yolo") || tool.extra_flag("yolo")) {
