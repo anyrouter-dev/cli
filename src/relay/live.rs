@@ -40,11 +40,26 @@ extern "C" fn on_signal(sig: libc::c_int) {
     } else {
         STOP_QUIT
     };
-    // A second Ctrl-C while shutting down exits at once (clig.dev).
+    // A second Ctrl-C while shutting down exits at once (clig.dev). The
+    // normal restore path is skipped by `_exit`, so undo raw mode and the
+    // alternate screen here with async-signal-safe calls only.
     if STOP.swap(code, Ordering::SeqCst) != 0 {
-        unsafe { libc::_exit(130) };
+        unsafe {
+            if let Some(t) = SAVED_TERMIOS.get() {
+                libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, t);
+            }
+            if LIVE.load(Ordering::Relaxed) {
+                let b = LEAVE_SCREEN.as_bytes();
+                libc::write(libc::STDOUT_FILENO, b.as_ptr().cast(), b.len());
+            }
+            libc::_exit(130)
+        };
     }
 }
+
+/// Terminal settings from before raw mode, for the signal path.
+#[cfg(unix)]
+static SAVED_TERMIOS: std::sync::OnceLock<libc::termios> = std::sync::OnceLock::new();
 
 /// SIGINT and SIGTERM ask for a graceful stop. A detached relay also ignores
 /// SIGHUP so closing the terminal that launched it does not kill it.
@@ -302,6 +317,13 @@ impl Ticker {
                 leave_screen();
                 prev(info);
             }));
+            #[cfg(unix)]
+            unsafe {
+                let mut t: libc::termios = std::mem::zeroed();
+                if libc::tcgetattr(libc::STDIN_FILENO, &mut t) == 0 {
+                    let _ = SAVED_TERMIOS.set(t);
+                }
+            }
             let _ = crossterm::terminal::enable_raw_mode();
             print!("{ENTER_SCREEN}");
             let (stats_k, done_k) = (Arc::clone(&stats), Arc::clone(&done));
