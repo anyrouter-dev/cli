@@ -138,6 +138,25 @@ pub fn http_patch(
     into_status_body(req.send_string(json_body.unwrap_or("{}")))
 }
 
+/// PUT a local file as the raw request body, streamed from disk.
+#[cfg(feature = "native")]
+pub fn http_put_file(
+    url: &str,
+    api_key: Option<&str>,
+    path: &std::path::Path,
+) -> Result<(u16, String), String> {
+    let file =
+        std::fs::File::open(path).map_err(|e| format!("Could not read {}: {e}", path.display()))?;
+    let len = file
+        .metadata()
+        .map_err(|e| format!("Could not stat {}: {e}", path.display()))?
+        .len();
+    let req = with_auth(agent().put(url), api_key)
+        .set("Content-Type", "application/octet-stream")
+        .set("Content-Length", &len.to_string());
+    into_status_body(req.send(file))
+}
+
 /// POST the native Decisions envelope and return the structured response.
 /// The endpoint is intentionally `/v1/decisions`; `/v1/systemone` is an API
 /// alias, not a chat-completions fallback.
@@ -218,6 +237,15 @@ pub fn http_patch(
     _url: &str,
     _api_key: Option<&str>,
     _json_body: Option<&str>,
+) -> Result<(u16, String), String> {
+    no_network()
+}
+
+#[cfg(not(feature = "native"))]
+pub fn http_put_file(
+    _url: &str,
+    _api_key: Option<&str>,
+    _path: &std::path::Path,
 ) -> Result<(u16, String), String> {
     no_network()
 }

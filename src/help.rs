@@ -140,6 +140,7 @@ CORE COMMANDS
   byok:       Provider keys (BYOK); --donate shares one with the pool
   models:     List catalog and set the default (`--pick` to choose)
   usage:      Credits remaining
+  artifact:   Publish a file or folder to a shareable URL
   api:        Dashboard from the terminal (keys, credits, logs, presets…)
   completion: Shell completion (bash, zsh, fish, powershell)
   onboard:    Paste-ready prompts for coding agents
@@ -227,6 +228,7 @@ pub fn command_help(command: &str) -> Option<String> {
         ),
         "relay" => fill(&bin, RELAY),
         "byok" => fill(&bin, BYOK),
+        "artifact" => fill(&bin, ARTIFACT),
         "task" => fill(
             &bin,
             "{bin} task — not yet in the native CLI. Try {bin} onboard plan|impl instead.\n",
@@ -559,6 +561,31 @@ Start options:
 Examples:
   fm serve && {bin} relay start
   {bin} relay start --pool --target http://localhost:11434/v1
+";
+
+const ARTIFACT: &str = "{bin} artifact — publish a page or folder to a shareable URL
+
+Usage:
+  {bin} artifact publish <file|dir> [options]   Print the artifact URL
+  {bin} artifact ls                             List your artifacts
+  {bin} artifact rm <id>                        Delete one (asks first)
+  {bin} artifact visibility <id> <v>            private | link | public
+
+A file (html or md) is sent inline. A folder is uploaded file by file;
+dotfiles, node_modules and .git are skipped. Limits: 5 MB per file,
+50 files, 20 MB per publish.
+
+Options:
+  --title <text>       Page title
+  --visibility <v>     private (default) | link | public
+  --id <id>            Publish a new version of an existing artifact
+  --label <text>       Version label (with --id)
+  --yes                Skip confirmation (public, rm)
+  --json               Print the server response instead of the URL
+
+A version conflict (someone published first) exits 2 and prints the
+current version. Exit codes: 0 ok, 1 error, 2 usage or conflict,
+3 not found, 4 auth.
 ";
 
 const BYOK: &str = "{bin} byok — bring your own provider keys

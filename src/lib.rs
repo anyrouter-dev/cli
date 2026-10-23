@@ -1,6 +1,7 @@
 //! AnyRouter native CLI library. Shared by the `anyr` binary and tests.
 
 pub mod api;
+pub mod artifact;
 pub mod auth;
 pub mod buildinfo;
 pub mod channel;

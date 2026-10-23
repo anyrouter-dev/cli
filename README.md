@@ -148,6 +148,22 @@ Visibility is `unlisted` by default (link works, not listed), `private` (only yo
 `public` (listed after review). Re-running the same document is safe: it carries a
 stable `Idempotency-Key`, so the server returns the original instead of a copy.
 
+### Publish a page: `anyr artifact`
+
+```bash
+anyr artifact publish report.html --title "Q3 report"   # prints the URL
+anyr artifact publish ./site --visibility link          # folder upload
+anyr artifact publish report.html --id <id> --label v2  # new version
+anyr artifact ls
+anyr artifact visibility <id> public --yes
+anyr artifact rm <id> --yes
+```
+
+A file is sent inline; a folder uploads file by file and skips dotfiles,
+`node_modules` and `.git` (limits: 5 MB per file, 50 files, 20 MB). `--id`
+builds on the current version; if someone published first the command exits 2
+and prints the current version. `public` asks for confirmation unless `--yes`.
+
 ### Bring your own provider keys: `anyr byok`
 
 ```bash
