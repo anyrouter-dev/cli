@@ -783,7 +783,7 @@ fn parse_json(s: &str) -> Result<Value, String> {
     serde_json::from_str(s).map_err(|e| format!("invalid JSON ({e}): {s}"))
 }
 
-fn query(parsed: &ParsedArgs, names: &[&str]) -> String {
+pub(crate) fn query(parsed: &ParsedArgs, names: &[&str]) -> String {
     let parts: Vec<String> = names
         .iter()
         .filter_map(|n| get_string_flag(&parsed.flags, n).map(|v| format!("{n}={}", encode(&v))))
@@ -795,7 +795,7 @@ fn query(parsed: &ParsedArgs, names: &[&str]) -> String {
     }
 }
 
-fn encode(s: &str) -> String {
+pub(crate) fn encode(s: &str) -> String {
     s.bytes()
         .map(|b| match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => {
@@ -915,7 +915,7 @@ pub(crate) fn list(ctx: &Ctx, value: Value, columns: &[&str]) -> Result<i32, Str
 }
 
 /// Key/value view on a TTY, JSON otherwise.
-fn show(ctx: &Ctx, value: Value, _hide: &[&str]) -> Result<i32, String> {
+pub(crate) fn show(ctx: &Ctx, value: Value, _hide: &[&str]) -> Result<i32, String> {
     let obj = value
         .get("data")
         .filter(|d| d.is_object())

@@ -17,6 +17,7 @@ use crate::cmd::dispatch::{
 use crate::cmd::keys::run_keys;
 use crate::cmd::launch::run_launch;
 use crate::cmd::login::run_login;
+use crate::cmd::logs::run_logs;
 use crate::cmd::menu::run_menu;
 use crate::cmd::models::run_models_cli;
 use crate::cmd::usage::{run_usage, run_whoami};
@@ -218,6 +219,7 @@ fn dispatch(
         "account" => run_account(parsed, env),
         "keys" => run_keys(parsed, env),
         "byok" => run_byok(parsed, env),
+        "logs" => run_logs(parsed, env),
         "menu" => run_menu(parsed, env),
         "commands" => {
             print!("{}", commands_help());
