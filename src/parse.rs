@@ -117,7 +117,7 @@ where
                 if eq_value.is_empty() {
                     return Err(format!("Flag --{eq_name} requires a value."));
                 }
-                flags.insert(eq_name, FlagValue::Value(eq_value));
+                insert_value_flag(&mut flags, eq_name, eq_value);
             } else {
                 flags.insert(
                     eq_name.clone(),
@@ -136,7 +136,7 @@ where
             {
                 return Err(format!("Flag --{name} requires a value."));
             }
-            flags.insert(name, FlagValue::Value(rest[i + 1].clone()));
+            insert_value_flag(&mut flags, name, rest[i + 1].clone());
             i += 2;
         } else {
             flags.insert(name, FlagValue::Bool(true));
@@ -149,6 +149,19 @@ where
         flags,
         passthrough,
     })
+}
+
+/// `--target` may repeat (relay with several local endpoints): repeats are
+/// joined with commas. Every other value flag keeps last-wins.
+fn insert_value_flag(flags: &mut HashMap<String, FlagValue>, name: String, value: String) {
+    if name == "target" {
+        if let Some(FlagValue::Value(prev)) = flags.get(&name) {
+            let joined = format!("{prev},{value}");
+            flags.insert(name, FlagValue::Value(joined));
+            return;
+        }
+    }
+    flags.insert(name, FlagValue::Value(value));
 }
 
 fn parse_bool_flag(name: &str, raw: &str) -> Result<bool, String> {
@@ -181,6 +194,30 @@ pub fn get_string_flag(flags: &HashMap<String, FlagValue>, name: &str) -> Option
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repeated_target_flags_are_joined_but_other_flags_keep_last() {
+        let parsed = parse_cli_args([
+            "relay",
+            "start",
+            "--target",
+            "http://a/v1",
+            "--target=http://b/v1",
+            "--model",
+            "x",
+            "--model",
+            "y",
+        ])
+        .unwrap();
+        assert_eq!(
+            get_string_flag(&parsed.flags, "target").as_deref(),
+            Some("http://a/v1,http://b/v1")
+        );
+        assert_eq!(
+            get_string_flag(&parsed.flags, "model").as_deref(),
+            Some("y")
+        );
+    }
 
     #[test]
     fn login_yes_is_boolean_true() {

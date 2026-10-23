@@ -545,11 +545,12 @@ behind one https://anyrouter.dev endpoint. The CLI dials out; no ports open.
 Subcommands:
   {bin} relay start   connect and keep serving (Ctrl-C to stop)
   {bin} relay pair    pair this device only (start auto-pairs)
+  {bin} relay status  show local endpoints, their models, and pairing
 
 Start options:
-  --target <url>         local OpenAI-compatible base URL
-                         (default: auto-detect fm serve :1976, :8000,
-                         Ollama :11434)
+  --target <url>         local base URL; repeat for several (default:
+                         probe fm serve :1976, :8000, Ollama :11434,
+                         LM Studio :1234, Perplexity Decider :8080)
   --token <rk_…>         pairing token (else $ANYROUTER_RELAY_TOKEN or the
                          stored relay_token; an sk-ar key also works)
   --url <wss://…>        relay websocket URL
