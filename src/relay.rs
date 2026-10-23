@@ -353,48 +353,228 @@ fn persist_api_key(key: &str, env: &BTreeMap<String, String>) -> Result<(), Stri
 // Target detection
 // ---------------------------------------------------------------------------
 
-/// Auto-detect a local OpenAI-compatible server when `--target` isn't given:
-/// probe fm serve (:1976), then the historical default (:8000), then Ollama
-/// (:11434) — the first one that responds AT ALL wins (any HTTP response
-/// counts, not just 2xx; the point is only "something is listening").
-/// Falls back to the historical default with a clear log line otherwise.
-fn detect_relay_target() -> &'static str {
-    struct Probe {
-        target: &'static str,
-        label: &'static str,
-        health_url: &'static str,
-    }
-    let probes = [
-        Probe {
-            target: FM_SERVE_TARGET,
-            label: "fm serve (Apple Foundation Models)",
-            health_url: FM_SERVE_HEALTH_URL,
-        },
-        Probe {
-            target: DEFAULT_TARGET,
-            label: "default target",
-            health_url: "http://localhost:8000/v1/models",
-        },
-        Probe {
-            target: OLLAMA_TARGET,
-            label: "Ollama",
-            health_url: "http://localhost:11434/v1/models",
-        },
-    ];
-    for p in probes {
-        if http_probe_listening(p.health_url) {
-            ulog(&format!(
-                "auto-detected local server: {} at {}",
-                p.label, p.target
-            ));
-            return p.target;
+/// What a local endpoint speaks: OpenAI-style chat completions, or the
+/// Perplexity Decisions shape (`POST /v1/decisions` only).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TargetKind {
+    Chat,
+    Decider,
+}
+
+impl TargetKind {
+    fn name(self) -> &'static str {
+        match self {
+            TargetKind::Chat => "chat",
+            TargetKind::Decider => "decider",
         }
     }
-    ulog(&format!(
-        "no local server auto-detected — falling back to {DEFAULT_TARGET}. \
-         Start `fm serve` (or Ollama / LM Studio), or pass --target explicitly."
-    ));
-    DEFAULT_TARGET
+}
+
+/// One discovered (or `--target`) local endpoint and the models it serves.
+#[derive(Debug, Clone)]
+struct Target {
+    label: String,
+    base: String,
+    kind: TargetKind,
+    models: Vec<String>,
+}
+
+/// Model id -> owning target. The first target listed wins a duplicate id.
+#[derive(Debug, Clone, Default)]
+struct Router {
+    targets: Vec<Target>,
+    by_model: BTreeMap<String, usize>,
+}
+
+impl Router {
+    fn new(targets: Vec<Target>) -> Self {
+        let mut by_model = BTreeMap::new();
+        for (i, t) in targets.iter().enumerate() {
+            for m in &t.models {
+                by_model.entry(m.clone()).or_insert(i);
+            }
+        }
+        Router { targets, by_model }
+    }
+
+    /// Union of every target's model ids, for the hello frame.
+    fn all_models(&self) -> Vec<String> {
+        self.by_model.keys().cloned().collect()
+    }
+
+    /// The only target of `kind` when it advertised no models (an endpoint
+    /// that answered but whose /models list is unavailable): it takes any
+    /// request of its kind, which keeps a lone `--target` working.
+    fn lone_unlisted(&self, kind: TargetKind) -> Option<&Target> {
+        let mut of_kind = self.targets.iter().filter(|t| t.kind == kind);
+        match (of_kind.next(), of_kind.next()) {
+            (Some(t), None) if t.models.is_empty() => Some(t),
+            _ => None,
+        }
+    }
+
+    /// Pick the target for a request by its body `model`. Decisions go only
+    /// to a Decider, everything else only to a chat target.
+    fn route(&self, path: &str, body: &str) -> Result<&Target, String> {
+        let want = if path.trim_end_matches('/').ends_with("/decisions") {
+            TargetKind::Decider
+        } else {
+            TargetKind::Chat
+        };
+        let model = serde_json::from_str::<serde_json::Value>(body)
+            .ok()
+            .and_then(|v| v.get("model").and_then(|m| m.as_str()).map(str::to_string));
+        let Some(model) = model else {
+            return self
+                .lone_unlisted(want)
+                .ok_or_else(|| "Request body has no \"model\" field.".to_string());
+        };
+        match self.by_model.get(&model) {
+            Some(&i) => {
+                let t = &self.targets[i];
+                if t.kind == want {
+                    Ok(t)
+                } else {
+                    Err(format!(
+                        "Model \"{model}\" is served by a {} endpoint ({}) and cannot handle {path}.",
+                        t.kind.name(),
+                        t.label
+                    ))
+                }
+            }
+            None => self.lone_unlisted(want).ok_or_else(|| {
+                let known = self.all_models();
+                format!(
+                    "Model \"{model}\" is not served by any local endpoint on this device (available: {}).",
+                    if known.is_empty() { "none".into() } else { known.join(", ") }
+                )
+            }),
+        }
+    }
+}
+
+/// Perplexity Decider for Mac: a local `POST /v1/decisions`-only server.
+const DECIDER_TARGET: &str = "http://127.0.0.1:8080/v1";
+const DECIDER_ADVERTISED_MODEL_ID: &str = "pplx-decider-flash-v1.2";
+const LMSTUDIO_TARGET: &str = "http://localhost:1234/v1";
+
+/// Chat endpoints probed during discovery: (label, base, liveness URL).
+/// Any HTTP response counts as listening, not just 2xx.
+const CHAT_PROBES: [(&str, &str, &str); 4] = [
+    (
+        "fm serve (Apple Foundation Models)",
+        FM_SERVE_TARGET,
+        FM_SERVE_HEALTH_URL,
+    ),
+    (
+        "default target",
+        DEFAULT_TARGET,
+        "http://localhost:8000/v1/models",
+    ),
+    ("Ollama", OLLAMA_TARGET, "http://localhost:11434/v1/models"),
+    (
+        "LM Studio",
+        LMSTUDIO_TARGET,
+        "http://localhost:1234/v1/models",
+    ),
+];
+
+/// True when `body` is a Decisions response: a JSON object with an `answers`
+/// object. Port 8080 is a common dev port, so a listener alone proves nothing.
+fn is_decider_response(body: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .is_some_and(|v| v.get("answers").is_some_and(|a| a.is_object()))
+}
+
+/// Send one tiny real decision to `base`/decisions and check the reply shape.
+fn probe_decider(base: &str) -> bool {
+    let url = format!("{}/decisions", base.trim_end_matches('/'));
+    let body = json!({
+        "model": DECIDER_ADVERTISED_MODEL_ID,
+        "state": "probe",
+        "questions": {"q": {"type": "choice", "instructions": "Pick a.",
+            "criteria": {"a": null, "b": null}}}
+    })
+    .to_string();
+    match ureq::post(&url)
+        .set("Content-Type", "application/json")
+        .timeout(Duration::from_secs(5))
+        .send_string(&body)
+    {
+        Ok(resp) if (200..300).contains(&resp.status()) => {
+            is_decider_response(&resp.into_string().unwrap_or_default())
+        }
+        _ => false,
+    }
+}
+
+fn chat_target(label: &str, base: &str) -> Target {
+    let models = advertised_models(base, &fetch_local_models(base));
+    Target {
+        label: label.to_string(),
+        base: base.to_string(),
+        kind: TargetKind::Chat,
+        models,
+    }
+}
+
+fn decider_target(base: &str) -> Target {
+    Target {
+        label: "Perplexity Decider".to_string(),
+        base: base.to_string(),
+        kind: TargetKind::Decider,
+        models: vec![DECIDER_ADVERTISED_MODEL_ID.to_string()],
+    }
+}
+
+/// Probe every known local endpoint (all of them, not first-wins).
+fn discover_targets() -> Vec<Target> {
+    let mut out = Vec::new();
+    for (label, base, health) in CHAT_PROBES {
+        if http_probe_listening(health) {
+            out.push(chat_target(label, base));
+        }
+    }
+    if probe_decider(DECIDER_TARGET) {
+        out.push(decider_target(DECIDER_TARGET));
+    }
+    out
+}
+
+/// Build the router: explicit `--target` URLs (comma-separated; repeated
+/// flags are joined by the parser) override discovery. With nothing found,
+/// fall back to the historical default so the relay still starts.
+fn build_router(explicit: Option<&str>) -> Router {
+    let urls: Vec<&str> = explicit
+        .map(|s| {
+            s.split(',')
+                .map(str::trim)
+                .filter(|u| !u.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut targets = if urls.is_empty() {
+        discover_targets()
+    } else {
+        urls.iter()
+            .map(|u| {
+                if probe_decider(u) {
+                    decider_target(u)
+                } else {
+                    chat_target("--target", u)
+                }
+            })
+            .collect()
+    };
+    if targets.is_empty() {
+        ulog(&format!(
+            "no local server auto-detected — falling back to {DEFAULT_TARGET}. \
+             Start `fm serve` (or Ollama / LM Studio), or pass --target explicitly."
+        ));
+        targets.push(chat_target("default target", DEFAULT_TARGET));
+    }
+    Router::new(targets)
 }
 
 /// True when something answers within PROBE_TIMEOUT_MS (any status counts).
@@ -811,18 +991,12 @@ struct ConnState {
 
 /// One full connection lifecycle: handshake → hello → serve frames until the
 /// socket dies. Returns when disconnected (caller reconnects with backoff).
-fn serve_connection(
-    ws: &mut Ws,
-    target: &'static str,
-    state: &ConnState,
-    max_concurrency: Option<u32>,
-) {
+fn serve_connection(ws: &mut Ws, router: &Router, state: &ConnState, max_concurrency: Option<u32>) {
     vlog("connected");
 
     // Capability advertisement on every connect/reconnect (#1128), so models
     // added to the local server show up at the next reconnect at latest.
-    let fetched = fetch_local_models(target);
-    let models = advertised_models(target, &fetched);
+    let models = router.all_models();
     send_frame(
         ws,
         &ClientFrame::Hello {
@@ -862,7 +1036,16 @@ fn serve_connection(
         //    (read timeout) is not fatal — just loop back to the queue drain.
         match ws.read() {
             Ok(tungstenite::Message::Text(text)) => match parse_server_frame(&text) {
-                Some(Ok(frame)) => spawn_request(state, frame, target),
+                Some(Ok(frame)) => match router.route(&frame.path, &frame.body) {
+                    Ok(t) => spawn_request(state, frame, t.base.clone()),
+                    Err(message) => send_frame(
+                        ws,
+                        &ClientFrame::Error {
+                            id: frame.id,
+                            message,
+                        },
+                    ),
+                },
                 Some(Err(id)) => {
                     if let Some(flag) = lock_in_flight(&state.in_flight).remove(&id) {
                         flag.store(true, Ordering::SeqCst);
@@ -905,22 +1088,21 @@ fn short_id(s: &str, max_chars: usize) -> String {
 }
 
 /// Spawn a worker thread for one incoming request frame and register its
-/// cancel flag. `target` is 'static by construction: either one of the built-in
-/// probe constants or a leaked --target value (resolved once per process).
+/// cancel flag. `target` is the base URL of the endpoint that owns the model.
 fn lock_in_flight(
     map: &Arc<Mutex<BTreeMap<String, Arc<AtomicBool>>>>,
 ) -> std::sync::MutexGuard<'_, BTreeMap<String, Arc<AtomicBool>>> {
     map.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-fn spawn_request(state: &ConnState, frame: RequestFrame, target: &'static str) {
+fn spawn_request(state: &ConnState, frame: RequestFrame, target: String) {
     let cancel = Arc::new(AtomicBool::new(false));
     let id = frame.id.clone();
     lock_in_flight(&state.in_flight).insert(id.clone(), Arc::clone(&cancel));
     let tx = state.tx.clone();
     if let Err(err) = std::thread::Builder::new()
         .name(format!("relay-req-{}", short_id(&id, 8)))
-        .spawn(move || handle_request(&tx, &frame, target, &cancel))
+        .spawn(move || handle_request(&tx, &frame, &target, &cancel))
     {
         lock_in_flight(&state.in_flight).remove(&id);
         let _ = state.tx.send(ClientFrame::Error {
@@ -983,16 +1165,6 @@ fn run_relay_start(
 
     let token = resolve_relay_credential(args.token.as_deref(), parsed, env)?;
 
-    let target: &'static str = match args
-        .target
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        Some(t) => Box::leak(t.to_string().into_boxed_str()),
-        None => detect_relay_target(),
-    };
-
     if args.pool {
         match resolve_relay_device_id(parsed, env)
             .and_then(|id| enable_relay_pool(&id, parsed, env))
@@ -1016,7 +1188,7 @@ fn run_relay_start(
             .unwrap_or(DEFAULT_WS_URL),
         &args.name,
     );
-    println!("Starting relay: target={target} url={url}");
+    println!("Starting relay: url={url}");
 
     let (tx, rx) = mpsc::channel();
     let conn = ConnState {
@@ -1031,7 +1203,18 @@ fn run_relay_start(
             Ok(mut ws) => {
                 attempt = 0;
                 set_read_timeouts(&ws, Duration::from_millis(SOCKET_POLL_MS));
-                serve_connection(&mut ws, target, &conn, args.max_concurrency);
+                // Re-discover on every (re)connect so endpoints started or
+                // stopped since the last connect are picked up.
+                let router = build_router(args.target.as_deref());
+                for t in &router.targets {
+                    ulog(&format!(
+                        "endpoint {} ({}) at {}",
+                        t.label,
+                        t.kind.name(),
+                        t.base
+                    ));
+                }
+                serve_connection(&mut ws, &router, &conn, args.max_concurrency);
                 abort_in_flight(&conn.in_flight);
             }
             Err(ConnectError::Refused(msg)) => return Err(format!("Relay connect failed: {msg}")),
@@ -1073,7 +1256,35 @@ fn run_relay_pair(
     Ok(0)
 }
 
-/// `anyr relay <start|pair>` dispatcher. Never returns from start — the relay
+/// `anyr relay status` — show discovered endpoints, their models, and whether
+/// a relay token is stored for the active profile. No cloud call.
+fn run_relay_status(
+    parsed: &crate::parse::ParsedArgs,
+    env: &BTreeMap<String, String>,
+) -> Result<i32, String> {
+    let args = parse_start_args(parsed);
+    let router = build_router(args.target.as_deref());
+    println!("Local endpoints:");
+    for t in &router.targets {
+        println!("  {} ({}) {}", t.label, t.kind.name(), t.base);
+        if t.models.is_empty() {
+            println!("    models: (none listed)");
+        } else {
+            println!("    models: {}", t.models.join(", "));
+        }
+    }
+    if read_stored_relay_token(env).is_some() {
+        println!("Relay: paired");
+    } else {
+        println!(
+            "Relay: not paired (run `{0} relay pair` or `{0} relay start`)",
+            crate::help::invoked_bin()
+        );
+    }
+    Ok(0)
+}
+
+/// `anyr relay <start|pair|status>` dispatcher. Never returns from start — the relay
 /// loop runs until the process is killed.
 pub fn run(
     parsed: &crate::parse::ParsedArgs,
@@ -1083,8 +1294,9 @@ pub fn run(
     match sub {
         Some("start") => run_relay_start(parsed, env),
         Some("pair") => run_relay_pair(parsed, env),
+        Some("status") => run_relay_status(parsed, env),
         Some(other) if !other.is_empty() => Err(crate::cmd::dispatch::hint(&format!(
-            "Unknown relay subcommand: {other}\nUsage: {{bin}} relay <start|pair> (see `{{bin}} relay --help`)"
+            "Unknown relay subcommand: {other}\nUsage: {{bin}} relay <start|pair|status> (see `{{bin}} relay --help`)"
         ))),
         _ => {
             print!("{}", crate::help::command_help("relay").unwrap_or_default());
@@ -1747,15 +1959,14 @@ profiles:
             (200, r#"{"data":[{"id":"_base"}]}"#.into()), // GET /models
             (200, completion.into()),                     // POST /chat/completions
         ]);
-        let target: &'static str = Box::leak(local.into_boxed_str());
+        let router = Router::new(vec![chat_target("stub", &local)]);
 
         let (url, _seen, cloud_join) = spawn_mock_cloud(None, |ws| {
             let first = ws.read().unwrap();
             let hello: serde_json::Value = serde_json::from_str(first.to_text().unwrap()).unwrap();
             assert_eq!(hello["type"], "hello");
             assert_eq!(hello["models"][0], "_base");
-            let body =
-                r#"{"model":"foundation-model","messages":[{"role":"user","content":"hi"}]}"#;
+            let body = r#"{"model":"_base","messages":[{"role":"user","content":"hi"}]}"#;
             ws.send(tungstenite::Message::text(
                 serde_json::json!({
                     "type": "request", "id": "req-1", "path": "/chat/completions",
@@ -1797,8 +2008,102 @@ profiles:
             rx,
             in_flight: Arc::new(Mutex::new(BTreeMap::new())),
         };
-        serve_connection(&mut ws, target, &state, None);
+        serve_connection(&mut ws, &router, &state, None);
         cloud_join.join().expect("mock cloud assertions");
         let _ = local_join.join();
+    }
+
+    fn t(label: &str, kind: TargetKind, models: &[&str]) -> Target {
+        Target {
+            label: label.into(),
+            base: format!("http://{label}/v1"),
+            kind,
+            models: models.iter().map(|m| m.to_string()).collect(),
+        }
+    }
+
+    fn sample_router() -> Router {
+        Router::new(vec![
+            t("fm", TargetKind::Chat, &["foundation-model"]),
+            t("ollama", TargetKind::Chat, &["llama3", "foundation-model"]),
+            t(
+                "decider",
+                TargetKind::Decider,
+                &[DECIDER_ADVERTISED_MODEL_ID],
+            ),
+        ])
+    }
+
+    #[test]
+    fn model_map_is_the_union_and_first_target_wins_duplicates() {
+        let r = sample_router();
+        assert_eq!(
+            r.all_models(),
+            vec!["foundation-model", "llama3", DECIDER_ADVERTISED_MODEL_ID]
+        );
+        assert_eq!(r.by_model["foundation-model"], 0);
+        assert_eq!(r.by_model["llama3"], 1);
+    }
+
+    #[test]
+    fn routes_each_request_to_the_owning_target() {
+        let r = sample_router();
+        let chat = r
+            .route("/chat/completions", r#"{"model":"llama3"}"#)
+            .unwrap();
+        assert_eq!(chat.label, "ollama");
+        let dec = r
+            .route(
+                "/decisions",
+                &format!(r#"{{"model":"{DECIDER_ADVERTISED_MODEL_ID}"}}"#),
+            )
+            .unwrap();
+        assert_eq!(dec.label, "decider");
+    }
+
+    #[test]
+    fn unknown_model_is_rejected_with_the_available_list() {
+        let err = sample_router()
+            .route("/chat/completions", r#"{"model":"nope"}"#)
+            .unwrap_err();
+        assert!(err.contains("\"nope\""), "{err}");
+        assert!(err.contains("llama3"), "{err}");
+        assert!(sample_router().route("/chat/completions", "{}").is_err());
+    }
+
+    #[test]
+    fn path_and_target_kind_must_match() {
+        let r = sample_router();
+        let err = r
+            .route(
+                "/chat/completions",
+                &format!(r#"{{"model":"{DECIDER_ADVERTISED_MODEL_ID}"}}"#),
+            )
+            .unwrap_err();
+        assert!(err.contains("decider"), "{err}");
+        let err = r.route("/decisions", r#"{"model":"llama3"}"#).unwrap_err();
+        assert!(err.contains("chat"), "{err}");
+    }
+
+    #[test]
+    fn lone_target_without_a_model_list_takes_any_chat_request() {
+        let r = Router::new(vec![t("only", TargetKind::Chat, &[])]);
+        assert_eq!(
+            r.route("/chat/completions", r#"{"model":"x"}"#)
+                .unwrap()
+                .label,
+            "only"
+        );
+        assert!(r.route("/decisions", r#"{"model":"x"}"#).is_err());
+    }
+
+    #[test]
+    fn decider_probe_recognizes_only_a_decisions_reply() {
+        assert!(is_decider_response(
+            r#"{"answers":{"q":{"choice":"a","probabilities":{"a":0.9},"confidence":0.9}}}"#
+        ));
+        assert!(!is_decider_response(r#"{"error":"not found"}"#));
+        assert!(!is_decider_response(r#"{"answers":"x"}"#));
+        assert!(!is_decider_response("<html>dev server</html>"));
     }
 }
