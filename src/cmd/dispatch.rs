@@ -411,6 +411,12 @@ pub(crate) fn allowed_flags(command: &str) -> Option<&'static [&'static str]> {
             "model",
             "all",
             "max-concurrency",
+            "detach",
+            "json",
+            "quiet",
+            "follow",
+            "lines",
+            "yes",
         ],
         "task" => &[
             "plan-model",
