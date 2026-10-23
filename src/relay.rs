@@ -875,7 +875,7 @@ fn serve_connection(
                 return;
             }
             Ok(_) => {}
-            Err(tungstenite::Error::Io(ref e)) if e.kind() == std::io::ErrorKind::WouldBlock => {
+            Err(tungstenite::Error::Io(ref e)) if is_poll_timeout(e.kind()) => {
                 continue;
             }
             Err(tungstenite::Error::ConnectionClosed) | Err(tungstenite::Error::AlreadyClosed) => {
@@ -887,6 +887,15 @@ fn serve_connection(
             }
         }
     }
+}
+
+/// A read timeout surfaces as `WouldBlock` on Unix but `TimedOut` on Windows.
+/// Treating `TimedOut` as fatal dropped the relay socket every poll there.
+fn is_poll_timeout(kind: std::io::ErrorKind) -> bool {
+    matches!(
+        kind,
+        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+    )
 }
 
 /// First up-to-`max_chars` characters of `s`, safe on any input (the id is
@@ -1090,6 +1099,13 @@ pub fn run(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn poll_timeout_covers_unix_and_windows_read_timeouts() {
+        assert!(is_poll_timeout(std::io::ErrorKind::WouldBlock));
+        assert!(is_poll_timeout(std::io::ErrorKind::TimedOut));
+        assert!(!is_poll_timeout(std::io::ErrorKind::ConnectionReset));
+    }
+
     #[test]
     fn dial_gives_up_within_the_timeout_on_a_blackholed_host() {
         // 192.0.2.0/24 (TEST-NET-1) is never routed: without a connect
