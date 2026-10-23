@@ -6,6 +6,7 @@ pub(crate) mod byok;
 pub(crate) mod config_tui;
 pub(crate) mod decision;
 pub(crate) mod dispatch;
+pub(crate) mod embed;
 pub(crate) mod keys;
 pub(crate) mod launch;
 pub(crate) mod login;

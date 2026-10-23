@@ -14,6 +14,7 @@ use crate::cmd::dispatch::{
     allowed_flags, assert_known_flags, canonical_command, help_topic, known_command,
     should_open_launcher, stub, suggest_command, tui_wants_dump, usage_exit, wants_help, USAGE,
 };
+use crate::cmd::embed::run_embed;
 use crate::cmd::keys::run_keys;
 use crate::cmd::launch::run_launch;
 use crate::cmd::login::run_login;
@@ -221,6 +222,7 @@ fn dispatch(
         "keys" => run_keys(parsed, env),
         "byok" => run_byok(parsed, env),
         "logs" => run_logs(parsed, env),
+        "embed" => run_embed(parsed, env),
         "transactions" => run_transactions(parsed, env),
         "menu" => run_menu(parsed, env),
         "commands" => {

@@ -141,6 +141,7 @@ CORE COMMANDS
   models:     List catalog and set the default (`--pick` to choose)
   usage:      Credits remaining
   logs:       Recent requests and failures
+  embed:      Embed text (args, --file or stdin)
   transactions: Credit ledger (purchases, usage, refunds)
   artifact:   Publish a file or folder to a shareable URL
   api:        Dashboard from the terminal (keys, credits, logs, presets…)
@@ -241,6 +242,7 @@ pub fn command_help(command: &str) -> Option<String> {
         "logout" => fill(&bin, LOGOUT),
         "upgrade" => fill(&bin, UPGRADE),
         "transactions" => fill(&bin, TRANSACTIONS),
+        "embed" => fill(&bin, EMBED),
         "menu" => fill(
             &bin,
             "{bin} menu — fullscreen launcher (default on a TTY)\n\nUsage:\n  {bin}                 Same as `{bin} menu` on a TTY\n  {bin} menu [--dump-tui]\n\nAccount, model, credits in a header. Launch agents, configure, quit.\n↑↓ / j k move, ↵ select (signs in and installs if needed), q/esc quit.\nSet ANYR_TUI=0 for inline HUD.\n\n`--dump-tui` / ANYR_TUI_DUMP=1 prints one plain frame and exits.\n",
@@ -650,6 +652,27 @@ Options:
 Examples:
   {bin} transactions --type purchase
   {bin} transactions --json | jq '.data[0]'
+";
+
+const EMBED: &str = "{bin} embed — embeddings from the terminal
+
+Usage:
+  {bin} embed \"hello world\"            Default embedding model; dims + first 8 values
+  {bin} embed --model <id> \"hello\"
+  {bin} embed --file notes.txt           One input per line
+  echo hello | {bin} embed -             Read inputs from stdin, one per line
+  {bin} embed --json \"a\" \"b\"           Raw OpenAI-shaped response (all inputs, one request)
+
+Options:
+  --model <id>       Embedding model (default: first embedding model in the catalog)
+  --dimensions <n>   Ask for a shorter vector
+  --file <path>      Add one input per line
+  --json             Print the full response for piping into a vector store
+  --key <key>        Use this API key (or $ANYROUTER_API_KEY, or the saved login)
+  --profile <name>   Use another account
+
+Example:
+  {bin} embed --json hi | jq '.data[0].embedding | length'
 ";
 
 const BYOK: &str = "{bin} byok — bring your own provider keys
