@@ -7,7 +7,7 @@ use std::io::{IsTerminal, Read};
 
 use serde_json::{json, Value};
 
-use crate::api::{context, get, list, rows, send, Ctx};
+use crate::api::{confirm, context, get, list, rows, send, Ctx};
 use crate::cmd::dispatch::{usage_exit, USAGE};
 use crate::parse::ParsedArgs;
 use crate::term;
@@ -68,6 +68,9 @@ fn run_inner(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32,
     let (verb, rest) = match args.first().copied() {
         Some("list") | Some("ls") => ("list", &args[1..]),
         Some("add") | Some("new") => ("add", &args[1..]),
+        Some("rm") | Some("remove") | Some("delete") => ("rm", &args[1..]),
+        Some("test") => ("test", &args[1..]),
+        Some("providers") => ("providers", &args[1..]),
         Some(_) if donate => ("add", &args[..]),
         None if donate => ("add", &args[..]),
         None => ("list", &args[..]),
@@ -80,6 +83,9 @@ fn run_inner(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32,
     };
     match verb {
         "list" => run_list(&mgmt_ctx(parsed, env)?),
+        "rm" => run_rm(parsed, env, rest),
+        "test" => run_test(parsed, env, rest),
+        "providers" => run_providers(parsed, env),
         _ => run_add(parsed, env, rest, donate),
     }
 }
@@ -168,6 +174,211 @@ fn run_list(ctx: &Ctx) -> Result<i32, String> {
         );
     }
     Ok(code)
+}
+
+/// Exactly one `<provider>` word, or a usage error naming `verb`.
+fn one_provider<'a>(rest: &[&'a str], verb: &str) -> Result<&'a str, String> {
+    match rest {
+        [p] if !p.is_empty() => Ok(p),
+        _ => Err(usage(&format!(
+            "usage: {} byok {verb} <provider>",
+            crate::help::invoked_bin()
+        ))),
+    }
+}
+
+fn run_rm(
+    parsed: &ParsedArgs,
+    env: &BTreeMap<String, String>,
+    rest: &[&str],
+) -> Result<i32, String> {
+    let provider = one_provider(rest, "rm")?;
+    confirm(parsed, &format!("Delete the saved {provider} key?"))?;
+    let ctx = mgmt_ctx(parsed, env)?;
+    let path = format!("/v1/auth/byok/{}", crate::api::encode(provider));
+    let res = send(&ctx, "DELETE", &path, None, true)?;
+    if ctx.json {
+        crate::cmd::view::print_json(&res);
+    }
+    if res.get("deleted").and_then(Value::as_bool) == Some(false) {
+        eprintln!("{} no saved key for {provider}", term::err("error:"));
+        return Ok(1);
+    }
+    if !ctx.json {
+        println!("{}  {provider} key deleted", term::ok("Removed"));
+    }
+    Ok(0)
+}
+
+/// Outcome of a key test: pass/fail plus the one line to show.
+#[derive(Debug, PartialEq)]
+pub(crate) struct Verdict {
+    pub ok: bool,
+    pub line: String,
+}
+
+/// `POST /auth/byok/test-inference` body (a saved key, one real call).
+pub(crate) fn inference_verdict(provider: &str, r: &Value) -> Verdict {
+    if r.get("ok").and_then(Value::as_bool) == Some(true) {
+        let backend = r
+            .get("backend")
+            .and_then(Value::as_str)
+            .unwrap_or("provider");
+        let ms = r.get("latency_ms").and_then(Value::as_f64).unwrap_or(0.0);
+        return Verdict {
+            ok: true,
+            line: format!("{provider} key works (via {backend}, {ms:.0}ms)"),
+        };
+    }
+    let detail = r
+        .get("error_message")
+        .and_then(Value::as_str)
+        .or_else(|| r.get("error_code").and_then(Value::as_str))
+        .unwrap_or("the provider rejected the call");
+    let credit = if r.get("provider_out_of_credit").and_then(Value::as_bool) == Some(true) {
+        " (your provider account is out of credit)"
+    } else {
+        ""
+    };
+    Verdict {
+        ok: false,
+        line: format!("{provider} key failed: {detail}{credit}"),
+    }
+}
+
+/// `POST /byok/test-key` body (a key that is not saved yet).
+pub(crate) fn probe_verdict(provider: &str, r: &Value) -> Verdict {
+    match r.get("validation_state").and_then(Value::as_str) {
+        Some("validated") => Verdict {
+            ok: true,
+            line: format!("{provider} key is valid"),
+        },
+        Some("unvalidated") => Verdict {
+            ok: true,
+            line: format!("{provider} key could not be checked by the provider (unverified)"),
+        },
+        _ => {
+            let diag = r
+                .get("diagnostics")
+                .map(Value::to_string)
+                .unwrap_or_default();
+            let short: String = diag.chars().take(200).collect();
+            Verdict {
+                ok: false,
+                line: format!("{provider} key was rejected: {short}"),
+            }
+        }
+    }
+}
+
+fn run_test(
+    parsed: &ParsedArgs,
+    env: &BTreeMap<String, String>,
+    rest: &[&str],
+) -> Result<i32, String> {
+    let provider = one_provider(rest, "test")?;
+    let ctx = mgmt_ctx(parsed, env)?;
+    let (res, secret, verdict): (Value, String, fn(&str, &Value) -> Verdict) =
+        if parsed.flag_true("key-stdin") {
+            let mut buf = String::new();
+            std::io::stdin()
+                .read_to_string(&mut buf)
+                .map_err(|e| format!("could not read the provider key from stdin: {e}"))?;
+            let secret = buf.trim().to_string();
+            if secret.is_empty() {
+                return Err(usage("no provider key on stdin"));
+            }
+            let body = json!({"provider_id": provider, "api_key": secret});
+            let res = send(
+                &ctx,
+                "POST",
+                "/v1/byok/test-key",
+                Some(&body.to_string()),
+                true,
+            )
+            .map_err(|e| redact(e, &secret))?;
+            (res, secret, probe_verdict)
+        } else {
+            let body = json!({"provider_id": provider});
+            let res = send(
+                &ctx,
+                "POST",
+                "/v1/auth/byok/test-inference",
+                Some(&body.to_string()),
+                true,
+            )?;
+            (res, String::new(), inference_verdict)
+        };
+    let v = verdict(provider, &res);
+    let line = redact(v.line, &secret);
+    if ctx.json {
+        let shown = redact(res.to_string(), &secret);
+        println!("{shown}");
+    } else if v.ok {
+        println!("{}  {line}", term::ok("ok"));
+    } else {
+        eprintln!("{} {line}", term::err("error:"));
+    }
+    Ok(if v.ok { 0 } else { 1 })
+}
+
+/// Rows for `byok providers`: id, name, free tier, and the account's badge.
+pub(crate) fn provider_rows(providers: &[Value], keys: Option<&[Value]>) -> Vec<Vec<String>> {
+    providers
+        .iter()
+        .map(|p| {
+            let id = p.get("id").and_then(Value::as_str).unwrap_or("");
+            let badge = keys
+                .map(|ks| {
+                    let mine: Vec<&Value> = ks
+                        .iter()
+                        .filter(|k| k.get("provider_id").and_then(Value::as_str) == Some(id))
+                        .collect();
+                    if mine.is_empty() {
+                        ""
+                    } else if mine
+                        .iter()
+                        .any(|k| k.get("kind").and_then(Value::as_str) == Some("donated"))
+                    {
+                        "donated"
+                    } else {
+                        "ready"
+                    }
+                })
+                .unwrap_or("");
+            vec![
+                id.to_string(),
+                p.get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+                if p.get("freeTier").and_then(Value::as_bool) == Some(true) {
+                    "free tier"
+                } else {
+                    ""
+                }
+                .to_string(),
+                badge.to_string(),
+            ]
+        })
+        .collect()
+}
+
+fn run_providers(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, String> {
+    let plain = context(parsed, env);
+    let body = get(&plain, "/v1/byok/providers", false)?;
+    if plain.json {
+        crate::cmd::view::print_json(&body);
+        return Ok(0);
+    }
+    // Badges need the account's keys; without a management key show the bare list.
+    let keys = mgmt_ctx(parsed, env)
+        .ok()
+        .and_then(|c| get(&c, "/v1/auth/byok?source=cli", true).ok())
+        .map(|v| rows(&v));
+    let table = provider_rows(&rows(&body), keys.as_deref());
+    crate::cmd::view::print_table(&["provider", "name", "free", "yours"], &table);
+    Ok(0)
 }
 
 /// Read the provider key: env var, else piped stdin, else hidden prompt.
@@ -323,6 +534,54 @@ mod tests {
         // WHY: labelling a key BYOK when we could not check would tell a
         // donor their key is private when it may be serving the pool.
         assert_eq!(classify(&json!({"id": "byok_1"}), None), Kind::Unknown);
+    }
+
+    #[test]
+    fn inference_verdict_reports_ok_failure_and_provider_credit() {
+        let ok = json!({"ok": true, "backend": "openai-byok", "latency_ms": 412.0});
+        assert_eq!(
+            inference_verdict("openai", &ok),
+            Verdict {
+                ok: true,
+                line: "openai key works (via openai-byok, 412ms)".into()
+            }
+        );
+        let bad = json!({"ok": false, "error_message": "invalid api key", "provider_out_of_credit": true});
+        let v = inference_verdict("openai", &bad);
+        assert!(!v.ok);
+        assert!(
+            v.line.contains("invalid api key") && v.line.contains("out of credit"),
+            "{}",
+            v.line
+        );
+    }
+
+    #[test]
+    fn probe_verdict_distinguishes_valid_unverified_invalid() {
+        assert!(probe_verdict("x", &json!({"validation_state": "validated"})).ok);
+        let u = probe_verdict("x", &json!({"validation_state": "unvalidated"}));
+        assert!(u.ok && u.line.contains("unverified"));
+        assert!(!probe_verdict("x", &json!({"validation_state": "invalid"})).ok);
+    }
+
+    #[test]
+    fn provider_rows_badge_ready_vs_donated_and_none_without_keys() {
+        let ps = vec![
+            json!({"id": "openai", "name": "OpenAI"}),
+            json!({"id": "nvidia", "name": "NVIDIA", "freeTier": true}),
+            json!({"id": "groq", "name": "Groq"}),
+        ];
+        let ks = vec![
+            json!({"provider_id": "openai", "kind": "byok"}),
+            json!({"provider_id": "nvidia", "kind": "donated"}),
+        ];
+        let r = provider_rows(&ps, Some(&ks));
+        assert_eq!(
+            (r[0][3].as_str(), r[1][3].as_str(), r[2][3].as_str()),
+            ("ready", "donated", "")
+        );
+        assert_eq!(r[1][2], "free tier");
+        assert_eq!(provider_rows(&ps, None)[0][3], "");
     }
 
     #[test]

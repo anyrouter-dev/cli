@@ -298,3 +298,91 @@ fn missing_management_key_explains_scopes() {
         "{err}"
     );
 }
+
+#[test]
+fn rm_with_yes_deletes_and_without_yes_off_a_tty_sends_nothing() {
+    // WHY: deleting a provider key is destructive; scripts must opt in.
+    let (base, rx) = serve(vec![(200, r#"{"deleted":true}"#.into())]);
+    let (code, _, err) = run(anyr(&base), &["byok", "rm", "openai"], None);
+    assert_eq!(code, 2, "{err}");
+    assert!(rx.recv_timeout(Duration::from_millis(300)).is_err());
+    let (code, out, err) = run(anyr(&base), &["byok", "rm", "openai", "--yes"], None);
+    assert_eq!(code, 0, "{out}{err}");
+    let seen = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(
+        (seen.method.as_str(), seen.path.as_str()),
+        ("DELETE", "/api/v1/auth/byok/openai")
+    );
+    assert_eq!(seen.auth, format!("Bearer {MGMT}"));
+}
+
+#[test]
+fn rm_of_a_missing_key_exits_1() {
+    let (base, _rx) = serve(vec![(200, r#"{"deleted":false}"#.into())]);
+    let (code, _, err) = run(anyr(&base), &["byok", "rm", "openai", "--yes"], None);
+    assert_eq!(code, 1, "{err}");
+}
+
+#[test]
+fn test_saved_key_posts_provider_only_and_reports_failure() {
+    let (base, rx) = serve(vec![
+        (
+            200,
+            r#"{"ok":true,"backend":"openai-byok","latency_ms":300}"#.into(),
+        ),
+        (
+            200,
+            r#"{"ok":false,"error_message":"invalid api key"}"#.into(),
+        ),
+    ]);
+    let (code, out, err) = run(anyr(&base), &["byok", "test", "openai"], None);
+    assert_eq!(code, 0, "{out}{err}");
+    let seen = rx.recv().unwrap();
+    assert_eq!(seen.path, "/api/v1/auth/byok/test-inference");
+    let body: serde_json::Value = serde_json::from_str(&seen.body).unwrap();
+    assert_eq!(body, serde_json::json!({"provider_id": "openai"}));
+    let (code, _, err) = run(anyr(&base), &["byok", "test", "openai"], None);
+    assert_eq!(code, 1);
+    assert!(
+        err.starts_with("error:") && err.contains("invalid api key"),
+        "{err}"
+    );
+}
+
+#[test]
+fn test_key_stdin_probes_unsaved_key_and_never_echoes_it() {
+    let (base, rx) = serve(vec![(
+        200,
+        format!(r#"{{"validation_state":"invalid","diagnostics":{{"message":"bad {SECRET}"}}}}"#),
+    )]);
+    let (code, out, err) = run(
+        anyr(&base),
+        &["byok", "test", "openai", "--key-stdin"],
+        Some(SECRET),
+    );
+    assert_eq!(code, 1, "{out}{err}");
+    let seen = rx.recv().unwrap();
+    assert_eq!(seen.path, "/api/v1/byok/test-key");
+    let body: serde_json::Value = serde_json::from_str(&seen.body).unwrap();
+    assert_eq!(body["api_key"], SECRET);
+    assert_no_secret(&out, &err);
+}
+
+#[test]
+fn providers_lists_the_public_catalog_with_badges() {
+    let (base, rx) = serve(vec![
+        (
+            200,
+            r#"{"data":[{"id":"openai","name":"OpenAI"},{"id":"groq","name":"Groq"}]}"#.into(),
+        ),
+        (
+            200,
+            r#"{"data":[{"provider_id":"openai","kind":"byok"}]}"#.into(),
+        ),
+    ]);
+    let (code, out, err) = run(anyr(&base), &["byok", "providers"], None);
+    assert_eq!(code, 0, "{out}{err}");
+    assert_eq!(rx.recv().unwrap().path, "/api/v1/byok/providers");
+    assert!(out.contains("openai") && out.contains("ready"), "{out}");
+    assert!(out.contains("groq"), "{out}");
+}

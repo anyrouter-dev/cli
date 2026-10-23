@@ -54,6 +54,9 @@ pub fn subcommands(command: &str) -> &'static [(&'static str, &'static str)] {
                 "add",
                 "Add a provider key (--donate shares it with the pool)",
             ),
+            ("rm", "Delete a saved provider key"),
+            ("test", "Check a saved key (or --key-stdin before saving)"),
+            ("providers", "Providers that accept BYOK, with your badge"),
         ],
         "relay" => &[
             ("start", "Serve local models (--detach for background)"),

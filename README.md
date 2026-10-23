@@ -209,7 +209,14 @@ input. `--json` prints the full response body.
 ```bash
 anyr byok                            # keys with a BYOK or DONATED badge
 ANYR_BYOK_KEY=sk-... anyr byok add openai
+anyr byok test openai                # one real call with the saved key
+echo $KEY | anyr byok test openai --key-stdin   # check a key before saving it
+anyr byok rm openai --yes            # delete the saved key (asks on a terminal)
+anyr byok providers                  # providers that accept BYOK, ready/donated badge
 ```
+
+`rm` without `--yes` and without a terminal exits 2. `test` exits 1 when the
+provider rejects the key; the provider key is redacted from any error text.
 
 Needs a management key (`ANYROUTER_MANAGEMENT_KEY=ak_...`) with `read:byok` and
 `write:byok`. The provider key is read from `$ANYR_BYOK_KEY`, stdin or a hidden
