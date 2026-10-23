@@ -140,6 +140,7 @@ CORE COMMANDS
   byok:       Provider keys (BYOK); --donate shares one with the pool
   models:     List catalog and set the default (`--pick` to choose)
   usage:      Credits remaining
+  logs:       Recent requests and failures
   artifact:   Publish a file or folder to a shareable URL
   api:        Dashboard from the terminal (keys, credits, logs, presets…)
   completion: Shell completion (bash, zsh, fish, powershell)
@@ -212,10 +213,7 @@ pub fn command_help(command: &str) -> Option<String> {
         "decision" => fill(&bin, DECISION),
         "whoami" => fill(&bin, WHOAMI),
         "account" => fill(&bin, ACCOUNT),
-        "logs" => fill(
-            &bin,
-            "{bin} logs — not yet in the native CLI (coming later).\n",
-        ),
+        "logs" => fill(&bin, LOGS),
         "models" => fill(&bin, MODELS),
         "config" => fill(&bin, CONFIG),
         "chat" => fill(&bin, CHAT),
@@ -613,6 +611,26 @@ Options:
 A version conflict (someone published first) exits 2 and prints the
 current version. Exit codes: 0 ok, 1 error, 2 usage or conflict,
 3 not found, 4 auth.
+";
+
+const LOGS: &str = "{bin} logs — recent requests and failures
+
+Usage:
+  {bin} logs                       Latest 20 requests, newest first
+  {bin} logs <id>                  One request in detail
+  {bin} logs sessions              Requests grouped by session
+
+Options:
+  --limit <n>       Rows to fetch, 1 to 100
+  --status <s>      ok | error
+  --model <id>      Only this model
+  --json            Print the raw API body
+  --key <key>       Use this API key (or $ANYROUTER_API_KEY, or the saved login)
+  --profile <name>  Use another account
+
+Examples:
+  {bin} logs --status error --limit 50
+  {bin} logs --json --status error | jq '.data | length'
 ";
 
 const BYOK: &str = "{bin} byok — bring your own provider keys

@@ -164,6 +164,21 @@ A file is sent inline; a folder uploads file by file and skips dotfiles,
 builds on the current version; if someone published first the command exits 2
 and prints the current version. `public` asks for confirmation unless `--yes`.
 
+### Request logs: `anyr logs`
+
+```bash
+anyr logs                            # latest 20 requests, newest first
+anyr logs --status error --limit 50  # ok | error, limit 1..100
+anyr logs --model z-ai/glm-4.7
+anyr logs <id>                       # one request in detail
+anyr logs sessions                   # grouped by session
+anyr logs --json --status error | jq '.data | length'
+```
+
+Columns: time (local), model, provider, status (error code inline), tokens in
+and out, cost, latency. `--json` prints the raw API body. A key without the
+needed scope exits 4 and names the scope.
+
 ### Bring your own provider keys: `anyr byok`
 
 ```bash
