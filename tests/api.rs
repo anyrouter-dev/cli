@@ -418,3 +418,24 @@ fn config_get_json_reports_env_key_source() {
     assert_eq!(v["api_key_source"], "none");
     assert!(v["api_key"].is_null());
 }
+
+#[test]
+fn restricted_key_403_names_the_missing_scope_and_exits_4() {
+    // WHY: a restricted sk-ar key used to get a bare "HTTP 403"; the user
+    // must learn which scope is missing and how to fix it.
+    let (base, _rx) = serve_once(403, r#"{"error":{"message":"not permitted"}}"#);
+    let (code, _, err) = run(&["usage", "--base-url", &base, "--key", "sk-ar-restricted"]);
+    assert_eq!(code, 4, "{err}");
+    assert!(err.lines().any(|l| l.starts_with("error:")), "{err:?}");
+    assert!(err.contains("lacks scope `credits`"), "{err}");
+}
+
+#[test]
+fn command_failures_share_one_error_prefix_on_stderr() {
+    // WHY: `usage` used to print a bare sentence while `api` printed `error:`.
+    let (base, _rx) = serve_once(500, "{}");
+    let (code, out, err) = run(&["usage", "--base-url", &base, "--key", "sk-ar-test"]);
+    assert_eq!(code, 1);
+    assert!(out.is_empty(), "{out:?}");
+    assert!(err.lines().any(|l| l.starts_with("error:")), "{err:?}");
+}

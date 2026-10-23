@@ -3156,8 +3156,11 @@ fn usage_403_points_at_auth_login() {
         .output()
         .unwrap();
     let err = String::from_utf8_lossy(&out.stderr);
-    assert_eq!(out.status.code(), Some(1), "{err}");
-    assert!(err.contains("auth login"), "{err}");
+    assert_eq!(out.status.code(), Some(4), "{err}");
+    assert!(
+        err.contains("lacks scope `credits`") && err.contains("login"),
+        "{err}"
+    );
 }
 
 #[test]

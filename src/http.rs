@@ -471,18 +471,25 @@ fn fmt_context_length(n: Option<i64>) -> String {
     }
 }
 
+/// Marker in errors from a restricted key; `commands::run` maps it to exit 4.
+pub const SCOPE_ERROR: &str = "this key lacks scope";
+
+/// Clear message for a 401/403 on an endpoint the key is not allowed to call.
+pub fn scope_error(scope: &str) -> String {
+    format!(
+        "{SCOPE_ERROR} `{scope}` (restricted key). Run `{} login` for a full-access CLI key.",
+        crate::help::invoked_bin()
+    )
+}
+
 pub fn fetch_credits(base_url: &str, api_key: &str) -> Result<serde_json::Value, String> {
     let url = join_api(base_url, "/v1/credits");
     let (status, body) = http_get(&url, Some(api_key))?;
+    if status == 401 || status == 403 {
+        return Err(scope_error("credits"));
+    }
     if !(200..300).contains(&status) {
-        let hint = match status {
-            401 | 403 => format!(
-                " This key may not be allowed to read credits; run `{} auth login` for a full-access CLI key.",
-                crate::help::invoked_bin()
-            ),
-            _ => String::new(),
-        };
-        return Err(format!("Could not fetch usage (HTTP {status}).{hint}"));
+        return Err(format!("Could not fetch usage (HTTP {status})."));
     }
     serde_json::from_str(&body).map_err(|e| format!("Invalid credits response: {e}"))
 }
@@ -536,6 +543,9 @@ pub fn parse_me(body: &str) -> Result<MeInfo, String> {
 pub fn fetch_me(base_url: &str, api_key: &str) -> Result<MeInfo, String> {
     let url = join_api(base_url, "/v1/me");
     let (status, body) = http_get(&url, Some(api_key))?;
+    if status == 401 || status == 403 {
+        return Err(scope_error("me"));
+    }
     if !(200..300).contains(&status) {
         return Err(format!("Could not fetch account info (HTTP {status})."));
     }
@@ -651,11 +661,7 @@ pub fn fetch_keys(base_url: &str, credential: &str) -> Result<Vec<RemoteKey>, St
     let url = join_api(base_url, "/v1/keys");
     let (status, body) = http_get(&url, Some(credential))?;
     if status == 401 || status == 403 {
-        let bin = crate::help::invoked_bin();
-        return Err(format!(
-            "Not authorized to list keys. Your API key needs Key Management permission — \
-run `{bin} auth login` (creates a CLI key with full access) or enable Key Management on the key in the dashboard."
-        ));
+        return Err(scope_error("keys"));
     }
     if !(200..300).contains(&status) {
         return Err(format!("Could not list keys (HTTP {status})."));

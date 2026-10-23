@@ -70,7 +70,7 @@ pub fn run(argv: Vec<String>, env: HashMap<String, String>) -> i32 {
         return match run_menu(&empty, &env) {
             Ok(code) => code,
             Err(err) => {
-                eprintln!("{err}");
+                eprintln!("{}", format_error(&err));
                 1
             }
         };
@@ -141,9 +141,23 @@ pub fn run(argv: Vec<String>, env: HashMap<String, String>) -> i32 {
     match usage_exit(dispatch(canonical, &parsed, &env)) {
         Ok(code) => code,
         Err(err) => {
-            eprintln!("{err}");
-            1
+            eprintln!("{}", format_error(&err));
+            if err.contains(crate::http::SCOPE_ERROR) {
+                4
+            } else {
+                1
+            }
         }
+    }
+}
+
+/// Every failure prints as `error: <message>` on stderr (messages that already
+/// carry the prefix are left alone).
+fn format_error(err: &str) -> String {
+    if err.contains("error:") && err.find("error:").is_some_and(|i| i < 12) {
+        err.to_string()
+    } else {
+        format!("{} {err}", term::err("error:"))
     }
 }
 
