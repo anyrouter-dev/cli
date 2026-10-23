@@ -42,7 +42,9 @@ pub(crate) fn print_config_status(
     let key = resolve_api_key(&parsed.flags, env, profile);
     let base = resolve_base_url(&parsed.flags, profile);
     let me = key.as_deref().and_then(|k| fetch_me(&base, k).ok());
-    let credits = key.as_deref().and_then(|k| fetch_credits(&base, k).ok());
+    let credits_res = key.as_deref().map(|k| fetch_credits(&base, k));
+    let restricted = matches!(&credits_res, Some(Err(e)) if e.contains(crate::http::SCOPE_ERROR));
+    let credits = credits_res.and_then(Result::ok);
     let account = me
         .as_ref()
         .map(|m| m.display_label())
@@ -93,7 +95,9 @@ pub(crate) fn print_config_status(
     println!(
         "  {}  {}",
         term::dim(&format!("{:<12}", "credits")),
-        if credits_value == "-" {
+        if restricted {
+            term::dim("- (restricted key: no credits scope)")
+        } else if credits_value == "-" {
             term::dim("-")
         } else {
             term::ok(&credits_value)

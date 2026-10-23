@@ -625,9 +625,9 @@ pub(crate) fn send(
             crate::help::invoked_bin()
         ),
         403 => format!(
-            "\n{} this key is restricted to certain endpoints. `{} login` mints a full-access CLI key.",
+            "\n{} {}",
             term::dim("hint:"),
-            crate::help::invoked_bin()
+            crate::http::scope_error(path.trim_start_matches("/v1/"))
         ),
         _ => String::new(),
     };
