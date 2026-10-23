@@ -504,7 +504,8 @@ fn dir_publish_skips_symlinks_so_nothing_outside_the_folder_leaves() {
     assert!(seen[0].contains("index.html"), "{}", seen[0]);
 }
 
-#[cfg(unix)]
+// APFS rejects non-UTF-8 file names, so the fixture cannot be created there.
+#[cfg(all(unix, not(target_os = "macos")))]
 #[test]
 fn dir_publish_rejects_non_utf8_file_names_locally() {
     use std::os::unix::ffi::OsStrExt;
