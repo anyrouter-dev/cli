@@ -569,7 +569,7 @@ Usage:
   {bin} artifact publish <file|dir> [options]   Print the artifact URL
   {bin} artifact ls                             List your artifacts
   {bin} artifact rm <id>                        Delete one (asks first)
-  {bin} artifact visibility <id> <v>            private | link | public
+  {bin} artifact visibility <id> <v>            private | unlisted | public
 
 A file (html or md) is sent inline. A folder is uploaded file by file;
 dotfiles, node_modules and .git are skipped. Limits: 5 MB per file,
@@ -577,7 +577,7 @@ dotfiles, node_modules and .git are skipped. Limits: 5 MB per file,
 
 Options:
   --title <text>       Page title
-  --visibility <v>     private (default) | link | public
+  --visibility <v>     private (default) | unlisted | public
   --id <id>            Publish a new version of an existing artifact
   --label <text>       Version label (with --id)
   --yes                Skip confirmation (public, rm)
