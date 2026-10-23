@@ -132,7 +132,8 @@ fn file_publish_posts_inline_json_and_prints_only_the_url() {
     let body: serde_json::Value =
         serde_json::from_str(seen[0].splitn(5, ' ').nth(4).unwrap()).unwrap();
     assert_eq!(body["title"], "Sales");
-    assert_eq!(body["visibility"], "link");
+    // `link` is the old name; the CLI sends the server's name.
+    assert_eq!(body["visibility"], "unlisted");
     assert_eq!(body["files"]["report.html"]["content"], "<h1>Hi</h1>");
     assert_eq!(body["files"]["report.html"]["encoding"], "utf8");
 }
@@ -418,7 +419,7 @@ fn visibility_patches_and_ls_lists() {
             "artifact",
             "visibility",
             "abc123",
-            "link",
+            "unlisted",
             "--base-url",
             &base,
             "--key",
@@ -428,7 +429,7 @@ fn visibility_patches_and_ls_lists() {
     assert_eq!(code, 0, "{err}");
     let s = seen.lock().unwrap()[0].clone();
     assert!(s.starts_with("PATCH /api/v1/artifacts/abc123 "), "{s}");
-    assert!(s.ends_with(r#"{"visibility":"link"}"#), "{s}");
+    assert!(s.ends_with(r#"{"visibility":"unlisted"}"#), "{s}");
     let (base, _) = serve(vec![(
         200,
         r#"{"artifacts":[{"id":"abc123","title":"Sales","visibility":"link","current_version":2,"url":"https://anyrouter.dev/a/abc123"}]}"#.into(),

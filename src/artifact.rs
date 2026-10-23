@@ -39,10 +39,19 @@ pub const VERBS: &[(&str, &str)] = &[
     ("publish", "Publish a file or folder, print its URL"),
     ("ls", "List your artifacts"),
     ("rm", "Delete an artifact"),
-    ("visibility", "Set private, link or public"),
+    ("visibility", "Set private, unlisted or public"),
 ];
 
-const VISIBILITIES: [&str; 3] = ["private", "link", "public"];
+const VISIBILITIES: [&str; 3] = ["private", "unlisted", "public"];
+
+/// The server's name for a visibility. `link` is the old name for `unlisted`
+/// and stays accepted so existing scripts keep working.
+fn canonical_visibility(v: &str) -> Option<&'static str> {
+    match v {
+        "link" => Some("unlisted"),
+        _ => VISIBILITIES.iter().copied().find(|known| *known == v),
+    }
+}
 const MAX_FILE_BYTES: u64 = 5 * 1024 * 1024;
 const MAX_FILES: usize = 50;
 const MAX_TOTAL_BYTES: u64 = 20 * 1024 * 1024;
@@ -303,11 +312,11 @@ fn remove(ctx: &Ctx, parsed: &ParsedArgs, id: &str) -> Res<()> {
 
 fn set_visibility(ctx: &Ctx, parsed: &ParsedArgs, id: &str, v: &str) -> Res<()> {
     let id = checked_id(id)?;
-    if !VISIBILITIES.contains(&v) {
+    let Some(v) = canonical_visibility(v) else {
         return Err(usage(format!(
-            "unknown visibility \"{v}\"; use private, link or public."
+            "unknown visibility \"{v}\"; use private, unlisted or public."
         )));
-    }
+    };
     ctx.key().map_err(|e| Fail::new(4, e))?;
     if v == "public" {
         confirm_public(parsed, "Make this artifact public?")?;
@@ -402,10 +411,12 @@ fn check(status: u16, text: &str) -> Res<()> {
 fn visibility_flag(parsed: &ParsedArgs) -> Res<Option<String>> {
     match get_string_flag(&parsed.flags, "visibility") {
         None => Ok(None),
-        Some(v) if VISIBILITIES.contains(&v.as_str()) => Ok(Some(v)),
-        Some(v) => Err(usage(format!(
-            "unknown visibility \"{v}\"; use private, link or public."
-        ))),
+        Some(v) => match canonical_visibility(&v) {
+            Some(known) => Ok(Some(known.to_string())),
+            None => Err(usage(format!(
+                "unknown visibility \"{v}\"; use private, unlisted or public."
+            ))),
+        },
     }
 }
 
