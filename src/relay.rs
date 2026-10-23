@@ -33,7 +33,7 @@
 //! and polling the socket (short read timeout → `WouldBlock`). This keeps
 //! concurrent requests streaming without deadlocking the single socket.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read as _;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
@@ -388,10 +388,18 @@ struct Router {
 
 impl Router {
     fn new(targets: Vec<Target>) -> Self {
-        let mut by_model = BTreeMap::new();
+        let mut by_model: BTreeMap<String, usize> = BTreeMap::new();
         for (i, t) in targets.iter().enumerate() {
             for m in &t.models {
-                by_model.entry(m.clone()).or_insert(i);
+                match by_model.get(m) {
+                    Some(&first) => ulog(&format!(
+                        "model \"{m}\" is served by both {} and {}; using {}",
+                        targets[first].label, t.label, targets[first].label
+                    )),
+                    None => {
+                        by_model.insert(m.clone(), i);
+                    }
+                }
             }
         }
         Router { targets, by_model }
@@ -402,13 +410,14 @@ impl Router {
         self.by_model.keys().cloned().collect()
     }
 
-    /// The only target of `kind` when it advertised no models (an endpoint
-    /// that answered but whose /models list is unavailable): it takes any
-    /// request of its kind, which keeps a lone `--target` working.
-    fn lone_unlisted(&self, kind: TargetKind) -> Option<&Target> {
+    /// The only target of `kind`: it takes every request of its kind, listed
+    /// model or not. The cloud sends the catalog's upstream `model_name`,
+    /// which need not match a local id. Model matching only applies when two
+    /// or more targets of a kind exist.
+    fn lone_of_kind(&self, kind: TargetKind) -> Option<&Target> {
         let mut of_kind = self.targets.iter().filter(|t| t.kind == kind);
         match (of_kind.next(), of_kind.next()) {
-            (Some(t), None) if t.models.is_empty() => Some(t),
+            (Some(t), None) => Some(t),
             _ => None,
         }
     }
@@ -421,13 +430,14 @@ impl Router {
         } else {
             TargetKind::Chat
         };
+        if let Some(t) = self.lone_of_kind(want) {
+            return Ok(t);
+        }
         let model = serde_json::from_str::<serde_json::Value>(body)
             .ok()
             .and_then(|v| v.get("model").and_then(|m| m.as_str()).map(str::to_string));
         let Some(model) = model else {
-            return self
-                .lone_unlisted(want)
-                .ok_or_else(|| "Request body has no \"model\" field.".to_string());
+            return Err("Request body has no \"model\" field.".to_string());
         };
         match self.by_model.get(&model) {
             Some(&i) => {
@@ -442,13 +452,13 @@ impl Router {
                     ))
                 }
             }
-            None => self.lone_unlisted(want).ok_or_else(|| {
+            None => {
                 let known = self.all_models();
-                format!(
+                Err(format!(
                     "Model \"{model}\" is not served by any local endpoint on this device (available: {}).",
                     if known.is_empty() { "none".into() } else { known.join(", ") }
-                )
-            }),
+                ))
+            }
         }
     }
 }
@@ -487,8 +497,19 @@ fn is_decider_response(body: &str) -> bool {
         .is_some_and(|v| v.get("answers").is_some_and(|a| a.is_object()))
 }
 
+/// Bases already confirmed as a Decider; a positive result holds for the
+/// life of the process so reconnects do not re-run the POST.
+static CONFIRMED_DECIDERS: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
+
 /// Send one tiny real decision to `base`/decisions and check the reply shape.
 fn probe_decider(base: &str) -> bool {
+    if CONFIRMED_DECIDERS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains(base)
+    {
+        return true;
+    }
     let url = format!("{}/decisions", base.trim_end_matches('/'));
     let body = json!({
         "model": DECIDER_ADVERTISED_MODEL_ID,
@@ -503,7 +524,20 @@ fn probe_decider(base: &str) -> bool {
         .send_string(&body)
     {
         Ok(resp) if (200..300).contains(&resp.status()) => {
-            is_decider_response(&resp.into_string().unwrap_or_default())
+            let ok = is_decider_response(&resp.into_string().unwrap_or_default());
+            if ok {
+                CONFIRMED_DECIDERS
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(base.to_string());
+            }
+            ok
+        }
+        Err(ureq::Error::Transport(t)) if t.to_string().to_lowercase().contains("timed out") => {
+            ulog(&format!(
+                "decider probe of {base} timed out after 5s; treating it as not a Decider (will retry on reconnect)"
+            ));
+            false
         }
         _ => false,
     }
@@ -559,10 +593,18 @@ fn build_router(explicit: Option<&str>) -> Router {
     } else {
         urls.iter()
             .map(|u| {
-                if probe_decider(u) {
+                // A server that lists models is a chat endpoint: never POST a
+                // real decision to it. Only a silent one is probed.
+                let fetched = fetch_local_models(u);
+                if fetched.is_empty() && probe_decider(u) {
                     decider_target(u)
                 } else {
-                    chat_target("--target", u)
+                    Target {
+                        label: "--target".to_string(),
+                        base: u.to_string(),
+                        kind: TargetKind::Chat,
+                        models: advertised_models(u, &fetched),
+                    }
                 }
             })
             .collect()
@@ -1199,21 +1241,22 @@ fn run_relay_start(
 
     let mut attempt: u32 = 0;
     loop {
+        // Re-discover before every (re)connect so endpoints started or
+        // stopped since the last connect are picked up, and so no socket
+        // sits open and unread while probes run.
+        let router = build_router(args.target.as_deref());
+        for t in &router.targets {
+            ulog(&format!(
+                "endpoint {} ({}) at {}",
+                t.label,
+                t.kind.name(),
+                t.base
+            ));
+        }
         match connect_ws(&url, &token) {
             Ok(mut ws) => {
                 attempt = 0;
                 set_read_timeouts(&ws, Duration::from_millis(SOCKET_POLL_MS));
-                // Re-discover on every (re)connect so endpoints started or
-                // stopped since the last connect are picked up.
-                let router = build_router(args.target.as_deref());
-                for t in &router.targets {
-                    ulog(&format!(
-                        "endpoint {} ({}) at {}",
-                        t.label,
-                        t.kind.name(),
-                        t.base
-                    ));
-                }
                 serve_connection(&mut ws, &router, &conn, args.max_concurrency);
                 abort_in_flight(&conn.in_flight);
             }
@@ -1966,7 +2009,7 @@ profiles:
             let hello: serde_json::Value = serde_json::from_str(first.to_text().unwrap()).unwrap();
             assert_eq!(hello["type"], "hello");
             assert_eq!(hello["models"][0], "_base");
-            let body = r#"{"model":"_base","messages":[{"role":"user","content":"hi"}]}"#;
+            let body = r#"{"model":"foundation-model","messages":[{"role":"user","content":"hi"}]}"#;
             ws.send(tungstenite::Message::text(
                 serde_json::json!({
                     "type": "request", "id": "req-1", "path": "/chat/completions",
@@ -2081,8 +2124,62 @@ profiles:
             )
             .unwrap_err();
         assert!(err.contains("decider"), "{err}");
-        let err = r.route("/decisions", r#"{"model":"llama3"}"#).unwrap_err();
+        // Two deciders: model matching applies, and a chat model is refused.
+        let r2 = Router::new(vec![
+            t("d1", TargetKind::Decider, &["dec-a"]),
+            t("d2", TargetKind::Decider, &["dec-b"]),
+            t("c", TargetKind::Chat, &["llama3"]),
+        ]);
+        let err = r2.route("/decisions", r#"{"model":"llama3"}"#).unwrap_err();
         assert!(err.contains("chat"), "{err}");
+    }
+
+    #[test]
+    fn a_single_chat_endpoint_accepts_an_unlisted_model() {
+        let r = Router::new(vec![t("only", TargetKind::Chat, &["llama3"])]);
+        assert_eq!(
+            r.route("/chat/completions", r#"{"model":"foundation-model"}"#)
+                .unwrap()
+                .label,
+            "only"
+        );
+        assert_eq!(
+            r.route("/chat/completions", "{}").unwrap().label,
+            "only"
+        );
+    }
+
+    #[test]
+    fn routing_failure_sends_an_error_frame() {
+        let r = sample_router();
+        let (url, _seen, cloud_join) = spawn_mock_cloud(None, |ws| {
+            let _hello = ws.read().unwrap();
+            ws.send(tungstenite::Message::text(
+                serde_json::json!({
+                    "type": "request", "id": "bad-1", "path": "/chat/completions",
+                    "body": r#"{"model":"nope"}"#, "stream": false,
+                })
+                .to_string(),
+            ))
+            .unwrap();
+            let msg = ws.read().unwrap();
+            let v: serde_json::Value = serde_json::from_str(msg.to_text().unwrap()).unwrap();
+            assert_eq!(v["type"], "error");
+            assert_eq!(v["id"], "bad-1");
+            assert!(v["message"].as_str().unwrap().contains("nope"));
+            let _ = ws.close(None);
+            let _ = ws.flush();
+        });
+        let mut ws = connect_ws(&url, "sk-ar-v1-test").expect("connect");
+        set_read_timeouts(&ws, Duration::from_millis(20));
+        let (tx, rx) = mpsc::channel();
+        let state = ConnState {
+            tx,
+            rx,
+            in_flight: Arc::new(Mutex::new(BTreeMap::new())),
+        };
+        serve_connection(&mut ws, &r, &state, None);
+        cloud_join.join().expect("mock cloud assertions");
     }
 
     #[test]
