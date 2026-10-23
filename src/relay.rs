@@ -2009,7 +2009,8 @@ profiles:
             let hello: serde_json::Value = serde_json::from_str(first.to_text().unwrap()).unwrap();
             assert_eq!(hello["type"], "hello");
             assert_eq!(hello["models"][0], "_base");
-            let body = r#"{"model":"foundation-model","messages":[{"role":"user","content":"hi"}]}"#;
+            let body =
+                r#"{"model":"foundation-model","messages":[{"role":"user","content":"hi"}]}"#;
             ws.send(tungstenite::Message::text(
                 serde_json::json!({
                     "type": "request", "id": "req-1", "path": "/chat/completions",
@@ -2143,10 +2144,7 @@ profiles:
                 .label,
             "only"
         );
-        assert_eq!(
-            r.route("/chat/completions", "{}").unwrap().label,
-            "only"
-        );
+        assert_eq!(r.route("/chat/completions", "{}").unwrap().label, "only");
     }
 
     #[test]
