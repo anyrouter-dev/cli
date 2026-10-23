@@ -77,12 +77,10 @@ fn run_with_stdin(mut cmd: Command, input: &str) -> (i32, String, String) {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(input.as_bytes())
-        .unwrap();
+    // A usage error exits before reading stdin; the write then hits a closed pipe.
+    if let Err(err) = child.stdin.take().unwrap().write_all(input.as_bytes()) {
+        assert_eq!(err.kind(), std::io::ErrorKind::BrokenPipe, "{err}");
+    }
     let out = child.wait_with_output().unwrap();
     (
         out.status.code().unwrap_or(1),
