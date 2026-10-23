@@ -155,7 +155,7 @@ fn demo_launch(tool: &str, parsed: &crate::parse::ParsedArgs) -> Result<String, 
     let mut args = Vec::new();
     args.extend(effort_args_for(tool, effort.as_deref()));
     args.extend(provider_args_for(tool, &profile));
-    args.extend(model_args_for(tool, &model, model_mode));
+    args.extend(model_args_for(tool, &model, model_mode, None));
     args.extend(parsed.passthrough.clone());
     let out = render_dry_run(&resolved.command, &args, &env_map);
     Ok(format!(

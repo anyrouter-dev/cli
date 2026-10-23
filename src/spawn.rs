@@ -901,7 +901,12 @@ fn write_pi_wrapper_files(
     Ok(())
 }
 
-pub fn model_args_for(tool_name: &str, model: &str, model_mode: &str) -> Vec<String> {
+pub fn model_args_for(
+    tool_name: &str,
+    model: &str,
+    model_mode: &str,
+    context_window: Option<i64>,
+) -> Vec<String> {
     if tool_name == "pi" {
         let id = pi_resolved_model(model);
         // Official AnyRouter Pi guide: `pi --provider anyrouter --model "<catalog-id>"`.
@@ -916,7 +921,13 @@ pub fn model_args_for(tool_name: &str, model: &str, model_mode: &str) -> Vec<Str
     if tool_name != "codex" {
         return vec![];
     }
-    vec!["-c".into(), format!("model=\"{catalog}\"")]
+    let mut args = vec!["-c".into(), format!("model=\"{catalog}\"")];
+    // Codex keys its metadata table by OpenAI ids; without this override an
+    // AnyRouter id falls back to Codex's default window.
+    if let Some(n) = context_window.filter(|n| *n > 0) {
+        args.extend(["-c".into(), format!("model_context_window={n}")]);
+    }
+    args
 }
 
 pub fn provider_args_for(tool_name: &str, profile: &Profile) -> Vec<String> {
@@ -1024,6 +1035,34 @@ pub fn spawn_child(command: &str, args: &[String], extra_env: &BTreeMap<String, 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn codex_gets_model_context_window_only_for_a_concrete_model() {
+        let args = model_args_for(
+            "codex",
+            "poolside/laguna-s-2.1",
+            "concrete",
+            Some(1_048_576),
+        );
+        assert_eq!(
+            args,
+            [
+                "-c",
+                "model=\"poolside/laguna-s-2.1\"",
+                "-c",
+                "model_context_window=1048576"
+            ]
+        );
+        // Unknown or zero window: omit rather than guess.
+        for none in [None, Some(0)] {
+            assert_eq!(
+                model_args_for("codex", "poolside/laguna-s-2.1", "concrete", none).len(),
+                2
+            );
+        }
+        // Auto: the gateway picks the model per request, so no single window.
+        assert!(model_args_for("codex", "anyrouter/auto", "auto", Some(200_000)).is_empty());
+    }
+
     use super::*;
 
     fn profile() -> Profile {
@@ -1424,31 +1463,31 @@ mod tests {
             vec!["--provider".to_string(), "anyrouter".to_string()]
         );
         assert_eq!(
-            model_args_for("pi", "z-ai/glm-4.7-flash", "concrete"),
+            model_args_for("pi", "z-ai/glm-4.7-flash", "concrete", None),
             vec!["--model".to_string(), "z-ai/glm-4.7-flash".to_string()]
         );
         assert_eq!(
-            model_args_for("pi", "anyrouter/free", "concrete"),
+            model_args_for("pi", "anyrouter/free", "concrete", None),
             vec!["--model".to_string(), "anyrouter/free".to_string()]
         );
         assert_eq!(
-            model_args_for("pi", "stealth/ox-alpha", "concrete"),
+            model_args_for("pi", "stealth/ox-alpha", "concrete", None),
             vec!["--model".to_string(), "stealth/ox-alpha".to_string()]
         );
         assert_eq!(
-            model_args_for("pi", "stealth/ox-alpha[1m", "concrete"),
+            model_args_for("pi", "stealth/ox-alpha[1m", "concrete", None),
             vec!["--model".to_string(), "stealth/ox-alpha".to_string()]
         );
         assert_eq!(
-            model_args_for("pi", "stealth/ox-alpha[1m]", "concrete"),
+            model_args_for("pi", "stealth/ox-alpha[1m]", "concrete", None),
             vec!["--model".to_string(), "stealth/ox-alpha".to_string()]
         );
         assert_eq!(
-            model_args_for("pi", "auto", "auto"),
+            model_args_for("pi", "auto", "auto", None),
             vec!["--model".to_string(), PI_DEFAULT_MODEL.to_string()]
         );
         assert_eq!(
-            model_args_for("pi", "anyrouter/auto", "auto"),
+            model_args_for("pi", "anyrouter/auto", "auto", None),
             vec!["--model".to_string(), PI_DEFAULT_MODEL.to_string()]
         );
     }
