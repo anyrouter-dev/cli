@@ -48,7 +48,8 @@ pub(super) enum Auth {
 pub(super) trait Probe {
     fn is_mac(&self) -> bool;
     fn macos_major(&self) -> Option<u32>;
-    fn fm_serve(&self) -> bool;
+    /// None = not listening; else fm serve's own model ids (system, pcc).
+    fn fm_serve(&self) -> Option<Vec<String>>;
     fn decider(&self) -> bool;
     /// Labels of other local servers that answered (Ollama, LM Studio, …).
     fn other_servers(&self) -> Vec<String>;
@@ -107,17 +108,28 @@ pub(super) fn run_checks(p: &dyn Probe, bin: &str) -> Vec<Check> {
         }
     };
 
-    let fm = apple_ok && p.fm_serve();
+    let fm_ids = if apple_ok { p.fm_serve() } else { None };
+    let fm = fm_ids.is_some();
     if apple_ok {
-        out.push(if fm {
-            check("fm serve", Level::Ok, "listening on 127.0.0.1:1976", "")
-        } else {
-            check(
+        out.push(match &fm_ids {
+            Some(ids) if ids.is_empty() => check(
+                "fm serve",
+                Level::Ok,
+                "listening on 127.0.0.1:1976 (no models listed)",
+                "",
+            ),
+            Some(ids) => check(
+                "fm serve",
+                Level::Ok,
+                format!("listening on 127.0.0.1:1976, models: {}", ids.join(", ")),
+                "",
+            ),
+            None => check(
                 "fm serve",
                 Level::Warn,
                 "not listening on 127.0.0.1:1976",
                 "turn on Apple Intelligence, then run `fm serve`",
-            )
+            ),
         });
     }
 
@@ -231,7 +243,7 @@ mod tests {
     struct Fake {
         mac: bool,
         major: Option<u32>,
-        fm: bool,
+        fm: Option<Vec<String>>,
         decider: bool,
         others: Vec<String>,
         net: Result<(), String>,
@@ -244,7 +256,7 @@ mod tests {
             Fake {
                 mac: true,
                 major: Some(26),
-                fm: true,
+                fm: Some(vec!["system".into(), "pcc".into()]),
                 decider: true,
                 others: vec![],
                 net: Ok(()),
@@ -261,8 +273,8 @@ mod tests {
         fn macos_major(&self) -> Option<u32> {
             self.major
         }
-        fn fm_serve(&self) -> bool {
-            self.fm
+        fn fm_serve(&self) -> Option<Vec<String>> {
+            self.fm.clone()
         }
         fn decider(&self) -> bool {
             self.decider
@@ -290,6 +302,9 @@ mod tests {
         let c = run_checks(&Fake::default(), "anyr");
         assert!(!failed(&c));
         assert!(c.iter().all(|c| c.level == Level::Ok), "{c:?}");
+        // WHY: fm serve names its model `system`, not the catalog id; the
+        // doctor must show the real ids so a mismatch is visible.
+        assert!(get(&c, "fm serve").detail.contains("system, pcc"));
     }
 
     #[test]
@@ -311,7 +326,7 @@ mod tests {
     fn nothing_servable_fails_with_a_fix_for_each_source() {
         let c = run_checks(
             &Fake {
-                fm: false,
+                fm: None,
                 decider: false,
                 ..Fake::default()
             },
@@ -329,7 +344,7 @@ mod tests {
             &Fake {
                 mac: false,
                 major: None,
-                fm: false,
+                fm: None,
                 decider: false,
                 others: vec!["Ollama".into()],
                 ..Fake::default()

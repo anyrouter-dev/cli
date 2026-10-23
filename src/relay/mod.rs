@@ -392,6 +392,9 @@ struct Target {
     base: String,
     kind: TargetKind,
     models: Vec<String>,
+    /// fm serve only: its real local ids from /v1/models (e.g. `system`,
+    /// `pcc`), used to map the catalog name the cloud sends.
+    fm_models: Option<Vec<String>>,
 }
 
 /// Model id -> owning target. The first target listed wins a duplicate id.
@@ -559,12 +562,13 @@ fn probe_decider(base: &str) -> bool {
 }
 
 fn chat_target(label: &str, base: &str) -> Target {
-    let models = advertised_models(base, &fetch_local_models(base));
+    let fetched = fetch_local_models(base);
     Target {
         label: label.to_string(),
         base: base.to_string(),
         kind: TargetKind::Chat,
-        models,
+        models: advertised_models(base, &fetched),
+        fm_models: is_fm_serve_target(base).then_some(fetched),
     }
 }
 
@@ -574,6 +578,7 @@ fn decider_target(base: &str) -> Target {
         base: base.to_string(),
         kind: TargetKind::Decider,
         models: vec![DECIDER_ADVERTISED_MODEL_ID.to_string()],
+        fm_models: None,
     }
 }
 
@@ -831,6 +836,7 @@ fn build_router(explicit: Option<&str>, serve: &BTreeSet<OnDeviceModel>) -> Rout
                         base: u.to_string(),
                         kind: TargetKind::Chat,
                         models: advertised_models(u, &fetched),
+                        fm_models: is_fm_serve_target(u).then(|| fetched.clone()),
                     }
                 }
             })
@@ -907,6 +913,53 @@ fn advertised_models(target: &str, fetched: &[String]) -> Vec<String> {
         models.push(FM_SERVE_ADVERTISED_MODEL_ID.to_string());
     }
     models
+}
+
+/// fm serve's own id for Apple's on-device model. The cloud sends the
+/// catalog name (`foundation-model` or `apple/foundation-model`), which fm
+/// serve rejects: "Unknown model 'foundation-model'. Available: system, pcc".
+const FM_SERVE_SYSTEM_MODEL: &str = "system";
+
+/// The id to send to fm serve for `requested`, given its live model list.
+/// `Ok(None)` = send as is. Exactly one local model: use it. Otherwise an
+/// error that lists what fm serve actually has.
+fn map_fm_model(requested: &str, local: &[String]) -> Result<Option<String>, String> {
+    if local.is_empty() || local.iter().any(|m| m == requested) {
+        return Ok(None);
+    }
+    let is_catalog_name = requested == FM_SERVE_ADVERTISED_MODEL_ID
+        || OnDeviceModel::from_id(requested) == Some(OnDeviceModel::AppleFoundation);
+    if is_catalog_name && local.iter().any(|m| m == FM_SERVE_SYSTEM_MODEL) {
+        return Ok(Some(FM_SERVE_SYSTEM_MODEL.to_string()));
+    }
+    if let [only] = local {
+        return Ok(Some(only.clone()));
+    }
+    Err(format!(
+        "Model \"{requested}\" is not served by fm serve on this device (available: {}).",
+        local.join(", ")
+    ))
+}
+
+/// Rewrite the request body's `model` for `target` when it is fm serve.
+fn body_for_target(target: &Target, body: &str) -> Result<String, String> {
+    let Some(local) = &target.fm_models else {
+        return Ok(body.to_string());
+    };
+    let Ok(mut v) = serde_json::from_str::<serde_json::Value>(body) else {
+        return Ok(body.to_string());
+    };
+    let Some(requested) = v.get("model").and_then(|m| m.as_str()).map(str::to_string) else {
+        return Ok(body.to_string());
+    };
+    match map_fm_model(&requested, local)? {
+        Some(id) => {
+            vlog(&format!("mapped model {requested} -> {id} for fm serve"));
+            v["model"] = json!(id);
+            Ok(v.to_string())
+        }
+        None => Ok(body.to_string()),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1374,10 +1427,14 @@ fn serve_connection(
             Ok(tungstenite::Message::Text(text)) => match parse_server_frame(&text) {
                 Some(Ok(frame)) => {
                     state.stats.requests.fetch_add(1, Ordering::Relaxed);
-                    match router.route(&frame.path, &frame.body) {
-                        Ok(t) => {
+                    match router
+                        .route(&frame.path, &frame.body)
+                        .and_then(|t| Ok((t, body_for_target(t, &frame.body)?)))
+                    {
+                        Ok((t, body)) => {
                             state.stats.in_flight.fetch_add(1, Ordering::Relaxed);
-                            spawn_request(state, frame, t.base.clone())
+                            let base = t.base.clone();
+                            spawn_request(state, RequestFrame { body, ..frame }, base)
                         }
                         Err(message) => {
                             state.stats.errors.fetch_add(1, Ordering::Relaxed);
@@ -1648,25 +1705,7 @@ fn run_relay_start(
     let (pool, _) = state::effective_pool(pool_flag, &state::load_prefs(&paths));
 
     if detach && !detached_child {
-        let mut child: Vec<String> = vec!["relay".into(), "start".into()];
-        child.push(if pool { "--pool" } else { "--no-pool" }.into());
-        for (flag, value) in [
-            ("--name", Some(args.name.clone())),
-            ("--url", args.url.clone()),
-            ("--target", args.target.clone()),
-            (
-                "--max-concurrency",
-                args.max_concurrency.map(|n| n.to_string()),
-            ),
-        ] {
-            if let Some(v) = value {
-                child.push(flag.into());
-                child.push(v);
-            }
-        }
-        if parsed.flag_true("verbose") {
-            child.push("--verbose".into());
-        }
+        let child = detached_child_args(&args, pool_flag, parsed.flag_true("verbose"));
         return daemon::spawn(
             &paths,
             daemon::Handoff {
@@ -1691,6 +1730,34 @@ fn run_relay_start(
         detached: detached_child,
         quiet,
     })
+}
+
+/// argv for the detached child. The pool flag is forwarded only when the
+/// user gave one, so the child keeps following `relay pool on|off`; the
+/// credential never goes here (argv is visible in `ps`).
+fn detached_child_args(args: &StartArgs, pool_flag: Option<bool>, verbose: bool) -> Vec<String> {
+    let mut child: Vec<String> = vec!["relay".into(), "start".into()];
+    if let Some(on) = pool_flag {
+        child.push(if on { "--pool" } else { "--no-pool" }.into());
+    }
+    for (flag, value) in [
+        ("--name", Some(args.name.clone())),
+        ("--url", args.url.clone()),
+        ("--target", args.target.clone()),
+        (
+            "--max-concurrency",
+            args.max_concurrency.map(|n| n.to_string()),
+        ),
+    ] {
+        if let Some(v) = value {
+            child.push(flag.into());
+            child.push(v);
+        }
+    }
+    if verbose {
+        child.push("--verbose".into());
+    }
+    child
 }
 
 struct Foreground<'a> {
@@ -2044,7 +2111,17 @@ fn model_rows(prefs: &state::Prefs) -> Vec<view::ModelRow> {
         .into_iter()
         .map(|d| view::ModelRow {
             id: d.model.id().to_string(),
-            source: d.model.label().to_string(),
+            source: match d.model {
+                OnDeviceModel::AppleFoundation if d.unavailable.is_none() => {
+                    let ids = fetch_local_models(FM_SERVE_TARGET);
+                    if ids.is_empty() {
+                        d.model.label().to_string()
+                    } else {
+                        format!("{} (fm serve: {})", d.model.label(), ids.join(", "))
+                    }
+                }
+                _ => d.model.label().to_string(),
+            },
             unavailable: d.unavailable,
             enabled: prefs.models.as_ref().is_none_or(|m| {
                 m.iter()
@@ -2287,8 +2364,8 @@ impl doctor::Probe for SystemProbe<'_> {
     fn macos_major(&self) -> Option<u32> {
         macos_major_version()
     }
-    fn fm_serve(&self) -> bool {
-        http_probe_listening(FM_SERVE_HEALTH_URL)
+    fn fm_serve(&self) -> Option<Vec<String>> {
+        http_probe_listening(FM_SERVE_HEALTH_URL).then(|| fetch_local_models(FM_SERVE_TARGET))
     }
     fn decider(&self) -> bool {
         probe_decider(DECIDER_TARGET)
@@ -2736,6 +2813,7 @@ mod tests {
                 base: FM_SERVE_TARGET.into(),
                 kind: TargetKind::Chat,
                 models: vec!["foundation-model".into()],
+                fm_models: None,
             },
             decider_target(DECIDER_TARGET),
             Target {
@@ -2743,6 +2821,7 @@ mod tests {
                 base: OLLAMA_TARGET.into(),
                 kind: TargetKind::Chat,
                 models: vec!["llama3".into()],
+                fm_models: None,
             },
         ];
         let kept: Vec<String> = keep_selected(targets.clone(), &set(&[Dec]))
@@ -3255,6 +3334,7 @@ profiles:
             base: format!("http://{label}/v1"),
             kind,
             models: models.iter().map(|m| m.to_string()).collect(),
+            fm_models: None,
         }
     }
 
@@ -3377,6 +3457,179 @@ profiles:
             "only"
         );
         assert!(r.route("/decisions", r#"{"model":"x"}"#).is_err());
+    }
+
+    #[test]
+    fn detached_child_args_follow_saved_pool_and_never_carry_the_credential() {
+        let parsed = parsed_start(vec![
+            ("token", crate::parse::FlagValue::Value("rk_secret".into())),
+            ("name", crate::parse::FlagValue::Value("Desk".into())),
+        ]);
+        let args = parse_start_args(&parsed);
+        let argv = detached_child_args(&args, None, false);
+        assert_eq!(argv, vec!["relay", "start", "--name", "Desk"]);
+        assert!(!argv
+            .iter()
+            .any(|a| a.contains("rk_") || a.contains("sk-ar")));
+        assert!(detached_child_args(&args, Some(false), true).ends_with(&["--verbose".to_string()]));
+        assert!(detached_child_args(&args, Some(false), false).contains(&"--no-pool".to_string()));
+    }
+
+    #[test]
+    fn fm_serve_model_mapping() {
+        let fm = vec!["system".to_string(), "pcc".to_string()];
+        // The owner's failing call: catalog names must reach fm as `system`.
+        assert_eq!(
+            map_fm_model("foundation-model", &fm).unwrap().as_deref(),
+            Some("system")
+        );
+        assert_eq!(
+            map_fm_model("apple/foundation-model", &fm)
+                .unwrap()
+                .as_deref(),
+            Some("system")
+        );
+        // Already a real id, or an unknown list: pass through untouched.
+        assert_eq!(map_fm_model("pcc", &fm).unwrap(), None);
+        assert_eq!(map_fm_model("foundation-model", &[]).unwrap(), None);
+        // One local model takes any name.
+        assert_eq!(
+            map_fm_model("whatever", &["base".to_string()])
+                .unwrap()
+                .as_deref(),
+            Some("base")
+        );
+        let err = map_fm_model("gpt-5", &fm).unwrap_err();
+        assert!(
+            err.contains("gpt-5") && err.contains("system, pcc"),
+            "{err}"
+        );
+    }
+
+    /// Fake fm serve: GET /models lists [system, pcc]; POST answers with the
+    /// model id it received, so the test sees what the relay forwarded.
+    fn spawn_fake_fm_serve() -> String {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { return };
+                let mut buf = Vec::new();
+                let mut tmp = [0u8; 4096];
+                let (head, body) = loop {
+                    let n = stream.read(&mut tmp).unwrap_or(0);
+                    if n == 0 {
+                        break (String::new(), String::new());
+                    }
+                    buf.extend_from_slice(&tmp[..n]);
+                    let text = String::from_utf8_lossy(&buf).to_string();
+                    if let Some(pos) = text.find("\r\n\r\n") {
+                        let head = text[..pos].to_string();
+                        let want = head
+                            .lines()
+                            .find_map(|l| {
+                                let (k, v) = l.split_once(':')?;
+                                k.eq_ignore_ascii_case("content-length")
+                                    .then(|| v.trim().parse::<usize>().ok())
+                                    .flatten()
+                            })
+                            .unwrap_or(0);
+                        if text.len() - pos - 4 >= want {
+                            break (head, text[pos + 4..].to_string());
+                        }
+                    }
+                };
+                let reply = if head.starts_with("GET") {
+                    r#"{"data":[{"id":"system"},{"id":"pcc"}]}"#.to_string()
+                } else {
+                    let model = serde_json::from_str::<serde_json::Value>(&body)
+                        .ok()
+                        .and_then(|v| v["model"].as_str().map(str::to_string))
+                        .unwrap_or_default();
+                    json!({ "model": model }).to_string()
+                };
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
+                    reply.len()
+                );
+            }
+        });
+        url
+    }
+
+    #[test]
+    fn requests_reach_a_fake_fm_serve_under_its_real_model_id() {
+        let fm = spawn_fake_fm_serve();
+        let fetched = fetch_local_models(&fm);
+        assert_eq!(fetched, vec!["system", "pcc"]);
+        let target = Target {
+            label: "fm serve".into(),
+            base: fm.clone(),
+            kind: TargetKind::Chat,
+            models: advertised_models(FM_SERVE_TARGET, &fetched),
+            fm_models: Some(fetched),
+        };
+        // Two chat targets so routing must match by model, as in the field.
+        let router = Router::new(vec![target, t("ollama", TargetKind::Chat, &["llama3"])]);
+        let (url, _seen, cloud_join) = spawn_mock_cloud(None, |ws| {
+            let _hello = ws.read().unwrap();
+            let send =
+                |ws: &mut tungstenite::WebSocket<std::net::TcpStream>, id: &str, model: &str| {
+                    ws.send(tungstenite::Message::text(
+                        json!({
+                            "type": "request", "id": id, "path": "/chat/completions",
+                            "body": json!({"model": model, "messages": []}).to_string(),
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap();
+                };
+            send(ws, "ok-1", "foundation-model");
+            let mut text = String::new();
+            loop {
+                let v: serde_json::Value =
+                    serde_json::from_str(ws.read().unwrap().to_text().unwrap()).unwrap();
+                match v["type"].as_str().unwrap() {
+                    "chunk" => text.push_str(v["data"].as_str().unwrap()),
+                    "done" => break,
+                    "error" => panic!("unexpected error: {v}"),
+                    _ => {}
+                }
+            }
+            assert!(text.contains(r#""model":"system""#), "{text}");
+            // A name fm serve does not have and that routes to it: the
+            // pplx-style unknown id is refused by routing with the list.
+            send(ws, "bad-1", "pcc-unknown");
+            let v: serde_json::Value =
+                serde_json::from_str(ws.read().unwrap().to_text().unwrap()).unwrap();
+            assert_eq!(v["type"], "error");
+            let _ = ws.close(None);
+            let _ = ws.flush();
+        });
+        let mut ws = connect_ws(&url, "sk-ar-v1-test").expect("connect");
+        set_read_timeouts(&ws, Duration::from_millis(20));
+        let state = ConnState::new(Arc::default());
+        serve_connection(&mut ws, &router, &state, None);
+        cloud_join.join().expect("mock cloud assertions");
+    }
+
+    #[test]
+    fn a_lone_fm_serve_target_returns_the_available_ids_for_an_unknown_model() {
+        let target = Target {
+            label: "fm serve".into(),
+            base: "http://127.0.0.1:1/v1".into(),
+            kind: TargetKind::Chat,
+            models: vec![],
+            fm_models: Some(vec!["system".into(), "pcc".into()]),
+        };
+        let err = body_for_target(&target, r#"{"model":"gpt-5"}"#).unwrap_err();
+        assert!(err.contains("available: system, pcc"), "{err}");
+        let body = body_for_target(&target, r#"{"model":"foundation-model","x":1}"#).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["model"], "system");
+        assert_eq!(v["x"], 1, "other fields survive the rewrite");
     }
 
     #[test]
