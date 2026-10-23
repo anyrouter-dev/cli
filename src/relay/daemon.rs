@@ -5,7 +5,9 @@
 use std::io::{Read as _, Seek as _, SeekFrom};
 use std::time::{Duration, Instant};
 
-use super::state::{self, Conn, Paths, Running};
+#[cfg(unix)]
+use super::state::Conn;
+use super::state::{self, Paths, Running};
 use super::view;
 
 /// Internal env vars the parent hands the detached child. The credential
@@ -14,10 +16,12 @@ pub(super) const ENV_DETACHED: &str = "ANYR_RELAY_DETACHED";
 pub(super) const ENV_SERVE: &str = "ANYR_RELAY_SERVE";
 
 /// How long `start --detach` waits for the child to report connected.
+#[cfg(unix)]
 const READY_WAIT: Duration = Duration::from_secs(10);
 const STOP_WAIT: Duration = Duration::from_secs(10);
 
 /// Everything the parent already resolved, so the child never needs a TTY.
+#[cfg_attr(not(unix), allow(dead_code))]
 pub(super) struct Handoff {
     pub args: Vec<String>,
     pub credential: String,
@@ -168,6 +172,7 @@ pub(super) fn last_lines(text: &str, n: usize) -> String {
     out
 }
 
+#[cfg(unix)]
 fn indent(s: &str) -> String {
     s.lines()
         .map(|l| format!("    {l}"))

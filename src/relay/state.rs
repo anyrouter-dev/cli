@@ -314,6 +314,7 @@ pub(super) fn classify(
     snapshot: Option<Snapshot>,
     now: u64,
     alive: impl Fn(u32) -> bool,
+    is_relay: impl Fn(u32) -> bool,
 ) -> Running {
     let Some(pid) = pid else { return Running::No };
     if !alive(pid) {
@@ -323,8 +324,32 @@ pub(super) fn classify(
         Some(s) if s.pid == pid && now.saturating_sub(s.updated_at) <= STALE_AFTER_SECS => {
             Running::Yes(s)
         }
-        _ => Running::Unresponsive(pid),
+        // A pidfile that outlived a crash or reboot may name a reused pid.
+        // Only call it ours if that process really is `anyr relay start`,
+        // or `stop` would signal a stranger.
+        _ if is_relay(pid) => Running::Unresponsive(pid),
+        _ => Running::No,
     }
+}
+
+/// Whether `pid` runs `… relay start` (via `ps`, on macOS and Linux).
+#[cfg(unix)]
+pub(super) fn looks_like_relay(pid: u32) -> bool {
+    std::process::Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "command="])
+        .output()
+        .map(|o| command_is_relay(&String::from_utf8_lossy(&o.stdout)))
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+pub(super) fn looks_like_relay(_pid: u32) -> bool {
+    false
+}
+
+pub(super) fn command_is_relay(cmdline: &str) -> bool {
+    let words: Vec<&str> = cmdline.split_whitespace().collect();
+    words.windows(2).any(|w| w == ["relay", "start"])
 }
 
 pub(super) fn read_snapshot(p: &Paths) -> Option<Snapshot> {
@@ -334,7 +359,13 @@ pub(super) fn read_snapshot(p: &Paths) -> Option<Snapshot> {
 
 pub(super) fn running(p: &Paths) -> Running {
     let pid = read_pid(p);
-    let r = classify(pid, read_snapshot(p), now_secs(), pid_alive);
+    let r = classify(
+        pid,
+        read_snapshot(p),
+        now_secs(),
+        pid_alive,
+        looks_like_relay,
+    );
     if r == Running::No && pid.is_some() {
         // Stale pidfile from a crash: tidy it so the next start is clean.
         let _ = std::fs::remove_file(&p.pid);
@@ -414,30 +445,45 @@ mod tests {
         let s = sample_snapshot();
         let alive = |_| true;
         let dead = |_| false;
-        assert_eq!(classify(None, Some(s.clone()), 1_200, alive), Running::No);
+        let relay = |_| true;
+        let stranger = |_| false;
         assert_eq!(
-            classify(Some(4242), Some(s.clone()), 1_200, dead),
+            classify(None, Some(s.clone()), 1_200, alive, relay),
             Running::No
         );
         assert_eq!(
-            classify(Some(4242), Some(s.clone()), 1_205, alive),
+            classify(Some(4242), Some(s.clone()), 1_200, dead, relay),
+            Running::No
+        );
+        assert_eq!(
+            classify(Some(4242), Some(s.clone()), 1_205, alive, stranger),
             Running::Yes(s.clone())
         );
-        // Snapshot not refreshed for a while: hung or pid reused.
+        let late = 1_200 + STALE_AFTER_SECS + 1;
+        // Snapshot not refreshed for a while and the pid is still a relay: hung.
         assert_eq!(
-            classify(
-                Some(4242),
-                Some(s.clone()),
-                1_200 + STALE_AFTER_SECS + 1,
-                alive
-            ),
+            classify(Some(4242), Some(s.clone()), late, alive, relay),
             Running::Unresponsive(4242)
         );
-        // Pidfile points at a different live process than the snapshot.
+        // WHY: after a crash or reboot the pid may belong to another program;
+        // treating it as ours would let `relay stop` SIGTERM it.
         assert_eq!(
-            classify(Some(7), Some(s), 1_200, alive),
-            Running::Unresponsive(7)
+            classify(Some(4242), Some(s.clone()), late, alive, stranger),
+            Running::No
         );
+        assert_eq!(
+            classify(Some(7), Some(s), 1_200, alive, stranger),
+            Running::No
+        );
+    }
+
+    #[test]
+    fn relay_command_lines_are_recognized() {
+        assert!(command_is_relay(
+            "/usr/local/bin/anyr relay start --no-pool"
+        ));
+        assert!(!command_is_relay("/usr/bin/vim relay.txt"));
+        assert!(!command_is_relay(""));
     }
 
     #[test]
