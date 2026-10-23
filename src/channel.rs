@@ -248,7 +248,8 @@ pub fn parse_releases(json: &str) -> Result<Vec<Release>, String> {
 }
 
 /// Latest release for `channel` from a GitHub `/releases` JSON array.
-/// Stable ignores prereleases; beta picks the highest prerelease tag.
+/// Stable ignores prereleases; beta picks the highest tag of any kind, so a
+/// stable cut after the last beta (0.1.21 > 0.1.21-beta.255) still reaches it.
 pub fn select_latest(json: &str, channel: Channel) -> Result<Release, String> {
     let releases = parse_releases(json)?;
     select_latest_release(&releases, channel)
@@ -259,7 +260,7 @@ pub fn select_latest_release(releases: &[Release], channel: Channel) -> Result<R
     for rel in releases {
         let matches = match channel {
             Channel::Stable => !rel.prerelease,
-            Channel::Beta => rel.prerelease,
+            Channel::Beta => true,
         };
         if !matches {
             continue;
@@ -277,14 +278,14 @@ pub fn select_latest_release(releases: &[Release], channel: Channel) -> Result<R
     }
     best.map(|(r, _)| r.clone()).ok_or_else(|| match channel {
         Channel::Stable => "no stable release found".into(),
-        Channel::Beta => "no beta (prerelease) found".into(),
+        Channel::Beta => "no release found".into(),
     })
 }
 
 fn channel_matches(rel: &Release, channel: Channel) -> bool {
     match channel {
         Channel::Stable => !rel.prerelease,
-        Channel::Beta => rel.prerelease,
+        Channel::Beta => true,
     }
 }
 
@@ -330,7 +331,7 @@ pub fn select_latest_release_with_asset(
                 "No stable GitHub release has {asset} (latest non-prerelease may be empty). \
 Try `anyr update --beta`."
             ),
-            Channel::Beta => format!("No beta (prerelease) has {asset}."),
+            Channel::Beta => format!("No release has {asset}."),
         })
 }
 
@@ -672,5 +673,24 @@ mod tests {
         let beta =
             select_latest_release_with_asset(&rels, Channel::Beta, "anyr-linux-x86_64").unwrap();
         assert_eq!(beta.tag_name, "v0.1.12-beta.98");
+    }
+
+    #[test]
+    fn beta_channel_takes_a_stable_cut_after_the_last_beta() {
+        let json = r#"[
+          {"tag_name":"v0.1.21-beta.255","prerelease":true,"assets":[{"name":"anyr-linux-x86_64","browser_download_url":"https://github.com/anyrouter-dev/cli/releases/download/v0.1.21-beta.255/anyr-linux-x86_64"}]},
+          {"tag_name":"v0.1.21","prerelease":false,"assets":[{"name":"anyr-linux-x86_64","browser_download_url":"https://github.com/anyrouter-dev/cli/releases/download/v0.1.21/anyr-linux-x86_64"}]}
+        ]"#;
+        assert_eq!(
+            select_latest(json, Channel::Beta).unwrap().tag_name,
+            "v0.1.21"
+        );
+        let rels = parse_releases(json).unwrap();
+        let tags: Vec<String> =
+            channel_update_candidates(&rels, Channel::Beta, "anyr-linux-x86_64")
+                .into_iter()
+                .map(|r| r.tag_name)
+                .collect();
+        assert_eq!(tags, vec!["v0.1.21", "v0.1.21-beta.255"]);
     }
 }
