@@ -10,6 +10,21 @@ GitHub Releases use this file as the release notes (full history through that ta
 
 * **cli:** add `anyr decision` for typed `POST /api/v1/decisions` requests with flag or stdin JSON input. Known Decisions models are refused by chat-agent launchers. ([duyet/anyrouter#3550](https://github.com/duyet/anyrouter/issues/3550))
 
+## [0.1.24](https://github.com/anyrouter-dev/cli/compare/v0.1.23...v0.1.24) (2026-10-23)
+
+
+### Features
+
+* **chat:** stream a reply from /v1/chat/completions ([#144](https://github.com/anyrouter-dev/cli/issues/144)) ([5c9f3ac](https://github.com/anyrouter-dev/cli/commit/5c9f3ac8f32a93d793a759a5db88245543ceaa89)), closes [#91](https://github.com/anyrouter-dev/cli/issues/91)
+* **models:** add a type column to piped anyr models ([#122](https://github.com/anyrouter-dev/cli/issues/122)) ([e748722](https://github.com/anyrouter-dev/cli/commit/e7487225447de8c9e4d03b131290e51480ff1b48)), closes [#93](https://github.com/anyrouter-dev/cli/issues/93)
+
+
+### Bug Fixes
+
+* **artifact:** review follow-ups from [#110](https://github.com/anyrouter-dev/cli/issues/110) ([#141](https://github.com/anyrouter-dev/cli/issues/141)) ([0c8fea8](https://github.com/anyrouter-dev/cli/commit/0c8fea8d2764f39cd70114cc048087a61ed8212a))
+* **cli:** name the missing scope on restricted keys and unify error output ([#126](https://github.com/anyrouter-dev/cli/issues/126)) ([c2b0c71](https://github.com/anyrouter-dev/cli/commit/c2b0c714a89f1b9b14a6537337d55c92743a804d))
+* **codex:** pass model_context_window for a concrete model ([#139](https://github.com/anyrouter-dev/cli/issues/139)) ([f0a9dd5](https://github.com/anyrouter-dev/cli/commit/f0a9dd50dc0451c1ecd5c83cfd13d342a48f2a30)), closes [#101](https://github.com/anyrouter-dev/cli/issues/101)
+
 ## [0.1.23](https://github.com/anyrouter-dev/cli/compare/v0.1.22...v0.1.23) (2026-10-23)
 
 
