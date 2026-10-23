@@ -200,11 +200,20 @@ impl Stats {
     }
 
     pub fn finish_request(&self, failed: bool) {
-        let _ = self
-            .in_flight
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
-                Some(n.saturating_sub(1))
-            });
+        // Saturating decrement. A CAS loop rather than `fetch_update`, which
+        // newer toolchains deprecate in favor of a method older ones lack.
+        let mut n = self.in_flight.load(Ordering::Relaxed);
+        while n > 0 {
+            match self.in_flight.compare_exchange_weak(
+                n,
+                n - 1,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(cur) => n = cur,
+            }
+        }
         if failed {
             self.errors.fetch_add(1, Ordering::Relaxed);
         }
