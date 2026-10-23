@@ -38,6 +38,10 @@ pub static VALUE_FLAGS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
         "max-concurrency",
         "state",
         "questions",
+        "data",
+        "method",
+        "idempotency-key",
+        "visibility",
     ])
 });
 

@@ -7,19 +7,31 @@
 //! stdout on raw calls) prints the server JSON unchanged.
 
 use std::collections::BTreeMap;
-use std::io::IsTerminal;
+use std::io::{IsTerminal, Read};
 
 use serde_json::{Map, Value};
 
 use crate::config::Profile;
-use crate::http::{http_delete, http_get, http_patch, http_post, join_api};
+use crate::http::{http_delete, http_get, http_patch, http_post, http_send, join_api};
 use crate::key::{load_config_if_present, no_key_error, resolve_api_key, resolve_base_url};
 use crate::parse::{get_string_flag, ParsedArgs};
 use crate::term;
 
 pub const FLAGS: &[&str] = &[
-    "profile", "base-url", "config", "key", "json", "yes", "limit", "model", "status", "type",
-    "name", "data", "method",
+    "profile",
+    "base-url",
+    "config",
+    "key",
+    "json",
+    "yes",
+    "limit",
+    "model",
+    "status",
+    "type",
+    "name",
+    "data",
+    "method",
+    "idempotency-key",
 ];
 
 /// (resource, description). Order is help order.
@@ -141,13 +153,17 @@ fn run_inner(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32,
                 .to_ascii_uppercase();
             (m, &args[..])
         };
-        let body = body_from(parsed, &rest[1..])?;
+        let (mut headers, words) = split_headers(&rest[1..])?;
+        if let Some(k) = get_string_flag(&parsed.flags, "idempotency-key") {
+            headers.push(("Idempotency-Key".into(), k));
+        }
+        let body = body_from(parsed, &words)?;
         let method = if method == "GET" && body.is_some() {
             "POST".into()
         } else {
             method
         };
-        return raw(&ctx, &method, rest[0], body.as_deref());
+        return raw(&ctx, &method, rest[0], body.as_deref(), &headers);
     }
 
     let resource = match args[0] {
@@ -394,8 +410,8 @@ fn presets(ctx: &Ctx, parsed: &ParsedArgs, verb: &str, rest: &[&str]) -> Result<
             body.insert("slug".into(), Value::String(slug.into()));
             let name = get_string_flag(&parsed.flags, "name").unwrap_or_else(|| slug.into());
             body.entry("name").or_insert(Value::String(name));
-            if let Some(data) = get_string_flag(&parsed.flags, "data") {
-                body.insert("config".into(), parse_json(&data)?);
+            if let Some(data) = data_flag(parsed)? {
+                body.insert("config".into(), data);
             }
             if !body.contains_key("config") {
                 return Err("presets create needs --data '<config json>', e.g. --data '{\"model\":\"anyrouter/auto\"}'".into());
@@ -415,8 +431,8 @@ fn presets(ctx: &Ctx, parsed: &ParsedArgs, verb: &str, rest: &[&str]) -> Result<
         "update" => {
             let slug = slug()?;
             let mut body = fields(&rest[1..])?;
-            if let Some(data) = get_string_flag(&parsed.flags, "data") {
-                body.insert("config".into(), parse_json(&data)?);
+            if let Some(data) = data_flag(parsed)? {
+                body.insert("config".into(), data);
             }
             if let Some(name) = get_string_flag(&parsed.flags, "name") {
                 body.insert("name".into(), Value::String(name));
@@ -509,13 +525,19 @@ fn aliases(
     Ok(0)
 }
 
-fn raw(ctx: &Ctx, method: &str, path: &str, body: Option<&str>) -> Result<i32, String> {
+fn raw(
+    ctx: &Ctx,
+    method: &str,
+    path: &str,
+    body: Option<&str>,
+    headers: &[(String, String)],
+) -> Result<i32, String> {
     let path = if path.starts_with("/v1/") || path == "/v1" {
         path.to_string()
     } else {
         format!("/v1{path}")
     };
-    let (status, text) = request(ctx, method, &path, body, ctx.key.as_deref())?;
+    let (status, text) = request_with(ctx, method, &path, body, ctx.key.as_deref(), headers)?;
     let pretty = serde_json::from_str::<Value>(&text)
         .ok()
         .filter(|_| std::io::stdout().is_terminal())
@@ -532,14 +554,33 @@ fn raw(ctx: &Ctx, method: &str, path: &str, body: Option<&str>) -> Result<i32, S
     }
 }
 
-fn request(
+pub(crate) fn request(
     ctx: &Ctx,
     method: &str,
     path: &str,
     body: Option<&str>,
     key: Option<&str>,
 ) -> Result<(u16, String), String> {
+    request_with(ctx, method, path, body, key, &[])
+}
+
+pub(crate) fn request_with(
+    ctx: &Ctx,
+    method: &str,
+    path: &str,
+    body: Option<&str>,
+    key: Option<&str>,
+    headers: &[(String, String)],
+) -> Result<(u16, String), String> {
     let url = join_api(&ctx.base, path);
+    if !headers.is_empty() {
+        return match method {
+            "GET" | "POST" | "PUT" | "PATCH" | "DELETE" => {
+                http_send(method, &url, key, headers, body)
+            }
+            other => Err(format!("unsupported method {other}")),
+        };
+    }
     match method {
         "GET" => http_get(&url, key),
         "POST" | "PUT" => http_post(&url, key, body),
@@ -629,7 +670,7 @@ fn error_summary(status: u16, body: &str) -> String {
     }
 }
 
-fn exit_for(status: u16) -> i32 {
+pub(crate) fn exit_for(status: u16) -> i32 {
     match status {
         401 | 403 => 4,
         404 => 3,
@@ -637,10 +678,11 @@ fn exit_for(status: u16) -> i32 {
     }
 }
 
-/// `--data '<json>'` wins; otherwise `k=v` words become a JSON object.
+/// `--data '<json>'`, `--data @file` or `--data -` (stdin) wins; otherwise
+/// `k=v` words become a JSON object.
 fn body_from(parsed: &ParsedArgs, words: &[&str]) -> Result<Option<String>, String> {
-    if let Some(data) = get_string_flag(&parsed.flags, "data") {
-        return Ok(Some(parse_json(&data)?.to_string()));
+    if let Some(data) = data_flag(parsed)? {
+        return Ok(Some(data.to_string()));
     }
     let map = fields(words)?;
     Ok((!map.is_empty()).then(|| Value::Object(map).to_string()))
@@ -672,6 +714,71 @@ fn fields(words: &[&str]) -> Result<Map<String, Value>, String> {
     Ok(map)
 }
 
+/// The `--data` value as JSON, reading `@file` or `-` (stdin) when asked.
+fn data_flag(parsed: &ParsedArgs) -> Result<Option<Value>, String> {
+    let Some(spec) = get_string_flag(&parsed.flags, "data") else {
+        return Ok(None);
+    };
+    let text = if spec == "-" {
+        read_stdin()?
+    } else if let Some(path) = spec.strip_prefix('@') {
+        read_file_capped(path)?
+    } else {
+        spec
+    };
+    parse_json(&text).map(Some)
+}
+
+/// Largest document read from a file or stdin (the server caps bodies at 256 KiB).
+pub(crate) const MAX_INPUT_BYTES: u64 = 256 * 1024;
+
+fn read_capped(r: impl std::io::Read, what: &str) -> Result<String, String> {
+    let mut buf = String::new();
+    r.take(MAX_INPUT_BYTES + 1)
+        .read_to_string(&mut buf)
+        .map_err(|e| format!("cannot read {what}: {e}"))?;
+    if buf.len() as u64 > MAX_INPUT_BYTES {
+        return Err(format!(
+            "{what} is larger than {} KiB, the server limit",
+            MAX_INPUT_BYTES / 1024
+        ));
+    }
+    Ok(buf)
+}
+
+pub(crate) fn read_stdin() -> Result<String, String> {
+    read_capped(std::io::stdin(), "stdin")
+}
+
+pub(crate) fn read_file_capped(path: &str) -> Result<String, String> {
+    let f = std::fs::File::open(path).map_err(|e| format!("cannot read {path}: {e}"))?;
+    read_capped(f, path)
+}
+
+/// Pull `-H key:value` pairs (repeatable) out of the positional words.
+type Headers = Vec<(String, String)>;
+
+fn split_headers<'a>(words: &[&'a str]) -> Result<(Headers, Vec<&'a str>), String> {
+    let mut headers = Vec::new();
+    let mut rest = Vec::new();
+    let mut it = words.iter();
+    while let Some(&w) = it.next() {
+        if w == "-H" {
+            let raw = it
+                .next()
+                .ok_or_else(|| format!("{USAGE}-H needs a header, e.g. -H 'X-Trace: 1'"))?;
+            let (k, v) = raw
+                .split_once(':')
+                .filter(|(k, _)| !k.trim().is_empty())
+                .ok_or_else(|| format!("{USAGE}header must look like key:value, got \"{raw}\""))?;
+            headers.push((k.trim().to_string(), v.trim().to_string()));
+        } else {
+            rest.push(w);
+        }
+    }
+    Ok((headers, rest))
+}
+
 fn parse_json(s: &str) -> Result<Value, String> {
     serde_json::from_str(s).map_err(|e| format!("invalid JSON ({e}): {s}"))
 }
@@ -699,7 +806,7 @@ fn encode(s: &str) -> String {
         .collect()
 }
 
-fn confirm(parsed: &ParsedArgs, question: &str) -> Result<(), String> {
+pub(crate) fn confirm(parsed: &ParsedArgs, question: &str) -> Result<(), String> {
     if parsed.flag_true("yes") {
         return Ok(());
     }
@@ -844,14 +951,14 @@ fn show(ctx: &Ctx, value: Value, _hide: &[&str]) -> Result<i32, String> {
 pub fn help() -> String {
     let bin = crate::help::invoked_bin();
     let mut out = format!(
-        "{bin} api — the AnyRouter dashboard from your terminal\n\nExamples\n  $ {bin} api me\n  $ {bin} api credits\n  $ {bin} api keys create ci-bot\n  $ {bin} api keys list --json\n  $ {bin} api logs list --limit 20\n  $ {bin} api presets create fast --data '{{\"model\":\"anyrouter/auto\"}}'\n  $ {bin} api aliases set opus anthropic/claude-opus-4.5\n\nRaw requests (like `gh api`)\n  $ {bin} api /credits\n  $ {bin} api PATCH /keys/<hash> disabled=true limit:=25\n\nResources\n"
+        "{bin} api — the AnyRouter dashboard from your terminal\n\nExamples\n  $ {bin} api me\n  $ {bin} api credits\n  $ {bin} api keys create ci-bot\n  $ {bin} api keys list --json\n  $ {bin} api logs list --limit 20\n  $ {bin} api presets create fast --data '{{\"model\":\"anyrouter/auto\"}}'\n  $ {bin} api aliases set opus anthropic/claude-opus-4.5\n\nRaw requests (like `gh api`)\n  $ {bin} api /credits\n  $ {bin} api PATCH /keys/<hash> disabled=true limit:=25\n  $ {bin} api POST /apps/explain/submissions --data @body.json\n  $ cat body.json | {bin} api POST /apps/explain/submissions --data - -H X-Trace:1\n\nResources\n"
     );
     for (name, desc) in RESOURCES {
         let verbs: Vec<&str> = verbs(name).iter().map(|(v, _)| *v).collect();
         out.push_str(&format!("  {name:<12}{desc}  [{}]\n", verbs.join(" ")));
     }
     out.push_str(
-        "\nFlags\n  --json            Print server JSON (default when piped for get)\n  --yes             Skip confirmation on revoke/delete\n  --limit <n>       Page size for list verbs\n  --data <json>     JSON body for raw / presets\n  --profile <name>  Use another account\n\nExit codes: 0 ok, 1 error, 2 usage, 3 not found, 4 auth/permission.\n",
+        "\nFlags\n  --json            Print server JSON (default when piped for get)\n  --yes             Skip confirmation on revoke/delete\n  --limit <n>       Page size for list verbs\n  --data <json>     JSON body: inline, @file, or - for stdin (raw / presets)\n  -H key:value      Extra request header on raw calls (repeatable)\n  --idempotency-key <k>  Send an Idempotency-Key header on raw calls\n  --profile <name>  Use another account\n\nExit codes: 0 ok, 1 error, 2 usage, 3 not found, 4 auth/permission.\n",
     );
     out
 }

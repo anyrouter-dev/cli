@@ -120,11 +120,33 @@ anyr api keys list --json
 anyr api keys create ci-bot          # secret on stdout only: KEY=$(anyr api keys create x)
 anyr api GET /credits                # raw request, like `gh api`
 anyr api PATCH /keys/<hash> disabled=true limit:=25
+anyr api POST /apps/explain/submissions --data @body.json     # body from a file
+cat body.json | anyr api POST /apps/explain/submissions --data - -H 'X-Trace: 1'
 ```
 
 Resources: `me credits keys logs presets aliases models providers dashboard hubs connections`.
 Run `anyr api --help` for verbs. Piped output is TSV; pass `--json` for JSON.
 Errors exit 2 (usage), 3 (404) or 4 (401/403).
+
+### Publish to an app: `anyr publish`
+
+Apps publish their own JSON Schema; the CLI knows no app by name. `publish` checks
+your document against that schema locally (problems listed by field, exit 2, nothing
+uploaded), then sends it and prints the URL.
+
+```bash
+anyr apps schema explain > schema.json        # what an agent must produce
+<agent produces explain json> | anyr publish explain -
+anyr publish explain fig.json --dry-run       # server checks it; nothing uploaded
+anyr publish explain fig.json --visibility public --yes
+anyr apps ls explain                          # what you published
+anyr apps visibility explain <id> private
+anyr apps rm explain <id> --yes
+```
+
+Visibility is `unlisted` by default (link works, not listed), `private` (only you) or
+`public` (listed after review). Re-running the same document is safe: it carries a
+stable `Idempotency-Key`, so the server returns the original instead of a copy.
 
 ### Bring your own provider keys: `anyr byok`
 

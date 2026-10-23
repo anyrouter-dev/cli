@@ -226,6 +226,8 @@ fn dispatch(
         "cursor" | "cline" | "windsurf" => stub(command),
         "upgrade" | "update" => crate::upgrade::run(parsed, env),
         "api" => crate::api::run(parsed, env),
+        "publish" => crate::publish::run_publish(parsed, env),
+        "apps" => crate::publish::run_apps(parsed, env),
         "completion" => run_completion(parsed),
         "onboard" | "impl" | "plan" | "fix" | "deploy" | "cp" => {
             crate::onboard::run(command, parsed)
