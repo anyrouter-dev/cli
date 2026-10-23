@@ -3,6 +3,7 @@
 pub(crate) mod account;
 pub(crate) mod auth;
 pub(crate) mod byok;
+pub(crate) mod catalog;
 pub(crate) mod config_tui;
 pub(crate) mod decision;
 pub(crate) mod dispatch;

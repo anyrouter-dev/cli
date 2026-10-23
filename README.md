@@ -271,7 +271,16 @@ after Ctrl-C.
 anyr model list                      # catalog ids usable with --model (alias of `anyr models`)
 anyr model list --json
 anyr model use <id>                  # persist the default model
+anyr models --free                   # $0 models only (explicit $0 platform price)
+anyr models --type embedding         # chat | embedding | decision
+anyr models --owner nvidia --sort price   # sort: price | context | new
+anyr models --search glm
+anyr models show z-ai/glm-4.7        # pricing, context, modalities, providers, free route
+anyr models show z-ai/glm-4.7 --json
 ```
+
+Filtered lists print id, type, context, $/1M in, $/1M out and free; `--json`
+prints the filtered list. `show` with an unknown id exits 1.
 
 ### Shell completion
 
