@@ -126,7 +126,6 @@ fn visibility_arg(v: &str) -> Result<&str, String> {
         })
 }
 
-/// Server message for a failed call, plus the exit code it maps to.
 /// What the new visibility means, from the server's `status`.
 fn visibility_note(visibility: &str, status: Option<&str>) -> &'static str {
     match (visibility, status) {
@@ -139,6 +138,7 @@ fn visibility_note(visibility: &str, status: Option<&str>) -> &'static str {
     }
 }
 
+/// Server message for a failed call, plus the exit code it maps to.
 fn failure(status: u16, text: &str, what: &str) -> (String, i32) {
     let v: Value = serde_json::from_str(text).unwrap_or(Value::Null);
     let msg = v
