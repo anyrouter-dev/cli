@@ -215,9 +215,9 @@ pub(crate) fn cmd_kind(command: &str) -> Option<CmdKind> {
         | "status" | "logout" | "account" | "usage" | "claude" | "codex" | "grok" | "opencode"
         | "pool" | "pi" | "upgrade" | "onboard" | "impl" | "plan" | "fix" | "deploy" | "cp"
         | "relay" | "decision" | "commands" | "api" | "completion" | "byok" | "publish"
-        | "apps" | "artifact" | "chat" | "logs" => CmdKind::Implemented,
+        | "apps" | "artifact" | "chat" | "logs" | "transactions" => CmdKind::Implemented,
         "cursor" | "cline" | "windsurf" => CmdKind::HelpOnly,
-        "task" | "delegate" | "audit" | "transactions" | "skills" | "prompt" => CmdKind::Stub,
+        "task" | "delegate" | "audit" | "skills" | "prompt" => CmdKind::Stub,
         _ => return None,
     })
 }
@@ -268,6 +268,7 @@ pub(crate) const COMMANDS: &[(&str, &str)] = &[
     ("model", "Alias of models"),
     ("usage", "Credits remaining"),
     ("logs", "Recent requests, failures and sessions"),
+    ("transactions", "Credit ledger: purchases, usage, refunds"),
     ("keys", "Manage API keys"),
     ("byok", "Provider keys: list, add, --donate to the pool"),
     ("artifact", "Publish a file or folder to a shareable URL"),

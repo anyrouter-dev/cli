@@ -141,6 +141,7 @@ CORE COMMANDS
   models:     List catalog and set the default (`--pick` to choose)
   usage:      Credits remaining
   logs:       Recent requests and failures
+  transactions: Credit ledger (purchases, usage, refunds)
   artifact:   Publish a file or folder to a shareable URL
   api:        Dashboard from the terminal (keys, credits, logs, presets…)
   completion: Shell completion (bash, zsh, fish, powershell)
@@ -239,10 +240,7 @@ pub fn command_help(command: &str) -> Option<String> {
         ),
         "logout" => fill(&bin, LOGOUT),
         "upgrade" => fill(&bin, UPGRADE),
-        "transactions" => fill(
-            &bin,
-            "{bin} transactions — not yet in the native CLI (coming later).\n",
-        ),
+        "transactions" => fill(&bin, TRANSACTIONS),
         "menu" => fill(
             &bin,
             "{bin} menu — fullscreen launcher (default on a TTY)\n\nUsage:\n  {bin}                 Same as `{bin} menu` on a TTY\n  {bin} menu [--dump-tui]\n\nAccount, model, credits in a header. Launch agents, configure, quit.\n↑↓ / j k move, ↵ select (signs in and installs if needed), q/esc quit.\nSet ANYR_TUI=0 for inline HUD.\n\n`--dump-tui` / ANYR_TUI_DUMP=1 prints one plain frame and exits.\n",
@@ -631,6 +629,27 @@ Options:
 Examples:
   {bin} logs --status error --limit 50
   {bin} logs --json --status error | jq '.data | length'
+";
+
+const TRANSACTIONS: &str = "{bin} transactions — your credit ledger
+
+Usage:
+  {bin} transactions                      Newest first, 20 rows
+  {bin} transactions --type purchase      Filter by type
+  {bin} transactions --limit 100          1 to 100 rows
+
+Columns: date, type, amount (signed, $), balance after (when present), note.
+
+Options:
+  --type <type>     purchase | usage | refund | …
+  --limit <n>       Rows to fetch, 1 to 100
+  --json            Print the raw API body
+  --key <key>       Use this API key (or $ANYROUTER_API_KEY, or the saved login)
+  --profile <name>  Use another account
+
+Examples:
+  {bin} transactions --type purchase
+  {bin} transactions --json | jq '.data[0]'
 ";
 
 const BYOK: &str = "{bin} byok — bring your own provider keys

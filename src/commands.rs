@@ -20,6 +20,7 @@ use crate::cmd::login::run_login;
 use crate::cmd::logs::run_logs;
 use crate::cmd::menu::run_menu;
 use crate::cmd::models::run_models_cli;
+use crate::cmd::transactions::run_transactions;
 use crate::cmd::usage::{run_usage, run_whoami};
 
 pub fn run(argv: Vec<String>, env: HashMap<String, String>) -> i32 {
@@ -220,6 +221,7 @@ fn dispatch(
         "keys" => run_keys(parsed, env),
         "byok" => run_byok(parsed, env),
         "logs" => run_logs(parsed, env),
+        "transactions" => run_transactions(parsed, env),
         "menu" => run_menu(parsed, env),
         "commands" => {
             print!("{}", commands_help());

@@ -179,6 +179,17 @@ Columns: time (local), model, provider, status (error code inline), tokens in
 and out, cost, latency. `--json` prints the raw API body. A key without the
 needed scope exits 4 and names the scope.
 
+### Credit ledger: `anyr transactions`
+
+```bash
+anyr transactions                    # newest first, 20 rows
+anyr transactions --type purchase
+anyr transactions --limit 100
+anyr transactions --json | jq '.data[0]'
+```
+
+Columns: date, type, amount (signed, $), balance after (when present), note.
+
 ### Bring your own provider keys: `anyr byok`
 
 ```bash
