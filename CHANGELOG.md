@@ -10,6 +10,13 @@ GitHub Releases use this file as the release notes (full history through that ta
 
 * **cli:** add `anyr decision` for typed `POST /api/v1/decisions` requests with flag or stdin JSON input. Known Decisions models are refused by chat-agent launchers. ([duyet/anyrouter#3550](https://github.com/duyet/anyrouter/issues/3550))
 
+## [0.1.25](https://github.com/anyrouter-dev/cli/compare/v0.1.24...v0.1.25) (2026-10-23)
+
+
+### Features
+
+* **relay:** simple, controllable relay UX (status, detach, stop, logs, models, pool, doctor) ([#140](https://github.com/anyrouter-dev/cli/issues/140)) ([83665c9](https://github.com/anyrouter-dev/cli/commit/83665c9ae67a009941f0e24669340bbcd3bc163a))
+
 ## [0.1.24](https://github.com/anyrouter-dev/cli/compare/v0.1.23...v0.1.24) (2026-10-23)
 
 
