@@ -419,6 +419,9 @@ pub(crate) fn allowed_flags(command: &str) -> Option<&'static [&'static str]> {
             "verbose",
             "name",
             "pool",
+            "no-pool",
+            "model",
+            "all",
             "max-concurrency",
         ],
         "task" => &[

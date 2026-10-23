@@ -2086,6 +2086,10 @@ fn relay_help_documents_subcommands_and_flags() {
         "pair",
         "--target",
         "--pool",
+        "--no-pool",
+        "--model",
+        "--all",
+        "https://anyrouter.dev/pool",
         "--max-concurrency",
         "fm serve",
     ] {

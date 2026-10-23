@@ -117,7 +117,7 @@ where
                 if eq_value.is_empty() {
                     return Err(format!("Flag --{eq_name} requires a value."));
                 }
-                insert_value_flag(&mut flags, eq_name, eq_value);
+                insert_value_flag(&mut flags, &command, eq_name, eq_value);
             } else {
                 flags.insert(
                     eq_name.clone(),
@@ -136,7 +136,7 @@ where
             {
                 return Err(format!("Flag --{name} requires a value."));
             }
-            insert_value_flag(&mut flags, name, rest[i + 1].clone());
+            insert_value_flag(&mut flags, &command, name, rest[i + 1].clone());
             i += 2;
         } else {
             flags.insert(name, FlagValue::Bool(true));
@@ -151,10 +151,16 @@ where
     })
 }
 
-/// `--target` may repeat (relay with several local endpoints): repeats are
-/// joined with commas. Every other value flag keeps last-wins.
-fn insert_value_flag(flags: &mut HashMap<String, FlagValue>, name: String, value: String) {
-    if name == "target" {
+/// `--target` may repeat (relay with several local endpoints), and so may
+/// `relay --model` (several on-device models): repeats are joined with
+/// commas. Every other value flag keeps last-wins.
+fn insert_value_flag(
+    flags: &mut HashMap<String, FlagValue>,
+    command: &str,
+    name: String,
+    value: String,
+) {
+    if name == "target" || (command == "relay" && name == "model") {
         if let Some(FlagValue::Value(prev)) = flags.get(&name) {
             let joined = format!("{prev},{value}");
             flags.insert(name, FlagValue::Value(joined));
@@ -203,10 +209,10 @@ mod tests {
             "--target",
             "http://a/v1",
             "--target=http://b/v1",
-            "--model",
-            "x",
-            "--model",
-            "y",
+            "--effort",
+            "low",
+            "--effort",
+            "high",
         ])
         .unwrap();
         assert_eq!(
@@ -214,9 +220,32 @@ mod tests {
             Some("http://a/v1,http://b/v1")
         );
         assert_eq!(
-            get_string_flag(&parsed.flags, "model").as_deref(),
-            Some("y")
+            get_string_flag(&parsed.flags, "effort").as_deref(),
+            Some("high")
         );
+    }
+
+    #[test]
+    fn relay_model_repeats_but_other_commands_keep_last_model() {
+        // WHY: `relay start --model a --model b` serves both; dropping one would
+        // silently stop serving a model the user asked for.
+        let relay = parse_cli_args(["relay", "start", "--model", "a", "--model=b"]).unwrap();
+        assert_eq!(
+            get_string_flag(&relay.flags, "model").as_deref(),
+            Some("a,b")
+        );
+        let claude = parse_cli_args(["claude", "--model", "a", "--model", "b"]).unwrap();
+        assert_eq!(
+            get_string_flag(&claude.flags, "model").as_deref(),
+            Some("b")
+        );
+    }
+
+    #[test]
+    fn no_pool_is_a_boolean_flag() {
+        let parsed = parse_cli_args(["relay", "start", "--no-pool", "--all"]).unwrap();
+        assert!(parsed.flag_true("no-pool"));
+        assert!(parsed.flag_true("all"));
     }
 
     #[test]

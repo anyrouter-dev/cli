@@ -179,6 +179,31 @@ prompt, never from argv.
 still pending ([duyet/anyrouter#4220](https://github.com/duyet/anyrouter/issues/4220)),
 so treat `--donate` as not yet effective.
 
+### Serve this Mac's models: `anyr relay start`
+
+```bash
+anyr relay start                                   # detect, pick, serve
+anyr relay start --all                             # serve every on-device model, no checklist
+anyr relay start --model apple/foundation-model    # repeat --model for several
+anyr relay start --no-pool                         # serve only your own account
+```
+
+On start the relay detects the on-device models this Mac can serve and serves
+them with no other setup:
+
+- `apple/foundation-model`: macOS 26+ with Apple Intelligence on, via `fm serve`.
+- `perplexity/pplx-decider-flash-v1.2`: the Decider for Mac app (port 8080).
+
+At a terminal a checklist opens with every available model checked; space
+toggles, enter starts. Without a TTY (or with `--model` / `--all`) there is no
+checklist. Other local servers (Ollama, LM Studio, `--target <url>`) are served
+as before.
+
+Pool sharing is on by default: when your own requests leave the device idle,
+it serves other users' requests and earns you credits. `--no-pool` opts out;
+`--pool` is still accepted and does nothing. See https://anyrouter.dev/pool and
+manage devices at https://dash.anyrouter.dev/devices.
+
 ### Models: `anyr model list`
 
 ```bash
