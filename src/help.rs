@@ -99,7 +99,7 @@ Same key, other agents
   $ {bin} grok --effort high
 
 Structured decisions (not chat)
-  $ {bin} decision --model typesafe/jev --state 'A payout is failing' --questions '{{\"urgent\":{{\"type\":\"noul\"}}}}'
+  $ {bin} decision --model typesafe/jev --state 'A payout is failing' --questions '{{\"urgent\":{{\"type\":\"noul\",\"instructions\":\"Is this urgent?\"}}}}'
 
 Dashboard from the terminal
   $ {bin} api credits
