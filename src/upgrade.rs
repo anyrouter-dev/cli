@@ -746,7 +746,7 @@ fn auto_stage(
     if state.pending_version.as_deref() == Some(latest.as_str()) && staged.is_file() {
         return Ok(());
     }
-    if let Some(hint) = crate::autoupdate::package_manager_hint(&dest, channel == Channel::Beta) {
+    if let Some(hint) = crate::autoupdate::package_manager_hint(&dest) {
         state.hint = Some(hint);
         return Ok(());
     }
