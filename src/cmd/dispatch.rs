@@ -491,6 +491,7 @@ pub(crate) fn allowed_flags(command: &str) -> Option<&'static [&'static str]> {
             "name",
             "pool",
             "no-pool",
+            "no-launch",
             "model",
             "all",
             "max-concurrency",

@@ -4,7 +4,7 @@
 
 use std::collections::VecDeque;
 use std::io::IsTerminal as _;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -33,6 +33,50 @@ pub(super) fn take_rescan() -> bool {
     RESCAN.swap(false, Ordering::SeqCst)
 }
 
+pub(super) fn request_rescan() {
+    RESCAN.store(true, Ordering::SeqCst);
+}
+
+// ---------------------------------------------------------------------------
+// Child servers the relay started: killed on the hard-exit paths too
+// ---------------------------------------------------------------------------
+
+/// Pids of managed child servers (0 = free slot). Atomics, not a Mutex, so
+/// the signal handler can read them.
+static CHILD_PIDS: [AtomicI32; 8] = [const { AtomicI32::new(0) }; 8];
+
+pub(super) fn track_child(pid: u32) {
+    let pid = pid as i32;
+    for slot in &CHILD_PIDS {
+        if slot
+            .compare_exchange(0, pid, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            return;
+        }
+    }
+}
+
+pub(super) fn untrack_child(pid: u32) {
+    let pid = pid as i32;
+    for slot in &CHILD_PIDS {
+        let _ = slot.compare_exchange(pid, 0, Ordering::SeqCst, Ordering::SeqCst);
+    }
+}
+
+/// SIGTERM every tracked child. Async-signal-safe: atomics and `kill` only.
+fn kill_children() {
+    #[cfg(unix)]
+    for slot in &CHILD_PIDS {
+        let pid = slot.load(Ordering::SeqCst);
+        if pid > 0 {
+            unsafe {
+                libc::kill(pid, libc::SIGTERM);
+            }
+        }
+    }
+}
+
 #[cfg(unix)]
 extern "C" fn on_signal(sig: libc::c_int) {
     let code = if sig == libc::SIGINT {
@@ -44,6 +88,7 @@ extern "C" fn on_signal(sig: libc::c_int) {
     // normal restore path is skipped by `_exit`, so undo raw mode and the
     // alternate screen here with async-signal-safe calls only.
     if STOP.swap(code, Ordering::SeqCst) != 0 {
+        kill_children();
         unsafe {
             if let Some(t) = SAVED_TERMIOS.get() {
                 libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, t);
@@ -61,17 +106,18 @@ extern "C" fn on_signal(sig: libc::c_int) {
 #[cfg(unix)]
 static SAVED_TERMIOS: std::sync::OnceLock<libc::termios> = std::sync::OnceLock::new();
 
-/// SIGINT and SIGTERM ask for a graceful stop. A detached relay also ignores
-/// SIGHUP so closing the terminal that launched it does not kill it.
+/// SIGINT and SIGTERM ask for a graceful stop, and so does SIGHUP in the
+/// foreground. A detached relay ignores SIGHUP so closing the terminal that
+/// launched it does not kill it.
 pub(super) fn install_signal_handlers(detached: bool) {
     #[cfg(unix)]
     unsafe {
         let handler = on_signal as extern "C" fn(libc::c_int) as libc::sighandler_t;
         libc::signal(libc::SIGINT, handler);
         libc::signal(libc::SIGTERM, handler);
-        if detached {
-            libc::signal(libc::SIGHUP, libc::SIG_IGN);
-        }
+        // Closing the terminal of a foreground relay stops it gracefully,
+        // so the servers it started are stopped too.
+        libc::signal(libc::SIGHUP, if detached { libc::SIG_IGN } else { handler });
     }
     #[cfg(not(unix))]
     let _ = detached;
@@ -414,13 +460,14 @@ fn read_keys(stats: &Stats, done: &AtomicBool, on_pool: &PoolToggle) {
             KeyCode::Char('c') if k.modifiers.contains(KeyModifiers::CONTROL) => {
                 if stop_requested() != 0 {
                     leave_screen();
+                    kill_children();
                     std::process::exit(130);
                 }
                 request_stop(STOP_INT);
             }
             KeyCode::Char('q') | KeyCode::Esc => request_stop(STOP_QUIT),
             KeyCode::Char('r') => {
-                RESCAN.store(true, Ordering::SeqCst);
+                request_rescan();
                 log("rescanning local servers");
             }
             KeyCode::Char('p') => {

@@ -595,12 +595,17 @@ On-device models it detects:
   apple/foundation-model              macOS 26+, Apple Intelligence on, `fm serve`
   perplexity/pplx-decider-flash-v1.2  the Decider for Mac app (:8080)
 The first start at a terminal asks which to serve and saves the answer.
+Start launches a chosen server that is installed but not running (`fm serve`,
+or `open -g -a Decider`) and stops it when the relay exits. A server you
+started yourself is used as is and left running.
 
 Start options:
   --detach               run in the background (log: `{bin} relay logs`)
   --model <id>           serve this on-device model; repeat for several
   --all                  serve every on-device model, no checklist
   --no-pool              do not donate idle capacity to the shared pool
+  --no-launch            do not start `fm serve` or the Decider app; use
+                         only servers that are already running
   --pool                 donate idle capacity (the default; see
                          https://anyrouter.dev/pool). Both override
                          the saved `{bin} relay pool on|off`

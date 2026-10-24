@@ -180,7 +180,7 @@ pub fn resolve_executable(command: &str) -> Option<String> {
 
 /// Walk `PATH` in-process. Spawning `which`/`where` six times delayed the launcher.
 #[cfg(feature = "native")]
-fn find_on_path(command: &str) -> Option<String> {
+pub(crate) fn find_on_path(command: &str) -> Option<String> {
     let path = std::env::var_os("PATH")?;
     let exts: Vec<String> = if cfg!(windows) {
         std::env::var_os("PATHEXT")
