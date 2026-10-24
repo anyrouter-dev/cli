@@ -17,11 +17,8 @@ use crate::term::{self, BLUE, SUCCESS};
 /// Braille spinner frames. Consecutive indices are visually distinct.
 pub const FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
-/// After an in-place upgrade, a running agent still has the old binary in memory.
-pub const RESTART_RESUME_HINT: &str = "Press Ctrl+G in the agent to restart and resume.";
-
-pub const START_USING: &str =
-    "Run anyr to start using the new version. Press Ctrl+G in the agent to restart and resume.";
+/// A running agent keeps the build it started with; new runs use the new one.
+pub const START_USING: &str = "Run anyr to start using the new version.";
 
 const DEFAULT_INTERVAL_MS: u64 = 80;
 const DEFAULT_MIN_TICKS: usize = 4;
@@ -383,8 +380,6 @@ mod tests {
         );
         assert!(text.contains("✔ Would update to v0.1.99"), "{text}");
         assert!(text.contains(START_USING), "{text}");
-        assert!(text.contains(RESTART_RESUME_HINT), "{text}");
-        assert!(text.contains("Ctrl+G"), "{text}");
     }
 
     #[test]

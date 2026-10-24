@@ -129,7 +129,7 @@ where
         if let Some(eq) = arg.find('=') {
             let eq_name = arg[2..eq].to_string();
             let eq_value = arg[eq + 1..].to_string();
-            if VALUE_FLAGS.contains(eq_name.as_str()) {
+            if takes_value(&command, &eq_name) {
                 if eq_value.is_empty() {
                     return Err(format!("Flag --{eq_name} requires a value."));
                 }
@@ -144,7 +144,7 @@ where
             continue;
         }
         let name = arg[2..].to_string();
-        if VALUE_FLAGS.contains(name.as_str()) {
+        if takes_value(&command, &name) {
             let next = rest.get(i + 1);
             if next.is_none()
                 || next == Some(&"--".to_string())
@@ -178,6 +178,11 @@ fn owns(owned: &[&str], arg: &str) -> bool {
 /// `--target` may repeat (relay with several local endpoints), and so may
 /// `relay --model` (several on-device models): repeats are joined with
 /// commas. Every other value flag keeps last-wins.
+/// `--status` filters lists elsewhere, but on `update` it is a switch.
+fn takes_value(command: &str, name: &str) -> bool {
+    VALUE_FLAGS.contains(name) && !(matches!(command, "update" | "upgrade") && name == "status")
+}
+
 fn insert_value_flag(
     flags: &mut HashMap<String, FlagValue>,
     command: &str,
@@ -223,6 +228,13 @@ pub fn get_string_flag(flags: &HashMap<String, FlagValue>, name: &str) -> Option
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn update_status_is_a_switch_not_a_value_flag() {
+        let p = parse_cli_args(["update", "--status", "--json"]).unwrap();
+        assert!(p.flag_true("status") && p.flag_true("json"));
+        assert!(parse_cli_args(["keys", "--status"]).is_err());
+    }
+
     use super::*;
 
     #[test]
