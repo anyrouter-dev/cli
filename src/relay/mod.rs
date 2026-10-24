@@ -3350,6 +3350,7 @@ mod tests {
             command: "relay".into(),
             flags: flags.into_iter().map(|(k, v)| (k.to_string(), v)).collect(),
             passthrough: vec!["start".into()],
+            raw_from: None,
         };
         use crate::parse::FlagValue;
 
@@ -3904,6 +3905,7 @@ profiles:
             command: "relay".into(),
             flags: flags.into_iter().map(|(k, v)| (k.to_string(), v)).collect(),
             passthrough: vec!["start".into()],
+            raw_from: None,
         }
     }
 

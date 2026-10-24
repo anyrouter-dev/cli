@@ -522,21 +522,31 @@ own machine-output mode on a launcher is set with `ANYR_OUTPUT=json` and
 `ANYR_QUIET=1`. The exception is `anyr pool --json`, a documented anyr flag.
 Other commands (`anyr models --bogus`) still reject unknown flags with exit 2.
 
-`--yolo` becomes each agent's own flag to skip permission prompts:
+Portable flags have one name on every launcher. anyr swaps each for the
+agent's own flag, in place, so `anyr codex --print --continue "fix it"` runs
+`codex exec resume --last "fix it"`. If you already pass the agent's own flag,
+anyr does not add it again. `anyr <agent> --help` lists what each one becomes
+for that agent. This table is generated from `src/cmd/portable.rs`, and a test
+keeps it in sync:
 
-| Agent | `--yolo` becomes | Verified |
-|-------|------------------|----------|
-| claude | `--dangerously-skip-permissions` | yes |
-| codex | `--dangerously-bypass-approvals-and-sandbox` | yes |
-| grok | `--always-approve` | yes |
-| opencode | `--auto` (root and after `run`, opencode 2.0.24) | yes |
-| pi | none; `--yolo` is dropped with a note | yes |
-| pool | `--unsafe-auto-allow` | no (docs only, not installed) |
-| qwen | `--approval-mode yolo` | yes (qwen 0.26.1 wrote a file headless) |
-| goose | sets `GOOSE_MODE=auto` (goose has no flag) | partly (goose 1.56.0 ran with it; prompts not exercised) |
-| aider | `--yes-always` | partly (aider 0.86.2 accepts it; prompts not exercised) |
-| crush | `-y` (interactive only; `crush run` rejects it) | partly (crush 0.98.2 accepts it; prompts not exercised) |
-| kilo | `--auto` (root and after `run`) | partly (kilo 7.8.17 lists it; prompts not exercised) |
+<!-- portable-flags:start -->
+| Flag | claude | codex | grok | opencode | pi | pool | qwen | goose | aider | crush | kilo |
+|------|---|---|---|---|---|---|---|---|---|---|---|
+| `--yolo` | `--dangerously-skip-permissions` | `--dangerously-bypass-approvals-and-sandbox` | `--always-approve` | `--auto` | no | `--unsafe-auto-allow` * | `--approval-mode yolo` | env `GOOSE_MODE=auto` | `--yes-always` | `-y` | `--auto` |
+| `--effort <level>` | env `MAX_THINKING_TOKENS` | `-c model_reasoning_effort="<level>"` | `--reasoning-effort <level>` | no | `--thinking <level>` | no | no | no | `--reasoning-effort <level>` | no | no |
+| `--print` | `-p` | `exec` | `--single` | `run` | `-p` | no | `-p` | no | `--message` | `run` | `run` |
+| `--continue` | `--continue` | `resume --last` | `--continue` | `--continue` | `--continue` | no | `--continue` | no | `--restore-chat-history` | `--continue` | `--continue` |
+| `--resume [<id>]` | `--resume <id>` | `resume <id>` | `--resume <id>` | `--session <id>` | `--session <id>` | `--resume <id>` * | `--resume <id>` | `--resume --session-id <id>` | no | `--session <id>` | `--session <id>` |
+| `--system <text>` | `--system-prompt <text>` | no | `--system-prompt-override <text>` | no | `--system-prompt <text>` | no | `--system-prompt <text>` | `--system <text>` | no | no | no |
+| `--append-system <text>` | `--append-system-prompt <text>` | no | `--rules <text>` | no | `--append-system-prompt <text>` | no | `--append-system-prompt <text>` | `--system <text>` | no | no | no |
+| `--add-dir <path>` | `--add-dir <path>` | `--add-dir <path>` | no | no | no | no | `--add-dir=<path>` | no | no | no | no |
+| `--cwd <path>` | no | `--cd <path>` | `--cwd <path>` | no | no | `--directory <path>` * | no | no | no | `--cwd <path>` | no |
+| `--max-turns <n>` | `--max-turns <n>` † | no | `--max-turns <n>` | no | no | no | `--max-session-turns <n>` | `--max-turns <n>` | no | no | no |
+| `--no-tools, --tools-off` | `--tools=` | no | no | no | `--no-tools` | no | no | no | no | no | no |
+| `--no-skills, --skills-off` | `--disable-slash-commands` | no | no | no | `--no-skills` | no | no | no | no | no | no |
+
+Checked against each agent's `--help`: claude 2.1.310, codex 0.133.0, grok 1.0.52, opencode 2.0.24, pi 0.73.1, qwen 0.26.1, goose 1.56.0, aider 0.86.2, crush 0.98.2, kilo 7.8.17. † hidden from `--help`; the agent's parser accepts it. * from docs.poolside.ai (v1.0.16), not run. "no": the agent has no such flag, so anyr drops it with a one-line note. Goose takes these flags only on `goose session` or `goose run`, and its `--system` adds to the default prompt. Crush `-y` works on the interactive command only. Qwen's `-p` is deprecated but listed.
+<!-- portable-flags:end -->
 
 ## Version lock (0.1.x)
 

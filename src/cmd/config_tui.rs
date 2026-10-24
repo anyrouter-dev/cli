@@ -988,6 +988,7 @@ pub(crate) fn config_account_actions(
             command: "login".into(),
             flags,
             passthrough: Vec::new(),
+            raw_from: None,
         };
         return run_login(&next, env);
     }

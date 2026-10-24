@@ -8,8 +8,8 @@ use crate::http::{format_models_list, format_usage_report, CatalogModel};
 use crate::key::mask_api_key;
 use crate::parse::{get_string_flag, parse_cli_args};
 use crate::spawn::{
-    build_tool_env, canonical_tool, default_profile_for_env, effort_args_for, model_args_for,
-    normalize_effort, provider_args_for, render_dry_run, resolve_tool, BuildToolEnvInput,
+    build_tool_env, canonical_tool, default_profile_for_env, model_args_for, normalize_effort,
+    provider_args_for, render_dry_run, resolve_tool, BuildToolEnvInput,
 };
 use crate::VERSION;
 
@@ -153,10 +153,12 @@ fn demo_launch(tool: &str, parsed: &crate::parse::ParsedArgs) -> Result<String, 
         model_map: None,
     });
     let mut args = Vec::new();
-    args.extend(effort_args_for(tool, effort.as_deref()));
     args.extend(provider_args_for(tool, &profile));
     args.extend(model_args_for(tool, &model, model_mode, None));
-    args.extend(parsed.passthrough.clone());
+    let lead: Vec<(&str, Option<String>)> =
+        effort.map(|e| ("effort", Some(e))).into_iter().collect();
+    let raw_from = parsed.raw_from.unwrap_or(parsed.passthrough.len());
+    args.extend(crate::cmd::portable::apply(tool, &lead, &parsed.passthrough, raw_from)?.args);
     let out = render_dry_run(&resolved.command, &args, &env_map);
     Ok(format!(
         "{out}\n\n(dry-run in the browser demo — native `anyr {tool}` spawns the real agent)\n"

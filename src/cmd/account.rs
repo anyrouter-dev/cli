@@ -136,6 +136,7 @@ pub(crate) fn run_account(
                 command: "login".into(),
                 flags,
                 passthrough: Vec::new(),
+                raw_from: None,
             };
             run_login(&next, env)
         }

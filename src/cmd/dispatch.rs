@@ -268,85 +268,6 @@ pub(crate) fn launch_flags(command: &str) -> Option<&'static [&'static str]> {
     })
 }
 
-/// `--yolo` on one launcher: the agent's own argv for skipping permission
-/// prompts, and the subcommand it must follow when the user runs one.
-pub(crate) struct Yolo {
-    pub(crate) agent: &'static str,
-    /// Empty: the agent has none, so `--yolo` is dropped with a notice.
-    pub(crate) args: &'static [&'static str],
-    pub(crate) after: Option<&'static str>,
-}
-
-/// Each from the agent's own `--help`, except pool (docs.poolside.ai; not
-/// installed where checked). opencode 2.0.24 takes `--auto` on both the root
-/// command and `run`; with a `run` subcommand it goes after it, otherwise it
-/// leads the agent's args.
-pub(crate) const YOLO: &[Yolo] = &[
-    Yolo {
-        agent: "claude",
-        args: &["--dangerously-skip-permissions"],
-        after: None,
-    },
-    Yolo {
-        agent: "codex",
-        args: &["--dangerously-bypass-approvals-and-sandbox"],
-        after: None,
-    },
-    Yolo {
-        agent: "grok",
-        args: &["--always-approve"],
-        after: None,
-    },
-    // `--standalone` before `run` did not reach the run (#181); same for `--auto`.
-    Yolo {
-        agent: "opencode",
-        args: &["--auto"],
-        after: Some("run"),
-    },
-    Yolo {
-        agent: "pi",
-        args: &[],
-        after: None,
-    },
-    Yolo {
-        agent: "pool",
-        args: &["--unsafe-auto-allow"],
-        after: None,
-    },
-    // Not `--yolo`: anyr owns that name on every launcher.
-    Yolo {
-        agent: "qwen",
-        args: &["--approval-mode", "yolo"],
-        after: None,
-    },
-    // Goose has no flag: `--yolo` sets GOOSE_MODE=auto (`launch::add_yolo`).
-    Yolo {
-        agent: "goose",
-        args: &[],
-        after: None,
-    },
-    Yolo {
-        agent: "aider",
-        args: &["--yes-always"],
-        after: None,
-    },
-    // `-y` is `--yolo`, a root flag only: `crush run` rejects it.
-    Yolo {
-        agent: "crush",
-        args: &["-y"],
-        after: None,
-    },
-    Yolo {
-        agent: "kilo",
-        args: &["--auto"],
-        after: Some("run"),
-    },
-];
-
-pub(crate) fn yolo_for(agent: &str) -> Option<&'static Yolo> {
-    YOLO.iter().find(|y| y.agent == agent)
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CmdKind {
     Implemented,
@@ -477,21 +398,24 @@ pub(crate) fn value_choices(flag: &str, env: &BTreeMap<String, String>) -> Vec<S
     }
 }
 
+/// Levenshtein distance in chars.
+pub(crate) fn edit_distance(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.chars().enumerate() {
+        let mut cur = vec![i + 1];
+        for (j, cb) in b.iter().enumerate() {
+            let cost = usize::from(ca != *cb);
+            cur.push((prev[j] + cost).min(prev[j + 1] + 1).min(cur[j] + 1));
+        }
+        prev = cur;
+    }
+    prev[b.len()]
+}
+
 /// Closest known command for a typo (edit distance ≤ 2, or a unique prefix).
 pub(crate) fn suggest_command(input: &str) -> Option<&'static str> {
-    fn dist(a: &str, b: &str) -> usize {
-        let b: Vec<char> = b.chars().collect();
-        let mut prev: Vec<usize> = (0..=b.len()).collect();
-        for (i, ca) in a.chars().enumerate() {
-            let mut cur = vec![i + 1];
-            for (j, cb) in b.iter().enumerate() {
-                let cost = usize::from(ca != *cb);
-                cur.push((prev[j] + cost).min(prev[j + 1] + 1).min(cur[j] + 1));
-            }
-            prev = cur;
-        }
-        prev[b.len()]
-    }
+    let dist = edit_distance;
     let names = COMMANDS.iter().map(|(n, _)| *n);
     let mut prefix = names
         .clone()
@@ -777,6 +701,7 @@ pub(crate) fn shift_passthrough(parsed: &ParsedArgs) -> ParsedArgs {
     let mut next = parsed.clone();
     if !next.passthrough.is_empty() {
         next.passthrough.remove(0);
+        next.raw_from = next.raw_from.map(|r| r.saturating_sub(1));
     }
     next
 }

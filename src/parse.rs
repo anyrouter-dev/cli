@@ -69,11 +69,13 @@ pub enum FlagValue {
     Value(String),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ParsedArgs {
     pub command: String,
     pub flags: HashMap<String, FlagValue>,
     pub passthrough: Vec<String>,
+    /// Index in `passthrough` where the tokens after `--` start.
+    pub raw_from: Option<usize>,
 }
 
 impl ParsedArgs {
@@ -107,6 +109,7 @@ where
     let mut flags = HashMap::new();
     let mut passthrough = Vec::new();
     let mut after_separator = false;
+    let mut raw_from = None;
     let mut i = 0usize;
 
     while i < rest.len() {
@@ -118,6 +121,7 @@ where
         }
         if arg == "--" {
             after_separator = true;
+            raw_from = Some(passthrough.len());
             i += 1;
             continue;
         }
@@ -164,6 +168,7 @@ where
         command,
         flags,
         passthrough,
+        raw_from,
     })
 }
 

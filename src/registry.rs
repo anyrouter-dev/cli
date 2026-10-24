@@ -241,7 +241,10 @@ mod tests {
                 crate::install::KNOWN_AGENTS.iter().any(|(a, _)| a == id),
                 "{id}: KNOWN_AGENTS"
             );
-            assert!(crate::cmd::dispatch::yolo_for(id).is_some(), "{id}: YOLO");
+            assert!(
+                crate::cmd::portable::alias("yolo").is_some_and(|a| a.native(id).is_some()),
+                "{id}: portable --yolo cell"
+            );
             assert!(
                 crate::mcp_wiring::LAUNCHERS.iter().any(|(a, _)| a == id),
                 "{id}: MCP strategy"

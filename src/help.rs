@@ -20,8 +20,6 @@ are min-context floors on auto (not catalog SKUs).
 @claude   --fable <id>          Claude /model fable (also the auto-fallback target)
   --preset <slug>       Launch with your saved preset (model @preset/<slug>); fails
                         if it does not exist. Cannot be combined with --model
-  --effort <level>      Reasoning effort: minimal | low | medium | high | xhigh | max
-  --yolo                {yolo}
 @claude   --hub <slug>          Load a hub: sync ~/.anyrouter/hubs + claude --plugin-dir
   --profile <name>      Use a named profile
   --command-path <path> Explicit path to the agent executable
@@ -34,6 +32,8 @@ are min-context floors on auto (not catalog SKUs).
   --device-code         Alias of --device
   --paste               Force the paste-a-key flow, skipping auto-detection
 
+Portable flags (one name on every agent; anyr passes the agent's own flag):
+{portable}
 Any other flag goes to the agent unchanged and in order, no `--` needed:
   {bin} {id} --model <id> {example}
 Everything after `--` goes to the agent raw, including flags anyr also owns.
@@ -184,32 +184,19 @@ fn launch_help(bin: &str, id: &str, label: &str) -> String {
         })
         .map(|line| format!("{line}\n"))
         .collect();
-    let native = crate::cmd::dispatch::yolo_for(id).map_or(&[][..], |y| y.args);
-    let yolo = if id == "goose" {
-        "Skip permission prompts (sets GOOSE_MODE=auto)".to_string()
-    } else if native.is_empty() {
-        format!("No effect: {label} has no flag to skip permission prompts")
-    } else {
-        let note = if id == "pool" {
-            " (from docs, unverified)"
-        } else {
-            ""
-        };
-        format!(
-            "Skip permission prompts (passes {}{note})",
-            native.join(" ")
-        )
-    };
     let example = match id {
-        "pi" => "--no-skills --no-tools",
+        "pi" => "--tools read,grep",
         "codex" => "--search",
+        "grok" => "--no-plan",
+        "opencode" | "kilo" => "--print-logs",
         "pool" => "--worktree",
         "aider" => "--architect",
-        "goose" => "session --resume",
-        _ => "--continue",
+        "goose" => "session --name work",
+        "qwen" | "crush" => "--debug",
+        _ => "--verbose",
     };
     let body = body
-        .replace("{yolo}", &yolo)
+        .replace("{portable}", &crate::cmd::portable::help_lines(id, label))
         .replace("{bin}", bin)
         .replace("{id}", id)
         .replace("{example}", example);

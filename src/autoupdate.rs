@@ -672,6 +672,7 @@ mod tests {
                 .map(|f| (f.to_string(), FlagValue::Bool(true)))
                 .collect::<HashMap<_, _>>(),
             passthrough: Vec::new(),
+            raw_from: None,
         }
     }
 

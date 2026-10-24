@@ -145,6 +145,14 @@ pub fn complete(words: &[String], env: &BTreeMap<String, String>) -> Vec<String>
             .iter()
             .map(|f| (format!("--{f}"), String::new()))
             .collect();
+        if crate::cmd::dispatch::launch_flags(canonical).is_some() {
+            for alias in crate::cmd::portable::ALIASES {
+                let flag = format!("--{}", alias.name);
+                if !flags.iter().any(|(f, _)| *f == flag) {
+                    flags.push((flag, String::new()));
+                }
+            }
+        }
         flags.push(("--help".into(), String::new()));
         return prefixed(flags);
     }
@@ -280,6 +288,14 @@ mod tests {
     fn launch_flags_include_yolo() {
         let out = complete(&words(&["claude", "--y"]), &BTreeMap::new());
         assert!(values(&out).contains(&"--yolo"), "{out:?}");
+    }
+
+    #[test]
+    fn launchers_complete_portable_flags() {
+        let out = complete(&words(&["codex", "--add"]), &BTreeMap::new());
+        assert_eq!(values(&out), ["--add-dir"], "{out:?}");
+        let out = complete(&words(&["usage", "--add"]), &BTreeMap::new());
+        assert!(values(&out).is_empty(), "{out:?}");
     }
 
     #[test]
