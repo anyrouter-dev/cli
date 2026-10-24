@@ -142,9 +142,11 @@ enum ClientFrame {
     Hello {
         models: Vec<String>,
         max_concurrency: Option<u32>,
-        /// Pool sharing for this device, set in the same write as the
-        /// models, so `--no-pool` holds before any request can arrive.
-        pool: bool,
+        /// Pool sharing the user chose (flag, saved pref or the `p` key), set
+        /// in the same write as the models so `--no-pool` holds before any
+        /// request can arrive. None for the unchosen default: a reconnect
+        /// must not undo a change made on the dashboard.
+        pool: Option<bool>,
     },
 }
 
@@ -171,7 +173,10 @@ impl ClientFrame {
                 max_concurrency,
                 pool,
             } => {
-                let mut v = json!({ "type": "hello", "id": "", "models": models, "pool": pool });
+                let mut v = json!({ "type": "hello", "id": "", "models": models });
+                if let Some(on) = pool {
+                    v["pool"] = json!(on);
+                }
                 if let Some(n) = max_concurrency {
                     v["maxConcurrency"] = json!(n);
                 }
@@ -1421,6 +1426,9 @@ struct ConnState {
     in_flight: Arc<Mutex<BTreeMap<String, Arc<AtomicBool>>>>,
     /// Counters the status screen and state file show.
     stats: Arc<Stats>,
+    /// True once pool comes from the user, not the default: only then does
+    /// the hello carry it.
+    pool_chosen: Arc<AtomicBool>,
 }
 
 impl ConnState {
@@ -1431,6 +1439,7 @@ impl ConnState {
             rx,
             in_flight: Arc::new(Mutex::new(BTreeMap::new())),
             stats,
+            pool_chosen: Arc::default(),
         }
     }
 }
@@ -1465,7 +1474,10 @@ fn serve_connection(
         &ClientFrame::Hello {
             models: models.clone(),
             max_concurrency,
-            pool: state.stats.pool.load(Ordering::Relaxed),
+            pool: state
+                .pool_chosen
+                .load(Ordering::Relaxed)
+                .then(|| state.stats.pool.load(Ordering::Relaxed)),
         },
     );
     vlog(&format!(
@@ -1824,7 +1836,7 @@ fn run_relay_start(
     } else {
         resolve_serve(&choice, &paths, launches_servers(&args))?
     };
-    let (pool, _) = state::effective_pool(pool_flag, &state::load_prefs(&paths));
+    let (pool, pool_source) = state::effective_pool(pool_flag, &state::load_prefs(&paths));
 
     if detach && !detached_child {
         let child = detached_child_args(&args, pool_flag, parsed.flag_true("verbose"));
@@ -1847,6 +1859,7 @@ fn run_relay_start(
         token: &token,
         serve: &serve,
         pool,
+        pool_chosen: pool_source != state::PoolSource::Default,
         follow_pool_pref: pool_flag.is_none(),
         paths,
         detached: detached_child,
@@ -1901,6 +1914,8 @@ struct Foreground<'a> {
     token: &'a str,
     serve: &'a BTreeSet<OnDeviceModel>,
     pool: bool,
+    /// Pool came from a flag or saved pref rather than the default.
+    pool_chosen: bool,
     follow_pool_pref: bool,
     paths: state::Paths,
     detached: bool,
@@ -1981,10 +1996,13 @@ fn run_foreground(f: Foreground<'_>) -> Result<i32, String> {
         print_start_summary(&router, f.pool, f.detached, f.env);
     }
 
+    let pool_chosen = Arc::new(AtomicBool::new(f.pool_chosen));
     let on_pool: live::PoolToggle = {
         let (parsed, env) = (f.parsed.clone(), f.env.clone());
+        let pool_chosen = Arc::clone(&pool_chosen);
         let prefs_path = state::paths(f.env);
         Box::new(move |on| {
+            pool_chosen.store(true, Ordering::Relaxed);
             let mut prefs = state::load_prefs(&prefs_path);
             prefs.pool = Some(on);
             let _ = state::save_prefs(&prefs_path, &prefs);
@@ -2003,7 +2021,10 @@ fn run_foreground(f: Foreground<'_>) -> Result<i32, String> {
         f.follow_pool_pref,
         on_pool,
     );
-    let conn = ConnState::new(Arc::clone(&stats));
+    let conn = ConnState {
+        pool_chosen,
+        ..ConnState::new(Arc::clone(&stats))
+    };
 
     // Pool is synced once per run: at connect when the device id is already
     // known, else when the cloud's `device` frame names it.
@@ -2909,7 +2930,7 @@ mod tests {
         let without = ClientFrame::Hello {
             models: vec!["foundation-model".into()],
             max_concurrency: None,
-            pool: false,
+            pool: None,
         }
         .to_json();
         let v: serde_json::Value = serde_json::from_str(&without).unwrap();
@@ -2920,7 +2941,7 @@ mod tests {
         let with = ClientFrame::Hello {
             models: vec![],
             max_concurrency: Some(3),
-            pool: true,
+            pool: None,
         }
         .to_json();
         let v: serde_json::Value = serde_json::from_str(&with).unwrap();
@@ -2928,19 +2949,28 @@ mod tests {
     }
 
     #[test]
-    fn hello_frame_always_states_pool_so_no_pool_holds_from_the_first_frame() {
+    fn hello_frame_states_a_chosen_pool_and_omits_the_default() {
         // --no-pool must reach the cloud with the model list, not in a later
         // PATCH that can fail and leave an old pool_enabled=true in place.
         for pool in [false, true] {
             let json = ClientFrame::Hello {
                 models: vec!["foundation-model".into()],
                 max_concurrency: None,
-                pool,
+                pool: Some(pool),
             }
             .to_json();
             let v: serde_json::Value = serde_json::from_str(&json).unwrap();
             assert_eq!(v["pool"], pool);
         }
+        // The unchosen default leaves the server value alone on reconnect.
+        let json = ClientFrame::Hello {
+            models: vec![],
+            max_concurrency: None,
+            pool: None,
+        }
+        .to_json();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(v.get("pool").is_none());
     }
 
     #[test]
@@ -3994,7 +4024,11 @@ profiles:
         });
         let mut ws = connect_ws(&url, "sk-ar-v1-test").expect("connect");
         set_read_timeouts(&ws, Duration::from_millis(20));
-        let state = ConnState::new(Arc::default());
+        // --no-pool: pool chosen and off.
+        let state = ConnState {
+            pool_chosen: Arc::new(AtomicBool::new(true)),
+            ..ConnState::new(Arc::default())
+        };
         let bound = Mutex::new(Vec::new());
         serve_connection(&mut ws, &r, &state, None, &|id| {
             bound.lock().unwrap().push(id.to_string())
