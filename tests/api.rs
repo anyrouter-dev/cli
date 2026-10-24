@@ -363,14 +363,14 @@ fn env_key_alone_drives_auth_token_and_status_without_config() {
     assert!(!out.contains("abcdefghijklmnop"), "{out}");
 
     let o = anyr()
-        .args(["status", "--json", "--base-url", "http://example.test"])
+        .args(["status", "--json", "--base-url", "http://127.0.0.1:1"])
         .env("ANYROUTER_API_KEY", "sk-ar-v1-abcdefghijklmnop")
         .output()
         .unwrap();
     let out = String::from_utf8_lossy(&o.stdout);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     assert!(
-        out.contains("\"base_url\": \"http://example.test\""),
+        out.contains("\"base_url\": \"http://127.0.0.1:1\""),
         "{out}"
     );
 }

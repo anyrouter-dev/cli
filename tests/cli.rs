@@ -1462,7 +1462,13 @@ profiles:
     assert_eq!(out.status.code().unwrap_or(1), 0, "{stdout}{stderr}");
     assert!(stdout.contains("work"), "{stdout}");
     let who = anyr()
-        .args(["whoami", "--config", path.to_str().unwrap()])
+        .args([
+            "whoami",
+            "--config",
+            path.to_str().unwrap(),
+            "--base-url",
+            "http://127.0.0.1:1",
+        ])
         .output()
         .expect("whoami");
     let who_out = String::from_utf8_lossy(&who.stdout);
@@ -3398,4 +3404,40 @@ fn auth_status_json_has_user_and_masked_key() {
         v.get("claude_haiku").is_none() && v.get("default_tool").is_none(),
         "{v}"
     );
+}
+
+#[test]
+fn auth_status_json_reports_identity_error_when_the_server_never_answers() {
+    let home = temp_home();
+    let cfg = status_config(&home);
+    // WHY: an offline or hung gateway must not stall `status`; it answers
+    // with identity_error and still exits 0 because a key is configured.
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let started = std::time::Instant::now();
+    let out = anyr()
+        .args([
+            "status",
+            "--json",
+            "--config",
+            cfg.to_str().unwrap(),
+            "--base-url",
+            &base,
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "status waited {:?}",
+        started.elapsed()
+    );
+    assert_eq!(out.status.code(), Some(0));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(
+        v["identity_error"].as_str().is_some_and(|e| !e.is_empty()),
+        "{v}"
+    );
+    assert_eq!(v["default_model"], "poolside/laguna-s-2.1");
+    drop(listener);
 }

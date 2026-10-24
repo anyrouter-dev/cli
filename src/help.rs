@@ -388,10 +388,13 @@ View authentication status.
 USAGE
   {bin} auth status [flags]
 
-Shows the active account and masked credentials.
+Shows who is signed in (name and email), the account, the masked key and
+the default model. In a terminal it then offers to switch account, change the
+default model, log out or open the dashboard.
 
 FLAGS
-  --json       Print as JSON
+  --json       Print as JSON: account, user, key_masked, default_model,
+               config_path, base_url (identity_error if the lookup failed)
   --profile    Use a named account
 
 Also available as `{bin} whoami`.

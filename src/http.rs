@@ -652,7 +652,20 @@ pub fn parse_me(body: &str) -> Result<MeInfo, String> {
 
 pub fn fetch_me(base_url: &str, api_key: &str) -> Result<MeInfo, String> {
     let url = join_api(base_url, "/v1/me");
-    let (status, body) = http_get(&url, Some(api_key))?;
+    me_from_response(http_get(&url, Some(api_key))?)
+}
+
+/// `fetch_me` with an overall deadline, for views that must not hang offline.
+pub fn fetch_me_within(
+    base_url: &str,
+    api_key: &str,
+    timeout: std::time::Duration,
+) -> Result<MeInfo, String> {
+    let url = join_api(base_url, "/v1/me");
+    me_from_response(http_get_timeout(&url, Some(api_key), timeout)?)
+}
+
+fn me_from_response((status, body): (u16, String)) -> Result<MeInfo, String> {
     if status == 401 || status == 403 {
         return Err(scope_error("me"));
     }
