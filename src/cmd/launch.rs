@@ -295,7 +295,11 @@ pub(crate) fn launch(
         &mut env_map,
     );
     if tool_name == "crush" {
-        let catalog = fetch_models(&base, Some(&key)).unwrap_or_default();
+        let catalog = if catalog_lookup_enabled(env) {
+            fetch_models(&base, Some(&key)).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         let user_dir = crush_user_dir(&|k| env.get(k).cloned());
         let mcp_url = match &mcp_decision {
             crate::mcp_wiring::Decision::On { url } => Some(url.as_str()),

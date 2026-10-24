@@ -13,9 +13,15 @@ const AGENTS: &[(&str, &[&str])] = &[
     ("opencode", &["--auto"]),
     ("pi", &[]),
     ("pool", &["--unsafe-auto-allow"]),
+    ("qwen", &["--approval-mode", "yolo"]),
+    ("aider", &["--yes-always"]),
+    ("crush", &["-y"]),
+    ("kilo", &["--auto"]),
 ];
 
 struct DryRun {
+    /// Files anyr wrote for the agent (Crush's private crush.json).
+    files: String,
     code: i32,
     args: Vec<String>,
     stdout: String,
@@ -59,6 +65,7 @@ fn dry_run(agent: &str, extra: &[&str]) -> DryRun {
         .map(|json| serde_json::from_str(json).expect("args line is JSON"))
         .unwrap_or_default();
     DryRun {
+        files: std::fs::read_to_string(home.join("crush").join("crush.json")).unwrap_or_default(),
         code: out.status.code().unwrap_or(1),
         args,
         stdout,
@@ -183,7 +190,8 @@ fn anyr_model_flag_is_still_consumed() {
         let with_model = dry_run(agent, &["--model", "test-owner/m1"]);
         assert_eq!(with_model.code, 0, "{agent}: {}", with_model.stderr);
         assert!(
-            with_model.stdout.contains("test-owner/m1"),
+            with_model.stdout.contains("test-owner/m1")
+                || with_model.files.contains("test-owner/m1"),
             "{agent} never got the model:\n{}",
             with_model.stdout
         );

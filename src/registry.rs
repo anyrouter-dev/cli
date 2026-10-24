@@ -226,6 +226,33 @@ mod tests {
     use crate::cmd::dispatch::{cmd_kind, CmdKind};
 
     #[test]
+    fn every_launcher_is_wired_in_each_table() {
+        // A launcher is still listed in several tables; one missing entry
+        // means a launch that fails, a help page without the agent, or a
+        // missing-binary error with no install hint.
+        for id in LAUNCHERS {
+            assert_eq!(cmd_kind(id), Some(CmdKind::Implemented), "{id}");
+            assert!(
+                crate::spawn::resolve_tool(None, id).is_ok(),
+                "{id}: builtin"
+            );
+            assert!(crate::install::tool_hint(id).is_some(), "{id}: tool_hint");
+            assert!(
+                crate::install::KNOWN_AGENTS.iter().any(|(a, _)| a == id),
+                "{id}: KNOWN_AGENTS"
+            );
+            assert!(crate::cmd::dispatch::yolo_for(id).is_some(), "{id}: YOLO");
+            assert!(
+                crate::mcp_wiring::LAUNCHERS.iter().any(|(a, _)| a == id),
+                "{id}: MCP strategy"
+            );
+            let help = crate::help::command_help(id).unwrap_or_default();
+            assert!(help.contains("through AnyRouter"), "{id}: help\n{help}");
+            assert_eq!(group(id), "launch", "{id}");
+        }
+    }
+
+    #[test]
     fn every_implemented_command_is_in_the_tree() {
         // Drift guard: a command the dispatcher runs but `COMMANDS` omits is
         // invisible to completion, `help --all` and agents.

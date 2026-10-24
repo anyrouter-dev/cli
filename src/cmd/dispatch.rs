@@ -313,9 +313,10 @@ pub(crate) const YOLO: &[Yolo] = &[
         args: &["--unsafe-auto-allow"],
         after: None,
     },
+    // Not `--yolo`: anyr owns that name on every launcher.
     Yolo {
         agent: "qwen",
-        args: &["--yolo"],
+        args: &["--approval-mode", "yolo"],
         after: None,
     },
     // Goose has no flag: `--yolo` sets GOOSE_MODE=auto (`launch::add_yolo`).
@@ -329,10 +330,10 @@ pub(crate) const YOLO: &[Yolo] = &[
         args: &["--yes-always"],
         after: None,
     },
-    // A root flag only: `crush run` rejects it.
+    // `-y` is `--yolo`, a root flag only: `crush run` rejects it.
     Yolo {
         agent: "crush",
-        args: &["--yolo"],
+        args: &["-y"],
         after: None,
     },
     Yolo {

@@ -24,6 +24,11 @@ const SKIP: &[&str] = &[
     "opencode",
     "pi",
     "pool",
+    "qwen",
+    "goose",
+    "aider",
+    "crush",
+    "kilo",
     "menu",
     "upgrade",
     "login",
@@ -207,7 +212,7 @@ fn skipped_commands_still_return_json_usage_errors() {
     // still fail before that, as JSON with exit 2. Launchers forward unknown
     // flags to the agent, so they get anyr's `--model` without a value.
     let base = serve_ok();
-    let launchers = ["claude", "codex", "grok", "opencode", "pi", "pool"];
+    let launchers = anyr_cli::registry::LAUNCHERS;
     for name in SKIP {
         let mut args: Vec<&str> = name.split(' ').collect();
         args.push(if launchers.contains(name) {

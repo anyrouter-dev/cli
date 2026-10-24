@@ -107,6 +107,7 @@ anyr claude --install --ok  # install Claude Code first if missing
 anyr codex --ok
 anyr opencode --ok
 anyr pi --ok
+anyr qwen --ok              # also: goose, aider, crush, kilo (see Launchers)
 anyr decision --model typesafe/jev \
   --state 'Help! My payouts have been failing for 3 days.' \
   --questions '{"is_urgent":{"type":"noul","instructions":"Does this convey urgency?"}}'
@@ -479,9 +480,34 @@ python scripts/bench.py measure --bin target/release/anyr \
 Interactive `menu` / `config` use a centered Ratatui dialog (GrokNight theme);
 pickers stay full-pane. `anyr menu --dump-tui` prints one ANSI-free frame for CI.
 
+## Launchers
+
+`anyr <agent>` starts a coding agent pointed at AnyRouter with your key and
+model. The key goes to the agent through the environment only, never argv or
+a file. `--dry-run` prints the command and environment (key masked), and
+`--install` installs a missing agent first.
+
+| Agent | Command | How anyr points it at AnyRouter | MCP auto-connect |
+|-------|---------|---------------------------------|------------------|
+| Claude Code | `anyr claude` | `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, model slots | yes |
+| Codex | `anyr codex` | `-c model_providers.anyrouter.*`, key in `OPENAI_API_KEY` | yes |
+| Grok Build | `anyr grok` | private `GROK_HOME` plus an auth provider command | yes |
+| OpenCode | `anyr opencode` | inline `OPENCODE_CONFIG_CONTENT` | yes |
+| Pi | `anyr pi` | private `PI_CODING_AGENT_DIR` with `models.json` | no (Pi has no MCP) |
+| Poolside | `anyr pool` | `POOLSIDE_STANDALONE_*` | no |
+| Qwen Code | `anyr qwen` | `OPENAI_BASE_URL`, `OPENAI_API_KEY`, `-m <model>` | no (settings.json only) |
+| Goose | `anyr goose` | `GOOSE_PROVIDER=openai`, `OPENAI_HOST`, `OPENAI_BASE_PATH`, `GOOSE_MODEL` | no (config.yaml only) |
+| Aider | `anyr aider` | `AIDER_OPENAI_API_BASE`, `AIDER_OPENAI_API_KEY`, `AIDER_MODEL=openai/<model>` | no (Aider has no MCP) |
+| Crush | `anyr crush` | private `CRUSH_GLOBAL_CONFIG` with your `crush.json` and `crushrc` copied in | yes |
+| Kilo Code | `anyr kilo` | inline `KILO_CONFIG_CONTENT` | yes |
+
+The AIDER_* names outrank a `.aider.conf.yml`, and Qwen Code gets `-m` because
+a `model.name` in its settings.json beats `OPENAI_MODEL`. Your own agent config
+files are read, never written.
+
 ## Passing flags to the agent
 
-On the launchers (`claude`, `codex`, `grok`, `opencode`, `pi`, `pool`) you do
+On the launchers (`anyr help --all` lists them under LAUNCH) you do
 not need `--`. anyr takes its own flags (`--model`, `--key`, `--dry-run`,
 `--yolo`, `--help`, ...) and forwards every other flag to the agent in order:
 
@@ -506,6 +532,11 @@ Other commands (`anyr models --bogus`) still reject unknown flags with exit 2.
 | opencode | `--auto` (root and after `run`, opencode 2.0.24) | yes |
 | pi | none; `--yolo` is dropped with a note | yes |
 | pool | `--unsafe-auto-allow` | no (docs only, not installed) |
+| qwen | `--approval-mode yolo` | yes (qwen 0.26.1 wrote a file headless) |
+| goose | sets `GOOSE_MODE=auto` (goose has no flag) | partly (goose 1.56.0 ran with it; prompts not exercised) |
+| aider | `--yes-always` | partly (aider 0.86.2 accepts it; prompts not exercised) |
+| crush | `-y` (interactive only; `crush run` rejects it) | partly (crush 0.98.2 accepts it; prompts not exercised) |
+| kilo | `--auto` (root and after `run`) | partly (kilo 7.8.17 lists it; prompts not exercised) |
 
 ## Version lock (0.1.x)
 

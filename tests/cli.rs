@@ -152,7 +152,7 @@ fn help_lists_login_claude_account_and_spawn_targets() {
     for heading in ["SIGN IN", "CHAT AND MODELS", "LAUNCH", "ACCOUNT"] {
         assert!(map.contains(heading), "missing {heading} in:\n{map}");
     }
-    for target in ["claude", "codex", "grok", "opencode", "pi", "pool"] {
+    for target in anyr_cli::registry::LAUNCHERS {
         assert!(map.contains(target), "missing {target} in:\n{map}");
     }
     assert!(map.contains("▀█████████▄"), "{map}");
@@ -398,6 +398,11 @@ fn documented_commands_are_known_not_unknown() {
         "pi",
         "pool",
         "poolside",
+        "qwen",
+        "goose",
+        "aider",
+        "crush",
+        "kilo",
         "upgrade",
         "update",
         "onboard",
@@ -3277,6 +3282,11 @@ fn launch_help_lists_claude_only_flags_for_claude_alone() {
         ("opencode", "passes --auto"),
         ("pi", "No effect: Pi has no flag to skip permission prompts"),
         ("pool", "passes --unsafe-auto-allow (from docs, unverified)"),
+        ("qwen", "passes --approval-mode yolo"),
+        ("goose", "sets GOOSE_MODE=auto"),
+        ("aider", "passes --yes-always"),
+        ("crush", "passes -y"),
+        ("kilo", "passes --auto"),
     ] {
         let (code, out, _) = run(&[agent, "--help"]);
         assert_eq!(code, 0);
