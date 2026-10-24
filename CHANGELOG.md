@@ -10,6 +10,19 @@ GitHub Releases use this file as the release notes (full history through that ta
 
 * **cli:** add `anyr decision` for typed `POST /api/v1/decisions` requests with flag or stdin JSON input. Known Decisions models are refused by chat-agent launchers. ([duyet/anyrouter#3550](https://github.com/duyet/anyrouter/issues/3550))
 
+## [0.1.33](https://github.com/anyrouter-dev/cli/compare/v0.1.32...v0.1.33) (2026-10-24)
+
+
+### Features
+
+* **update:** stage updates in the background and apply them on the next run ([#190](https://github.com/anyrouter-dev/cli/issues/190)) ([30e1cee](https://github.com/anyrouter-dev/cli/commit/30e1ceee11d2d4bd667c9a3a87b42027962373a9))
+
+
+### Bug Fixes
+
+* **launch:** map --skills-off/--tools-off to Pi's --no-skills/--no-tools ([#210](https://github.com/anyrouter-dev/cli/issues/210)) ([8d15f84](https://github.com/anyrouter-dev/cli/commit/8d15f84d742b0d321c051ceb03dc83f7cbc910e0))
+* **launch:** no login, install or prompt in scripted runs; pi fetches the catalog once ([#211](https://github.com/anyrouter-dev/cli/issues/211)) ([6f94de2](https://github.com/anyrouter-dev/cli/commit/6f94de26c8282497441168d71bf3b99eca892a48))
+
 ## [0.1.32](https://github.com/anyrouter-dev/cli/compare/v0.1.31...v0.1.32) (2026-10-24)
 
 
