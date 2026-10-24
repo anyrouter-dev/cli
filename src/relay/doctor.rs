@@ -4,7 +4,9 @@
 
 use serde_json::{json, Value};
 
+use super::servers::{self, Absent};
 use super::view::Paint;
+use super::OnDeviceModel;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Level {
@@ -31,6 +33,9 @@ pub(super) struct Check {
     pub detail: String,
     /// Empty when there is nothing to fix.
     pub fix: String,
+    /// For an on-device model row: (catalog id, state). `running` or an
+    /// [`Absent`] name.
+    pub model: Option<(&'static str, &'static str)>,
 }
 
 /// What the cloud said about the stored credential.
@@ -51,6 +56,8 @@ pub(super) trait Probe {
     /// None = not listening; else fm serve's own model ids (system, pcc).
     fn fm_serve(&self) -> Option<Vec<String>>;
     fn decider(&self) -> bool;
+    /// The server's app or command is on this machine (not whether it runs).
+    fn installed(&self, server: OnDeviceModel) -> bool;
     /// Labels of other local servers that answered (Ollama, LM Studio, …).
     fn other_servers(&self) -> Vec<String>;
     fn network(&self) -> Result<(), String>;
@@ -69,7 +76,40 @@ fn check(
         level,
         detail: detail.into(),
         fix: fix.into(),
+        model: None,
     }
+}
+
+fn for_model(mut c: Check, model: OnDeviceModel, state: &'static str) -> Check {
+    c.model = Some((model.id(), state));
+    c
+}
+
+/// The check for one on-device model that is not answering.
+fn absent_check(
+    name: &'static str,
+    model: OnDeviceModel,
+    why: Absent,
+    bin: &str,
+    fix_off_mac: &str,
+) -> Check {
+    let spec = servers::spec(model);
+    let (detail, fix) = match why {
+        Absent::NeedsMac => (spec.next_step(why), fix_off_mac.to_string()),
+        Absent::NeedsNewerMacos => (
+            format!("needs macOS {} or later", spec.min_macos.unwrap_or(26)),
+            format!(
+                "{} (System Settings > General > Software Update)",
+                spec.next_step(why)
+            ),
+        ),
+        Absent::NotInstalled => ("not installed".to_string(), spec.install_hint.to_string()),
+        Absent::Stopped => (
+            "installed, not running".to_string(),
+            format!("`{bin} relay start` launches it, or: {}", spec.enable_hint),
+        ),
+    };
+    for_model(check(name, Level::Warn, detail, fix), model, why.name())
 }
 
 pub(super) fn run_checks(p: &dyn Probe, bin: &str) -> Vec<Check> {
@@ -110,39 +150,59 @@ pub(super) fn run_checks(p: &dyn Probe, bin: &str) -> Vec<Check> {
 
     let fm_ids = if apple_ok { p.fm_serve() } else { None };
     let fm = fm_ids.is_some();
-    if apple_ok {
+    let off_mac_fix = "serve Ollama or LM Studio, or pass --target <url>";
+    let apple = OnDeviceModel::AppleFoundation;
+    if !apple_ok {
+        let why = if mac {
+            Absent::NeedsNewerMacos
+        } else {
+            Absent::NeedsMac
+        };
+        let c = absent_check("fm serve", apple, why, bin, off_mac_fix);
+        out.push(c);
+    } else {
         out.push(match &fm_ids {
-            Some(ids) if ids.is_empty() => check(
-                "fm serve",
-                Level::Ok,
-                "listening on 127.0.0.1:1976 (no models listed)",
-                "",
+            Some(ids) if ids.is_empty() => for_model(
+                check(
+                    "fm serve",
+                    Level::Ok,
+                    "listening on 127.0.0.1:1976 (no models listed)",
+                    "",
+                ),
+                apple,
+                "running",
             ),
-            Some(ids) => check(
-                "fm serve",
-                Level::Ok,
-                format!("listening on 127.0.0.1:1976, models: {}", ids.join(", ")),
-                "",
+            Some(ids) => for_model(
+                check(
+                    "fm serve",
+                    Level::Ok,
+                    format!("listening on 127.0.0.1:1976, models: {}", ids.join(", ")),
+                    "",
+                ),
+                apple,
+                "running",
             ),
-            None => check(
-                "fm serve",
-                Level::Warn,
-                "not listening on 127.0.0.1:1976",
-                "turn on Apple Intelligence, then run `fm serve`",
-            ),
+            None if p.installed(apple) => {
+                absent_check("fm serve", apple, Absent::Stopped, bin, off_mac_fix)
+            }
+            None => absent_check("fm serve", apple, Absent::NotInstalled, bin, off_mac_fix),
         });
     }
 
     let decider = p.decider();
+    let dm = OnDeviceModel::DeciderFlash;
     out.push(if decider {
-        check("Decider app", Level::Ok, "answering on 127.0.0.1:8080", "")
-    } else {
-        check(
-            "Decider app",
-            Level::Warn,
-            "not answering on 127.0.0.1:8080",
-            "open the Decider for Mac app",
+        for_model(
+            check("Decider app", Level::Ok, "answering on 127.0.0.1:8080", ""),
+            dm,
+            "running",
         )
+    } else if !mac {
+        absent_check("Decider app", dm, Absent::NeedsMac, bin, off_mac_fix)
+    } else if p.installed(dm) {
+        absent_check("Decider app", dm, Absent::Stopped, bin, off_mac_fix)
+    } else {
+        absent_check("Decider app", dm, Absent::NotInstalled, bin, off_mac_fix)
     });
 
     let others = p.other_servers();
@@ -239,6 +299,11 @@ pub(super) fn to_json(checks: &[Check]) -> Value {
             "detail": c.detail,
             "fix": if c.fix.is_empty() { Value::Null } else { json!(c.fix) },
         })).collect::<Vec<_>>(),
+        "models": checks.iter().filter_map(|c| c.model.map(|(id, state)| json!({
+            "id": id,
+            "state": state,
+            "fix": if c.fix.is_empty() { Value::Null } else { json!(c.fix) },
+        }))).collect::<Vec<_>>(),
     })
 }
 
@@ -251,6 +316,7 @@ mod tests {
         major: Option<u32>,
         fm: Option<Vec<String>>,
         decider: bool,
+        installed: bool,
         others: Vec<String>,
         net: Result<(), String>,
         auth: Auth,
@@ -264,6 +330,7 @@ mod tests {
                 major: Some(26),
                 fm: Some(vec!["system".into(), "pcc".into()]),
                 decider: true,
+                installed: true,
                 others: vec![],
                 net: Ok(()),
                 auth: Auth::KeyOk,
@@ -284,6 +351,9 @@ mod tests {
         }
         fn decider(&self) -> bool {
             self.decider
+        }
+        fn installed(&self, _: OnDeviceModel) -> bool {
+            self.installed
         }
         fn other_servers(&self) -> Vec<String> {
             self.others.clone()
@@ -323,9 +393,26 @@ mod tests {
             "anyr",
         );
         assert!(get(&c, "macOS").fix.contains("Software Update"));
-        assert!(c.iter().all(|c| c.name != "fm serve"));
+        assert_eq!(get(&c, "fm serve").model.unwrap().1, "needs_newer_macos");
+        assert!(get(&c, "fm serve").detail.contains("macOS 26"));
+        assert!(get(&c, "fm serve")
+            .fix
+            .contains("update to macOS 26 or later"));
         // Decider still serves, so this is not a failure.
         assert!(!failed(&c));
+    }
+
+    #[test]
+    fn non_mac_is_needs_mac_not_needs_newer_macos() {
+        let c = run_checks(
+            &Fake {
+                mac: false,
+                major: None,
+                ..Fake::default()
+            },
+            "anyr",
+        );
+        assert_eq!(get(&c, "fm serve").model.unwrap().1, "needs_mac");
     }
 
     #[test]
@@ -342,6 +429,72 @@ mod tests {
         assert!(get(&c, "fm serve").fix.contains("fm serve"));
         assert!(get(&c, "Decider app").fix.contains("Decider"));
         assert_eq!(get(&c, "Models").level, Level::Fail);
+    }
+
+    fn decider_state(c: &[Check]) -> (&'static str, String, String) {
+        let d = get(c, "Decider app");
+        (d.model.unwrap().1, d.detail.clone(), d.fix.clone())
+    }
+
+    #[test]
+    fn decider_states_each_end_in_a_fix() {
+        // WHY: stopped, not installed and off-Mac need three different next
+        // steps; a bare "not answering" left the owner guessing.
+        let stopped = run_checks(
+            &Fake {
+                decider: false,
+                ..Fake::default()
+            },
+            "anyr",
+        );
+        let (st, _, fix) = decider_state(&stopped);
+        assert_eq!(st, "stopped");
+        assert!(fix.contains("`anyr relay start` launches it"), "{fix}");
+
+        let missing = run_checks(
+            &Fake {
+                decider: false,
+                installed: false,
+                ..Fake::default()
+            },
+            "anyr",
+        );
+        let (st, detail, fix) = decider_state(&missing);
+        assert_eq!((st, detail.as_str()), ("not_installed", "not installed"));
+        assert!(fix.contains("local-relay"), "{fix}");
+
+        let linux = run_checks(
+            &Fake {
+                mac: false,
+                major: None,
+                fm: None,
+                decider: false,
+                ..Fake::default()
+            },
+            "anyr",
+        );
+        let (st, detail, _) = decider_state(&linux);
+        assert_eq!((st, detail.as_str()), ("needs_mac", "needs a Mac"));
+    }
+
+    #[test]
+    fn json_lists_each_model_with_state_and_fix() {
+        let c = run_checks(
+            &Fake {
+                decider: false,
+                installed: false,
+                ..Fake::default()
+            },
+            "anyr",
+        );
+        let j = to_json(&c);
+        let models = j["models"].as_array().unwrap();
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0]["id"], "apple/foundation-model");
+        assert_eq!(models[0]["state"], "running");
+        assert_eq!(models[1]["id"], "perplexity/pplx-decider-flash-v1.2");
+        assert_eq!(models[1]["state"], "not_installed");
+        assert!(models[1]["fix"].as_str().unwrap().contains("Decider"));
     }
 
     #[test]

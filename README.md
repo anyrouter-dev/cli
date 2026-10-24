@@ -392,6 +392,13 @@ yourself shows as `(external)`; the relay never starts a second copy and
 leaves it running on exit. `--no-launch` uses only servers already running,
 and an explicit `--target` never launches anything.
 
+When a model cannot be served, `start`, `relay models` and `relay doctor` say
+which case it is and the next step: not installed (install the
+Decider for Mac app into /Applications), installed but stopped (`start`
+launches it, or open the app), not a Mac, or a Mac on a macOS that is too old (update it). The other models keep serving in
+every case. `relay doctor --json` adds a `models` array with each model's
+`state` (`running`, `stopped`, `not_installed`, `needs_mac`, `needs_newer_macos`) and `fix`.
+
 At a terminal, `start` shows one live screen: connection, models, requests,
 tokens and pool, with keys `p` (pool on/off), `r` (rescan local servers) and
 `q` / Ctrl-C (stop). Piped, with `--quiet`, or with `TERM=dumb` it prints plain
