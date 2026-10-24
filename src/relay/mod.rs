@@ -67,11 +67,89 @@ const DEFAULT_TARGET: &str = "http://localhost:8000/v1";
 const DEFAULT_WS_URL: &str = "wss://anyrouter.dev/api/v1/relay/connect";
 const DEFAULT_API_BASE: &str = "https://anyrouter.dev/api/v1";
 const RELAY_DEVICE_NAME_FIELD: &str = "relay_device_name";
-const MAX_BACKOFF_MS: u64 = 30_000;
-const BASE_BACKOFF_MS: u64 = 1_000;
 /// How long one non-blocking poll of the socket waits before we check the
 /// outbound queue again. Bounds cancel latency and reconnect responsiveness.
 const SOCKET_POLL_MS: u64 = 250;
+/// Read wait while the outbound queue still holds frames: just long enough
+/// to collect what the cloud already sent.
+const BUSY_POLL: Duration = Duration::from_millis(1);
+/// Frames workers may queue ahead of the socket. A peer that stops reading
+/// then stalls the local read instead of growing memory: at most this many
+/// chunks of up to 8 KiB each.
+const OUTBOUND_QUEUE: usize = 64;
+
+/// Liveness and reconnect timings. The cloud answers protocol pings without
+/// waking its Durable Object, so pinging an idle socket is free; silence for
+/// `dead_after` means the socket is half-open (sleep, NAT timeout, dead edge).
+#[derive(Clone, Copy, Debug)]
+struct Timing {
+    ping_every: Duration,
+    dead_after: Duration,
+    backoff_base: Duration,
+    backoff_max: Duration,
+    /// A socket that stayed up this long resets the backoff; a cloud that
+    /// accepts and drops at once keeps backing off.
+    stable_after: Duration,
+}
+
+impl Default for Timing {
+    fn default() -> Self {
+        Timing {
+            ping_every: Duration::from_secs(10),
+            dead_after: Duration::from_secs(25),
+            backoff_base: Duration::from_secs(1),
+            backoff_max: Duration::from_secs(30),
+            stable_after: Duration::from_secs(30),
+        }
+    }
+}
+
+impl Timing {
+    /// `ANYR_RELAY_TIME_SCALE` (0.001 to 1) shrinks every timing so the
+    /// hermetic tests run in seconds.
+    fn from_env(env: &BTreeMap<String, String>) -> Self {
+        let t = Timing::default();
+        let Some(k) = env
+            .get("ANYR_RELAY_TIME_SCALE")
+            .and_then(|v| v.parse::<f64>().ok())
+            .filter(|k| (0.001..=1.0).contains(k))
+        else {
+            return t;
+        };
+        Timing {
+            ping_every: t.ping_every.mul_f64(k),
+            dead_after: t.dead_after.mul_f64(k),
+            backoff_base: t.backoff_base.mul_f64(k),
+            backoff_max: t.backoff_max.mul_f64(k),
+            stable_after: t.stable_after.mul_f64(k),
+        }
+    }
+}
+
+/// Exponential backoff with jitter: attempt k waits a random time in
+/// [d/2, d] where d = base * 2^(k-1), capped at `backoff_max`. Jitter keeps
+/// many relays from reconnecting in lockstep after a cloud deploy.
+#[derive(Default)]
+struct Backoff {
+    attempt: u32,
+}
+
+impl Backoff {
+    fn next(&mut self, t: &Timing) -> Duration {
+        use std::hash::{BuildHasher as _, Hasher as _};
+        self.attempt = self.attempt.saturating_add(1);
+        let full = t
+            .backoff_base
+            .saturating_mul(1 << (self.attempt - 1).min(20))
+            .min(t.backoff_max);
+        let unit = (std::collections::hash_map::RandomState::new()
+            .build_hasher()
+            .finish()
+            % 1_000) as f64
+            / 1_000.0;
+        full.mul_f64(0.5 + unit / 2.0)
+    }
+}
 
 /// `fm serve`'s loopback-only OpenAI-compatible endpoint (Apple Foundation
 /// Models): observed output is `url http://127.0.0.1:1976`,
@@ -1048,7 +1126,7 @@ fn body_for_target(target: &Target, body: &str) -> Result<String, String> {
 /// streamed body) round-trips incrementally. Runs on its own thread; `cancel`
 /// flips the flag and the stream loop bails between reads.
 fn handle_request(
-    tx: &mpsc::Sender<ClientFrame>,
+    tx: &mpsc::SyncSender<ClientFrame>,
     frame: &RequestFrame,
     target: &str,
     cancel: &AtomicBool,
@@ -1364,6 +1442,10 @@ fn connect_ws(url: &str, token: &str) -> Result<Ws, ConnectError> {
         .to_string();
     let port = uri.port_u16().unwrap_or(if tls { 443 } else { 80 });
     let stream = dial_with_timeout(&host, port, WS_CONNECT_TIMEOUT)?;
+    // Same cap for TLS and the upgrade: a host that accepts TCP and never
+    // answers would otherwise block this handshake forever.
+    let _ = stream.set_read_timeout(Some(WS_CONNECT_TIMEOUT));
+    let _ = stream.set_write_timeout(Some(WS_CONNECT_TIMEOUT));
     match tungstenite::client_tls(request, stream) {
         Ok((ws, _resp)) => Ok(ws),
         Err(tungstenite::HandshakeError::Failure(tungstenite::Error::Http(resp)))
@@ -1423,10 +1505,13 @@ fn dial_with_timeout(
     Err(last)
 }
 
-/// Shared state one live connection owns.
+/// State one live connection owns, built fresh for each socket: a worker of
+/// a dropped socket finds its queue gone and stops, so none of its frames
+/// reach the next socket.
 struct ConnState {
     /// Outbound frames queued by worker threads; drained by the main loop.
-    tx: mpsc::Sender<ClientFrame>,
+    /// Bounded, so a stalled socket stalls the workers, not memory.
+    tx: mpsc::SyncSender<ClientFrame>,
     rx: Receiver<ClientFrame>,
     /// Cancel flags keyed by request id; `cancel` frames flip them.
     in_flight: Arc<Mutex<BTreeMap<String, Arc<AtomicBool>>>>,
@@ -1435,17 +1520,24 @@ struct ConnState {
     /// True once pool comes from the user, not the default: only then does
     /// the hello carry it.
     pool_chosen: Arc<AtomicBool>,
+    timing: Timing,
+    /// Requests the previous socket dropped mid-flight. The cloud may still
+    /// be waiting on them (a half-open socket never told it), so each gets
+    /// an `error` right after the hello.
+    orphans: std::cell::RefCell<Vec<String>>,
 }
 
 impl ConnState {
     fn new(stats: Arc<Stats>) -> Self {
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = mpsc::sync_channel(OUTBOUND_QUEUE);
         ConnState {
             tx,
             rx,
             in_flight: Arc::new(Mutex::new(BTreeMap::new())),
             stats,
             pool_chosen: Arc::default(),
+            timing: Timing::default(),
+            orphans: Default::default(),
         }
     }
 }
@@ -1453,8 +1545,8 @@ impl ConnState {
 /// Why `serve_connection` returned.
 #[derive(Debug, PartialEq, Eq)]
 enum ConnEnd {
-    /// Socket closed or failed: reconnect with backoff.
-    Dropped,
+    /// Socket closed, failed or went silent: reconnect with backoff.
+    Dropped(String),
     /// Ctrl-C, SIGTERM or `q`.
     Stop,
     /// `r` key: rediscover local servers and reconnect now.
@@ -1475,17 +1567,31 @@ fn serve_connection(
     // Capability advertisement on every connect/reconnect (#1128), so models
     // added to the local server show up at the next reconnect at latest.
     let models = router.all_models();
-    send_frame(
-        ws,
-        &ClientFrame::Hello {
-            models: models.clone(),
-            max_concurrency,
-            pool: state
-                .pool_chosen
-                .load(Ordering::Relaxed)
-                .then(|| state.stats.pool.load(Ordering::Relaxed)),
-        },
-    );
+    let hello = ClientFrame::Hello {
+        models: models.clone(),
+        max_concurrency,
+        pool: state
+            .pool_chosen
+            .load(Ordering::Relaxed)
+            .then(|| state.stats.pool.load(Ordering::Relaxed)),
+    };
+    if let Err(e) = send_frame(ws, &hello) {
+        return ConnEnd::Dropped(e);
+    }
+    // Popped only once sent, so a socket that dies here hands the rest on.
+    loop {
+        let Some(id) = state.orphans.borrow().last().cloned() else {
+            break;
+        };
+        let orphan = ClientFrame::Error {
+            id,
+            message: "relay connection dropped mid-request".into(),
+        };
+        if let Err(e) = send_frame(ws, &orphan) {
+            return ConnEnd::Dropped(e);
+        }
+        state.orphans.borrow_mut().pop();
+    }
     vlog(&format!(
         "advertised {} model(s): {}",
         models.len(),
@@ -1498,7 +1604,16 @@ fn serve_connection(
 
     // Largest usage total seen per request; added to the counter on `done`.
     let mut tokens: BTreeMap<String, u64> = BTreeMap::new();
+    let mut last_heard = std::time::Instant::now();
+    let mut last_ping = last_heard;
+    let mut busy = false;
     loop {
+        if last_heard.elapsed() >= state.timing.dead_after {
+            return ConnEnd::Dropped(format!(
+                "no reply from the cloud in {}s",
+                state.timing.dead_after.as_secs_f64().round()
+            ));
+        }
         if live::stop_requested() != 0 {
             let _ = ws.close(None);
             let _ = ws.flush();
@@ -1510,9 +1625,25 @@ fn serve_connection(
             return ConnEnd::Rescan;
         }
         // 1. Drain worker output first so streamed chunks go out promptly.
+        //    A queue that never empties (a long stream to a slow cloud)
+        //    still yields after one poll interval, so pongs and cancels are
+        //    read; the read then barely waits, to keep the stream moving.
+        let slice = std::time::Instant::now();
+        let was_busy = busy;
+        busy = false;
         loop {
+            if slice.elapsed() >= Duration::from_millis(SOCKET_POLL_MS) {
+                busy = true;
+                break;
+            }
             match state.rx.try_recv() {
                 Ok(frame) => {
+                    // Settled only once sent: a request whose last frame
+                    // never left stays in flight, so the next socket reports
+                    // it as an orphan.
+                    if let Err(e) = send_frame(ws, &frame) {
+                        return ConnEnd::Dropped(e);
+                    }
                     match &frame {
                         ClientFrame::Chunk { id, data } => {
                             if let Some(n) = live::total_tokens(data) {
@@ -1534,69 +1665,95 @@ fn serve_connection(
                         }
                         _ => {}
                     }
-                    send_frame(ws, &frame);
                 }
                 Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => return ConnEnd::Dropped, // unreachable; workers outlive rx
+                Err(TryRecvError::Disconnected) => {
+                    return ConnEnd::Dropped("outbound queue closed".into())
+                }
             }
         }
 
-        // 2. Poll the socket briefly for the next server frame. WouldBlock
-        //    (read timeout) is not fatal — just loop back to the queue drain.
-        match ws.read() {
-            Ok(tungstenite::Message::Text(text)) => match parse_server_frame(&text) {
-                Some(ServerFrame::Request(frame)) => {
-                    state.stats.requests.fetch_add(1, Ordering::Relaxed);
-                    match router
-                        .route(&frame.path, &frame.body)
-                        .and_then(|t| Ok((t, body_for_target(t, &frame.body)?)))
-                    {
-                        Ok((t, body)) => {
-                            state.stats.in_flight.fetch_add(1, Ordering::Relaxed);
-                            let base = t.base.clone();
-                            spawn_request(state, RequestFrame { body, ..frame }, base)
-                        }
-                        Err(message) => {
-                            state.stats.errors.fetch_add(1, Ordering::Relaxed);
-                            vlog(&format!("rejected request: {message}"));
-                            send_frame(
-                                ws,
-                                &ClientFrame::Error {
+        // 2. Read every frame the cloud has sent. WouldBlock (read timeout)
+        //    is not fatal: it ends the read and loops back to the drain.
+        if last_ping.elapsed() >= state.timing.ping_every {
+            last_ping = std::time::Instant::now();
+            if let Err(e) = ws.send(tungstenite::Message::Ping(Vec::new())) {
+                return ConnEnd::Dropped(format!("ping failed: {e}"));
+            }
+        }
+        if busy != was_busy {
+            let wait = if busy {
+                BUSY_POLL
+            } else {
+                Duration::from_millis(SOCKET_POLL_MS)
+            };
+            set_socket_timeouts(ws, wait, state.timing.dead_after);
+        }
+        loop {
+            let msg = ws.read();
+            if msg.is_ok() {
+                last_heard = std::time::Instant::now();
+            }
+            match msg {
+                Ok(tungstenite::Message::Text(text)) => match parse_server_frame(&text) {
+                    Some(ServerFrame::Request(frame)) => {
+                        state.stats.requests.fetch_add(1, Ordering::Relaxed);
+                        match router
+                            .route(&frame.path, &frame.body)
+                            .and_then(|t| Ok((t, body_for_target(t, &frame.body)?)))
+                        {
+                            Ok((t, body)) => {
+                                state.stats.in_flight.fetch_add(1, Ordering::Relaxed);
+                                let base = t.base.clone();
+                                if let Err(rejected) =
+                                    spawn_request(state, RequestFrame { body, ..frame }, base)
+                                {
+                                    if let Err(e) = send_frame(ws, &rejected) {
+                                        return ConnEnd::Dropped(e);
+                                    }
+                                }
+                            }
+                            Err(message) => {
+                                state.stats.errors.fetch_add(1, Ordering::Relaxed);
+                                vlog(&format!("rejected request: {message}"));
+                                let rejected = ClientFrame::Error {
                                     id: frame.id,
                                     message,
-                                },
-                            )
+                                };
+                                if let Err(e) = send_frame(ws, &rejected) {
+                                    return ConnEnd::Dropped(e);
+                                }
+                            }
                         }
                     }
-                }
-                Some(ServerFrame::Device { id, name }) => {
-                    vlog(&format!("bound to device {id} (\"{name}\")"));
-                    on_device(&id);
-                }
-                Some(ServerFrame::Cancel(id)) => {
-                    if let Some(flag) = lock_in_flight(&state.in_flight).remove(&id) {
-                        flag.store(true, Ordering::SeqCst);
-                        tokens.remove(&id);
-                        state.stats.finish_request(false);
+                    Some(ServerFrame::Device { id, name }) => {
+                        vlog(&format!("bound to device {id} (\"{name}\")"));
+                        on_device(&id);
                     }
+                    Some(ServerFrame::Cancel(id)) => {
+                        if let Some(flag) = lock_in_flight(&state.in_flight).remove(&id) {
+                            flag.store(true, Ordering::SeqCst);
+                            tokens.remove(&id);
+                            state.stats.finish_request(false);
+                        }
+                    }
+                    None => vlog("ignoring malformed frame from cloud"),
+                },
+                Ok(tungstenite::Message::Close(_)) => {
+                    return ConnEnd::Dropped("the cloud closed the connection".into());
                 }
-                None => vlog("ignoring malformed frame from cloud"),
-            },
-            Ok(tungstenite::Message::Close(_)) => {
-                vlog("server closed connection");
-                return ConnEnd::Dropped;
-            }
-            Ok(_) => {}
-            Err(tungstenite::Error::Io(ref e)) if is_poll_timeout(e.kind()) => {
-                continue;
-            }
-            Err(tungstenite::Error::ConnectionClosed) | Err(tungstenite::Error::AlreadyClosed) => {
-                return ConnEnd::Dropped
-            }
-            Err(err) => {
-                vlog(&format!("ws error: {err}"));
-                state.stats.set_error(Some(err.to_string()));
-                return ConnEnd::Dropped;
+                Ok(_) => {}
+                Err(tungstenite::Error::Io(ref e)) if is_poll_timeout(e.kind()) => {
+                    break;
+                }
+                Err(tungstenite::Error::ConnectionClosed)
+                | Err(tungstenite::Error::AlreadyClosed) => {
+                    return ConnEnd::Dropped("the connection closed".into())
+                }
+                Err(err) => {
+                    state.stats.set_error(Some(err.to_string()));
+                    return ConnEnd::Dropped(err.to_string());
+                }
             }
         }
     }
@@ -1629,35 +1786,48 @@ fn lock_in_flight(
     map.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-fn spawn_request(state: &ConnState, frame: RequestFrame, target: String) {
+/// Returns the `error` frame to send when no worker could start. The caller
+/// sends it straight on the socket: the main loop is the queue's only
+/// reader, so queueing it could block forever on a full queue.
+fn spawn_request(
+    state: &ConnState,
+    frame: RequestFrame,
+    target: String,
+) -> Result<(), ClientFrame> {
     let cancel = Arc::new(AtomicBool::new(false));
     let id = frame.id.clone();
     lock_in_flight(&state.in_flight).insert(id.clone(), Arc::clone(&cancel));
     let tx = state.tx.clone();
-    if let Err(err) = std::thread::Builder::new()
+    match std::thread::Builder::new()
         .name(format!("relay-req-{}", short_id(&id, 8)))
         .spawn(move || handle_request(&tx, &frame, &target, &cancel))
     {
-        lock_in_flight(&state.in_flight).remove(&id);
-        let _ = state.tx.send(ClientFrame::Error {
-            id,
-            message: format!("Could not spawn relay worker: {err}"),
-        });
+        Ok(_) => Ok(()),
+        Err(err) => {
+            lock_in_flight(&state.in_flight).remove(&id);
+            Err(ClientFrame::Error {
+                id,
+                message: format!("Could not spawn relay worker: {err}"),
+            })
+        }
     }
 }
 
-fn abort_in_flight(in_flight: &Arc<Mutex<BTreeMap<String, Arc<AtomicBool>>>>) {
+/// Cancel every request still running on a finished socket and return their
+/// ids.
+fn abort_in_flight(in_flight: &Arc<Mutex<BTreeMap<String, Arc<AtomicBool>>>>) -> Vec<String> {
     let mut map = lock_in_flight(in_flight);
     for flag in map.values() {
         flag.store(true, Ordering::SeqCst);
     }
-    map.clear();
+    std::mem::take(&mut *map).into_keys().collect()
 }
 
-fn send_frame(ws: &mut Ws, frame: &ClientFrame) {
-    if let Err(err) = ws.send(tungstenite::Message::text(frame.to_json())) {
-        vlog(&format!("send {} failed: {err}", frame_type_name(frame)));
-    }
+/// A failed write ends the connection: the socket is dead or stalled past
+/// the write timeout, and retrying on it only delays the reconnect.
+fn send_frame(ws: &mut Ws, frame: &ClientFrame) -> Result<(), String> {
+    ws.send(tungstenite::Message::text(frame.to_json()))
+        .map_err(|err| format!("send {} failed: {err}", frame_type_name(frame)))
 }
 
 fn frame_type_name(frame: &ClientFrame) -> &'static str {
@@ -1670,9 +1840,19 @@ fn frame_type_name(frame: &ClientFrame) -> &'static str {
     }
 }
 
+/// Bytes the kernel may hold unsent for the relay socket. A pong comes back
+/// only after the cloud reads everything sent before the ping, so an
+/// autotuned multi-megabyte send buffer on a slow uplink delays it past the
+/// liveness window. Linux doubles the value, so the backlog is 512 KiB
+/// there: 4s on a 1 Mbit/s uplink, and still 20 Mbit/s at 100 ms RTT.
+#[cfg(unix)]
+const SOCKET_SEND_BUFFER: usize = 256 * 1024;
+
 /// Configure short socket read timeouts so `ws.read()` polls instead of
-/// blocking forever (WouldBlock drives the main-loop multiplexing).
-fn set_read_timeouts(ws: &Ws, timeout: Duration) {
+/// blocking forever (WouldBlock drives the main-loop multiplexing). A write
+/// may block for `write` at most, so a stalled peer cannot outlast the
+/// liveness window.
+fn set_socket_timeouts(ws: &Ws, read: Duration, write: Duration) {
     use tungstenite::stream::MaybeTlsStream;
     let sock: Option<&std::net::TcpStream> = match ws.get_ref() {
         MaybeTlsStream::Plain(s) => Some(s),
@@ -1680,8 +1860,23 @@ fn set_read_timeouts(ws: &Ws, timeout: Duration) {
         _ => None,
     };
     if let Some(sock) = sock {
-        let _ = sock.set_read_timeout(Some(timeout));
-        let _ = sock.set_write_timeout(Some(Duration::from_secs(30)));
+        let _ = sock.set_read_timeout(Some(read));
+        let _ = sock.set_write_timeout(Some(write));
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd as _;
+            let size = SOCKET_SEND_BUFFER as libc::c_int;
+            // SAFETY: a valid fd and a c_int option value of the given size.
+            unsafe {
+                libc::setsockopt(
+                    sock.as_raw_fd(),
+                    libc::SOL_SOCKET,
+                    libc::SO_SNDBUF,
+                    (&size as *const libc::c_int).cast(),
+                    std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+                );
+            }
+        }
     }
 }
 
@@ -2027,10 +2222,7 @@ fn run_foreground(f: Foreground<'_>) -> Result<i32, String> {
         f.follow_pool_pref,
         on_pool,
     );
-    let conn = ConnState {
-        pool_chosen,
-        ..ConnState::new(Arc::clone(&stats))
-    };
+    let timing = Timing::from_env(f.env);
 
     // Pool is synced once per run: at connect when the device id is already
     // known, else when the cloud's `device` frame names it.
@@ -2056,7 +2248,10 @@ fn run_foreground(f: Foreground<'_>) -> Result<i32, String> {
         }
         sync_pool_once();
     };
-    let mut attempt: u32 = 0;
+    let mut backoff = Backoff::default();
+    let mut orphans: Vec<String> = Vec::new();
+    // Set while disconnected, for the "back online after" line.
+    let mut offline_since: Option<std::time::Instant> = None;
     let mut last_err = String::new();
     let mut refused = None;
     loop {
@@ -2074,19 +2269,40 @@ fn run_foreground(f: Foreground<'_>) -> Result<i32, String> {
         vlog(&format!("relay url={url}"));
         match connect_ws(&url, f.token) {
             Ok(mut ws) => {
-                attempt = 0;
                 last_err.clear();
                 stats.set_conn(Conn::Connected);
                 stats.set_error(None);
-                ulog(&format!("connected as \"{}\"", f.args.device));
+                match offline_since.take() {
+                    Some(t) => ulog(&format!(
+                        "back online after {}",
+                        view::duration(t.elapsed().as_secs())
+                    )),
+                    None => ulog(&format!("connected as \"{}\"", f.args.device)),
+                }
                 if known_id.is_some() {
                     sync_pool_once();
                 }
-                set_read_timeouts(&ws, Duration::from_millis(SOCKET_POLL_MS));
+                set_socket_timeouts(
+                    &ws,
+                    Duration::from_millis(SOCKET_POLL_MS),
+                    timing.dead_after,
+                );
+                let conn = ConnState {
+                    pool_chosen: Arc::clone(&pool_chosen),
+                    timing,
+                    orphans: std::mem::take(&mut orphans).into(),
+                    ..ConnState::new(Arc::clone(&stats))
+                };
+                let up_since = std::time::Instant::now();
                 let end =
                     serve_connection(&mut ws, &router, &conn, f.args.max_concurrency, &on_device);
-                abort_in_flight(&conn.in_flight);
+                orphans = conn.orphans.take();
+                orphans.extend(abort_in_flight(&conn.in_flight));
+                drop(conn);
                 stats.in_flight.store(0, Ordering::Relaxed);
+                if up_since.elapsed() >= timing.stable_after {
+                    backoff = Backoff::default();
+                }
                 match end {
                     ConnEnd::Stop => break,
                     ConnEnd::Rescan => {
@@ -2100,7 +2316,10 @@ fn run_foreground(f: Foreground<'_>) -> Result<i32, String> {
                         );
                         continue;
                     }
-                    ConnEnd::Dropped => ulog("disconnected; reconnecting"),
+                    ConnEnd::Dropped(why) => {
+                        offline_since = Some(std::time::Instant::now());
+                        ulog(&format!("disconnected: {why}"));
+                    }
                 }
             }
             Err(ConnectError::Refused(msg)) => {
@@ -2108,6 +2327,7 @@ fn run_foreground(f: Foreground<'_>) -> Result<i32, String> {
                 break;
             }
             Err(ConnectError::Transient(err)) => {
+                offline_since.get_or_insert_with(std::time::Instant::now);
                 if err != last_err {
                     ulog(&format!("relay connect failed: {err}"));
                     last_err = err.clone();
@@ -2115,16 +2335,17 @@ fn run_foreground(f: Foreground<'_>) -> Result<i32, String> {
                 stats.set_error(Some(err));
             }
         }
-        attempt += 1;
-        let delay = BASE_BACKOFF_MS
-            .saturating_mul(1 << (attempt - 1).min(20))
-            .min(MAX_BACKOFF_MS);
+        let delay = backoff.next(&timing);
         stats.set_conn(Conn::Reconnecting {
-            attempt,
-            retry_at: state::now_secs() + delay.div_ceil(1000),
+            attempt: backoff.attempt,
+            retry_at: state::now_secs() + (delay.as_millis() as u64).div_ceil(1000),
         });
-        vlog(&format!("reconnecting in {delay}ms"));
-        live::interruptible_sleep(Duration::from_millis(delay));
+        ulog(&format!(
+            "reconnecting in {:.1}s (attempt {})",
+            delay.as_secs_f64(),
+            backoff.attempt
+        ));
+        live::interruptible_sleep(delay);
         if live::stop_requested() != 0 {
             break;
         }
@@ -3488,7 +3709,7 @@ profiles:
     #[test]
     fn streams_local_response_back_as_head_chunk_done() {
         let (target, join) = spawn_stub_target(vec![(200, "hello world".into())]);
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = mpsc::sync_channel(OUTBOUND_QUEUE);
         handle_request(
             &tx,
             &req("r1", "/v1/chat/completions", "{}"),
@@ -3518,7 +3739,7 @@ profiles:
     #[test]
     fn non_2xx_from_target_relays_status_and_body() {
         let (target, join) = spawn_stub_target(vec![(502, "bad gateway".into())]);
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = mpsc::sync_channel(OUTBOUND_QUEUE);
         handle_request(
             &tx,
             &req("r2", "/v1/chat/completions", "{}"),
@@ -3547,7 +3768,7 @@ profiles:
         let addr = listener.local_addr().unwrap();
         drop(listener);
         let target = format!("http://{addr}");
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = mpsc::sync_channel(OUTBOUND_QUEUE);
         handle_request(
             &tx,
             &req("r3", "/v1/chat/completions", "{}"),
@@ -3569,7 +3790,7 @@ profiles:
     fn cancel_flag_stops_streaming() {
         let body = "x".repeat(1024 * 1024);
         let (target, join) = spawn_stub_target(vec![(200, body)]);
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = mpsc::sync_channel(OUTBOUND_QUEUE);
         handle_request(
             &tx,
             &req("r4", "/v1/chat/completions", "{}"),
@@ -3592,7 +3813,7 @@ profiles:
     fn utf8_split_body_round_trips() {
         let expected = "héllo 🚀".repeat(1000);
         let (target, join) = spawn_stub_target(vec![(200, expected.clone())]);
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = mpsc::sync_channel(OUTBOUND_QUEUE);
         handle_request(
             &tx,
             &req("r5", "/v1/chat/completions", "{}"),
@@ -3881,7 +4102,7 @@ profiles:
         });
 
         let mut ws = connect_ws(&url, "sk-ar-v1-test").expect("connect to mock cloud");
-        set_read_timeouts(&ws, Duration::from_millis(20));
+        set_socket_timeouts(&ws, Duration::from_millis(20), Duration::from_secs(30));
         let state = ConnState::new(Arc::default());
         let (done_tx, done_rx) = mpsc::channel();
         std::thread::spawn(move || {
@@ -3893,7 +4114,11 @@ profiles:
             .unwrap_or_else(|_| {
                 panic!("relay did not finish in 60s: {:#?}", trace.lock().unwrap())
             });
-        assert_eq!(end, ConnEnd::Dropped, "{:#?}", trace.lock().unwrap());
+        assert!(
+            matches!(end, ConnEnd::Dropped(_)),
+            "{:#?}",
+            trace.lock().unwrap()
+        );
         cloud_join
             .join()
             .unwrap_or_else(|_| panic!("mock cloud assertions: {:#?}", trace.lock().unwrap()));
@@ -4013,7 +4238,7 @@ profiles:
             let _ = ws.flush();
         });
         let mut ws = connect_ws(&url, "sk-ar-v1-test").expect("connect");
-        set_read_timeouts(&ws, Duration::from_millis(20));
+        set_socket_timeouts(&ws, Duration::from_millis(20), Duration::from_secs(30));
         let state = ConnState::new(Arc::default());
         serve_connection(&mut ws, &r, &state, None, &|_| {});
         cloud_join.join().expect("mock cloud assertions");
@@ -4036,7 +4261,7 @@ profiles:
             let _ = ws.flush();
         });
         let mut ws = connect_ws(&url, "sk-ar-v1-test").expect("connect");
-        set_read_timeouts(&ws, Duration::from_millis(20));
+        set_socket_timeouts(&ws, Duration::from_millis(20), Duration::from_secs(30));
         // --no-pool: pool chosen and off.
         let state = ConnState {
             pool_chosen: Arc::new(AtomicBool::new(true)),
@@ -4285,7 +4510,7 @@ profiles:
             let _ = ws.flush();
         });
         let mut ws = connect_ws(&url, "sk-ar-v1-test").expect("connect");
-        set_read_timeouts(&ws, Duration::from_millis(20));
+        set_socket_timeouts(&ws, Duration::from_millis(20), Duration::from_secs(30));
         let state = ConnState::new(Arc::default());
         serve_connection(&mut ws, &router, &state, None, &|_| {});
         cloud_join.join().expect("mock cloud assertions");
