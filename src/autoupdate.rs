@@ -316,28 +316,41 @@ pub fn dir_writable(dest: &Path) -> bool {
 }
 
 /// Move `new` over `dest`, keeping the old binary at `.anyr.prev`.
-/// Unix: hard-link the old one aside, then one atomic rename. `dest` exists
-/// at every instant. Windows cannot replace a running exe, but it can rename
-/// one, so the old exe moves aside first and `new` takes its name.
+/// The old build is first kept at `.anyr.old`, and `.anyr.prev` is replaced
+/// only after the swap worked, so a failed swap keeps the previous rollback.
+/// Unix: hard-link the old one aside, then one atomic rename; `dest` exists
+/// at every instant. Windows cannot replace a running exe, only rename it, so
+/// the old exe moves to `.anyr.old` first and `new` takes its name. A crash
+/// between those two renames leaves no `anyr`, with the complete old build
+/// at `.anyr.old`; renaming it back recovers.
 pub fn swap_in(new: &Path, dest: &Path) -> Result<(), String> {
-    let prev = sibling(dest, "prev");
-    clear_slot(&prev);
+    let old = sibling(dest, "old");
+    clear_slot(&old);
     #[cfg(windows)]
     {
-        fs::rename(dest, &prev)
+        fs::rename(dest, &old)
             .map_err(|e| format!("could not move {} aside: {e}", dest.display()))?;
         if let Err(e) = fs::rename(new, dest) {
-            let _ = fs::rename(&prev, dest);
+            let _ = fs::rename(&old, dest);
             return Err(format!("could not replace {}: {e}", dest.display()));
         }
     }
     #[cfg(not(windows))]
     {
-        if fs::hard_link(dest, &prev).is_err() {
-            fs::copy(dest, &prev).map_err(|e| format!("could not keep the previous build: {e}"))?;
+        if fs::hard_link(dest, &old).is_err() {
+            fs::copy(dest, &old).map_err(|e| format!("could not keep the previous build: {e}"))?;
         }
-        fs::rename(new, dest).map_err(|e| format!("could not replace {}: {e}", dest.display()))?;
+        if let Err(e) = fs::rename(new, dest) {
+            let _ = fs::remove_file(&old);
+            return Err(format!("could not replace {}: {e}", dest.display()));
+        }
     }
+    let prev = sibling(dest, "prev");
+    #[cfg(windows)]
+    clear_slot(&prev);
+    // Best effort: the new build is in place either way, and `.anyr.old`
+    // still holds the old one if this rename fails.
+    let _ = fs::rename(&old, &prev);
     Ok(())
 }
 
@@ -478,7 +491,7 @@ pub fn on_startup(command: &str, parsed: &ParsedArgs, env: &BTreeMap<String, Str
     let mut state = UpdateState::load(env);
     let before = state.clone();
     if state.pending_path.is_some() {
-        if let Some(_lock) = crate::upgrade::try_lock(env) {
+        if let Ok(_lock) = crate::upgrade::try_lock(env) {
             // Reload under the lock: the checker may have just written it.
             state = UpdateState::load(env);
             let channel = crate::upgrade::configured_channel(env);
@@ -511,7 +524,7 @@ pub fn on_startup(command: &str, parsed: &ParsedArgs, env: &BTreeMap<String, Str
 /// lock before saving `notified`; without the lock, skip and print next run.
 #[cfg(feature = "native")]
 fn notify_once(env: &BTreeMap<String, String>, state: &mut UpdateState, hint: &str, latest: &str) {
-    let Some(_lock) = crate::upgrade::try_lock(env) else {
+    let Ok(_lock) = crate::upgrade::try_lock(env) else {
         return;
     };
     *state = UpdateState::load(env);
@@ -794,6 +807,21 @@ mod tests {
         )));
         assert!(!is_cargo_target_build(Path::new("/home/u/.local/bin/anyr")));
         assert!(!is_cargo_target_build(Path::new("/opt/target/bin/anyr")));
+    }
+
+    #[test]
+    fn failed_swap_keeps_the_previous_rollback_build() {
+        // WHY: `.prev` was cleared before the swap, so a swap that failed
+        // left nothing to roll back to.
+        let dir = tmp_dir("swap-fail");
+        let dest = dir.join("anyr");
+        fs::write(&dest, "current").unwrap();
+        fs::write(sibling(&dest, "prev"), "older").unwrap();
+        let missing = sibling(&dest, "pending");
+        assert!(swap_in(&missing, &dest).is_err());
+        assert_eq!(fs::read_to_string(&dest).unwrap(), "current");
+        assert_eq!(fs::read_to_string(sibling(&dest, "prev")).unwrap(), "older");
+        assert!(!sibling(&dest, "old").exists());
     }
 
     #[test]

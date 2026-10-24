@@ -686,46 +686,48 @@ fn verify_against_checksums(body: Option<String>, url: &str, tmp: &Path) -> Resu
 
 const ANOTHER_UPDATE_RUNNING: &str = "another anyr update is running; try again shortly";
 
+/// Holds the OS lock on `update.lock` (flock on Unix, LockFileEx on
+/// Windows). The kernel picks exactly one owner and frees the lock when the
+/// owner exits or is killed, so there is no staleness rule and the file is
+/// never deleted: unlinking it could free a newer owner.
 pub(crate) struct UpdateLock {
-    path: PathBuf,
+    _file: fs::File,
 }
 
-impl Drop for UpdateLock {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
-    }
-}
-
-pub(crate) fn try_lock(env: &BTreeMap<String, String>) -> Option<UpdateLock> {
+/// Take the update lock without waiting. Err says why: another update holds
+/// it, or the lock file cannot be opened or locked at all.
+pub(crate) fn try_lock(env: &BTreeMap<String, String>) -> Result<UpdateLock, String> {
     let dir = state_dir(env);
     let _ = crate::config::ensure_private_dir(&dir);
     let path = dir.join("update.lock");
-    if let Ok(meta) = fs::metadata(&path) {
-        if let Ok(modified) = meta.modified() {
-            if modified
-                .elapsed()
-                .unwrap_or(Duration::from_secs(0))
-                .as_secs()
-                > 15 * 60
-            {
-                let _ = fs::remove_file(&path);
-            }
+    let mut opts = fs::OpenOptions::new();
+    opts.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let mut file = opts
+        .open(&path)
+        .map_err(|e| format!("could not open {}: {e}", path.display()))?;
+    match file.try_lock() {
+        Ok(()) => {}
+        Err(fs::TryLockError::WouldBlock) => return Err(ANOTHER_UPDATE_RUNNING.into()),
+        Err(fs::TryLockError::Error(e)) => {
+            return Err(format!("could not lock {}: {e}", path.display()))
         }
     }
-    match crate::config::open_private(&path, true) {
-        Ok(mut file) => {
-            let _ = writeln!(file, "{}", std::process::id());
-            Some(UpdateLock { path })
-        }
-        Err(_) => None,
-    }
+    // The pid is for a human reading the file; nothing parses it.
+    let _ = file.set_len(0);
+    let _ = writeln!(file, "{}", std::process::id());
+    Ok(UpdateLock { _file: file })
 }
 
 /// `anyr update --auto`, run detached by `autoupdate::on_startup`. Checks
 /// the channel and stages a verified build for the next run. Never swaps the
 /// binary and never prints; every failure lands in the state file.
 fn run_auto(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, String> {
-    let Some(_lock) = try_lock(env) else {
+    let Ok(_lock) = try_lock(env) else {
         return Ok(0);
     };
     let mut state = UpdateState::load(env);
@@ -875,7 +877,7 @@ fn print_status(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i
 /// `anyr update --rollback`: put the previous build back and skip this
 /// version in auto-update until a newer one ships.
 fn run_rollback(env: &BTreeMap<String, String>) -> Result<i32, String> {
-    let _lock = try_lock(env).ok_or(ANOTHER_UPDATE_RUNNING)?;
+    let _lock = try_lock(env)?;
     let dest = install_dest()?;
     crate::autoupdate::rollback(&dest)?;
     let mut state = UpdateState::load(env);
@@ -910,7 +912,7 @@ pub fn run(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, S
     if let Some(ch) = switch {
         // A staged build belongs to the channel it was found on: drop it so a
         // beta cannot apply after switching to stable.
-        let _lock = try_lock(env).ok_or(ANOTHER_UPDATE_RUNNING)?;
+        let _lock = try_lock(env)?;
         let changed = persist_channel(ch, env)?;
         if changed {
             println!("channel set to {}", ch.as_str());
@@ -1026,11 +1028,7 @@ pub fn run(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, S
 
     let target_ver = installable[0].version_str().to_string();
     // The staging and swap steps share files with the background stager.
-    let _lock = if dry {
-        None
-    } else {
-        Some(try_lock(env).ok_or(ANOTHER_UPDATE_RUNNING)?)
-    };
+    let _lock = if dry { None } else { Some(try_lock(env)?) };
     let spinner = crate::spinner::Spinner::start(updating_line(VERSION, &target_ver, channel));
     if dry {
         spinner.succeed(&would_update_line(&target_ver));
@@ -1382,7 +1380,7 @@ mod tests {
         let (env, dir) = isolated_home();
         let path = dir.join("update.lock");
         for _ in 0..200 {
-            drop(try_lock(&env));
+            drop(try_lock(&env).ok());
             if !path.exists() {
                 fs::write(&path, "1\n").unwrap();
             }
@@ -1393,7 +1391,7 @@ mod tests {
                     let (env, barrier) = (env.clone(), Arc::clone(&barrier));
                     std::thread::spawn(move || {
                         barrier.wait();
-                        try_lock(&env)
+                        try_lock(&env).ok()
                     })
                 })
                 .collect();
@@ -1411,9 +1409,9 @@ mod tests {
         let (env, dir) = isolated_home();
         let a = try_lock(&env).expect("first lock");
         backdate(&dir.join("update.lock"));
-        let b = try_lock(&env);
+        let b = try_lock(&env).ok();
         drop(a);
-        let c = try_lock(&env);
+        let c = try_lock(&env).ok();
         assert!(
             !(b.is_some() && c.is_some()),
             "two live owners after the first one dropped"
@@ -1427,14 +1425,18 @@ mod tests {
         // WHY: a killed updater must not block every update for 15 minutes.
         let (env, dir) = isolated_home();
         let mut child = std::process::Command::new(if cfg!(windows) { "cmd" } else { "true" })
-            .args(if cfg!(windows) { &["/C", "exit"][..] } else { &[][..] })
+            .args(if cfg!(windows) {
+                &["/C", "exit"][..]
+            } else {
+                &[][..]
+            })
             .spawn()
             .unwrap();
         let dead = child.id();
         child.wait().unwrap();
         // A fresh file, so the time-based fallback cannot be what frees it.
         fs::write(dir.join("update.lock"), format!("{dead}\n")).unwrap();
-        assert!(try_lock(&env).is_some(), "dead updater still holds the lock");
+        assert!(try_lock(&env).is_ok(), "dead updater still holds the lock");
         let _ = fs::remove_dir_all(&dir);
     }
 

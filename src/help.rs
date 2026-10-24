@@ -558,9 +558,12 @@ Switch channel and update:
 
 Auto-update never makes a command wait. At most once a day a command starts
 a background check that downloads the new build beside the binary and
-verifies it against the release checksums. The next `{bin}` run swaps it in
+verifies it against the release checksums (published with the build, so
+they catch a corrupt download, not a tampered release). The next run swaps it in
 and prints `anyr updated A → B`. A running agent keeps its build until you
 start it again. A beta build stays on beta; nothing is ever downgraded.
+On Windows, if a swap is cut off and `{bin}` is missing, rename `.{bin}.exe.old`
+beside it back to `{bin}.exe`.
 
 It stays off in CI, when output is not a terminal, with --json, and inside
 agents {bin} launches. An npm install gets the npm command to run instead. Failures are silent; `{bin} update --status` shows them.
