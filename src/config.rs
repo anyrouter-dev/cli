@@ -895,6 +895,18 @@ pub(crate) fn open_private(path: &Path, exclusive: bool) -> std::io::Result<fs::
     opts.open(path)
 }
 
+/// Write `body` to `path` as an owner-only file, fixing up a looser existing mode.
+pub(crate) fn write_private(path: &Path, body: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut file = open_private(path, false)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    }
+    file.write_all(body)
+}
+
 pub fn write_config(config: &Config, path: &Path) -> Result<(), String> {
     if let Some(dir) = path.parent() {
         ensure_private_dir(dir).map_err(|e| format!("could not secure config dir: {e}"))?;
