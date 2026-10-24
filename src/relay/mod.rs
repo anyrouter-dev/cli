@@ -45,6 +45,7 @@ use serde_json::json;
 
 mod cli;
 mod daemon;
+mod devices;
 mod doctor;
 mod live;
 mod state;
@@ -2449,6 +2450,8 @@ pub fn run(
         cli::Cmd::Stop => daemon::stop(&paths, &bin),
         cli::Cmd::Logs { follow, lines } => daemon::logs(&paths, follow, lines, &bin),
         cli::Cmd::Models { json } => run_relay_models(env, json),
+        cli::Cmd::DeviceModels => devices::run_models(parsed, env),
+        cli::Cmd::Devices(d) => devices::run(parsed, env, d),
         cli::Cmd::ModelSet { id, enable } => run_relay_model_set(env, &id, enable),
         cli::Cmd::Pool { set, json } => run_relay_pool(parsed, env, set, json),
         cli::Cmd::Pair => run_relay_pair(parsed, env),
