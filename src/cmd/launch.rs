@@ -63,6 +63,23 @@ pub(crate) fn run_launch(
     parsed: &ParsedArgs,
     env: &BTreeMap<String, String>,
 ) -> Result<i32, String> {
+    launch(tool_name, parsed, env, None)
+}
+
+/// Headless one-shot run for `anyr delegate`: same gateway env as a normal
+/// launch, but the agent gets the task through its non-interactive mode, the
+/// saved config is left alone, and `extra_env` is added to the child.
+pub(crate) struct Headless {
+    pub(crate) args: Vec<String>,
+    pub(crate) extra_env: Vec<(String, String)>,
+}
+
+pub(crate) fn launch(
+    tool_name: &str,
+    parsed: &ParsedArgs,
+    env: &BTreeMap<String, String>,
+    headless: Option<Headless>,
+) -> Result<i32, String> {
     // `--preset <slug>` launches with the model id `@preset/<slug>`.
     let preset_args = crate::cmd::presets::launch_args(parsed)?;
     let preset_slug = preset_args.as_ref().map(|(_, slug)| slug.clone());
@@ -157,6 +174,10 @@ pub(crate) fn run_launch(
     if tool_name == "claude" && (parsed.flag_true("yolo") || tool.extra_flag("yolo")) {
         args.push("--dangerously-skip-permissions".into());
     }
+    if let Some(h) = &headless {
+        args.extend(h.args.clone());
+        env_map.extend(h.extra_env.iter().cloned());
+    }
     args.extend(parsed.passthrough.clone());
     let command = get_string_flag(&parsed.flags, "command-path")
         .or_else(|| env_command_path(tool_name, env))
@@ -164,6 +185,16 @@ pub(crate) fn run_launch(
     if parsed.flag_true("dry-run") {
         println!("{}", render_dry_run(&command, &args, &env_map));
         return Ok(0);
+    }
+    if headless.is_some() {
+        crate::api::confirm(
+            parsed,
+            &format!(
+                "Run {tool_name} headlessly with model {model}? An agent run can make many model calls."
+            ),
+        )?;
+        let resolved = ensure_tool_installed(tool_name, &command, false)?;
+        return Ok(spawn_child(&resolved, &args, &env_map));
     }
     let resolved = ensure_tool_installed(
         tool_name,

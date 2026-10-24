@@ -245,9 +245,9 @@ pub(crate) fn cmd_kind(command: &str) -> Option<CmdKind> {
         | "pool" | "pi" | "upgrade" | "onboard" | "impl" | "plan" | "fix" | "deploy" | "cp"
         | "relay" | "decision" | "commands" | "api" | "completion" | "byok" | "publish"
         | "apps" | "artifact" | "chat" | "logs" | "transactions" | "embed" | "generation"
-        | "presets" | "mcp" | "eval" | "task" => CmdKind::Implemented,
+        | "presets" | "mcp" | "eval" | "task" | "delegate" => CmdKind::Implemented,
         "cursor" | "cline" | "windsurf" => CmdKind::HelpOnly,
-        "delegate" | "audit" | "skills" | "prompt" => CmdKind::Stub,
+        "audit" | "skills" | "prompt" => CmdKind::Stub,
         _ => return None,
     })
 }
@@ -517,7 +517,16 @@ pub(crate) fn allowed_flags(command: &str) -> Option<&'static [&'static str]> {
             "json",
         ],
         "delegate" => &[
-            "to", "from", "model", "profile", "base-url", "config", "key", "yes", "dry-run",
+            "to",
+            "from",
+            "model",
+            "profile",
+            "base-url",
+            "config",
+            "key",
+            "yes",
+            "dry-run",
+            "command-path",
         ],
         "keys" => &[
             "profile",
