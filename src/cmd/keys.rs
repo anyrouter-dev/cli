@@ -80,8 +80,10 @@ pub(crate) fn run_keys(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> R
         .first()
         .map(String::as_str)
         .unwrap_or("list");
+    // `ls` and `rm` / `delete` are hidden aliases, matching artifact, byok and
+    // relay devices.
     match sub {
-        "list" => {
+        "list" | "ls" => {
             let (_path, _cfg, base, api_key) = keys_credential(parsed, env)?;
             let rows = crate::http::keys_newest_first(fetch_keys(&base, &api_key)?);
             if parsed.flag_true("json") {
@@ -292,7 +294,7 @@ pub(crate) fn run_keys(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> R
             );
             Ok(0)
         }
-        "revoke" => {
+        "revoke" | "rm" | "delete" => {
             let hash = parsed.passthrough.get(1).cloned().ok_or_else(|| {
                 hint("Usage: {bin} keys revoke <hash>   (find hashes: {bin} keys list)")
             })?;
@@ -305,9 +307,13 @@ pub(crate) fn run_keys(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> R
             let row = match matches.as_slice() {
                 [one] => *one,
                 [] => {
-                    return Err(hint(&format!(
-                        "No key matches \"{hash}\". See: {{bin}} keys list"
-                    )))
+                    return Err(crate::exit::tag(
+                        crate::exit::NOT_FOUND,
+                        format!(
+                            "No key matches \"{hash}\". See: {} keys list",
+                            crate::help::invoked_bin()
+                        ),
+                    ))
                 }
                 _ => {
                     return Err(format!(

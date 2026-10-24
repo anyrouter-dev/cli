@@ -215,9 +215,8 @@ mod tests {
     #[test]
     fn help_is_real_root_help() {
         let out = run_demo("anyr --help");
-        assert!(out.contains("auth"), "{out}");
         assert!(out.contains("anyr claude"), "{out}");
-        assert!(out.contains("anyr auth login"), "{out}");
+        assert!(out.contains("anyr login"), "{out}");
         assert!(out.contains("point any coding agent"), "{out}");
         assert!(!out.contains("npx @anyr/cli"), "{out}");
     }
@@ -226,12 +225,12 @@ mod tests {
     fn help_follows_invoked_name() {
         let ar = run_demo("ar --help");
         assert!(ar.contains("ar claude"), "{ar}");
-        assert!(ar.contains("ar auth login"), "{ar}");
+        assert!(ar.contains("ar login"), "{ar}");
         assert!(!ar.contains("npx @anyr/cli"), "{ar}");
 
         let npx = run_demo("npx @anyr/cli --help");
         assert!(npx.contains("npx @anyr/cli claude"), "{npx}");
-        assert!(npx.contains("npx @anyr/cli auth login"), "{npx}");
+        assert!(npx.contains("npx @anyr/cli login"), "{npx}");
     }
 
     #[test]

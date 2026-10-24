@@ -78,45 +78,44 @@ pub fn resolve_bin(argv0: Option<&str>, display_env: Option<&str>) -> String {
     display_bin(argv0.unwrap_or("anyr"))
 }
 
+/// Short `--help`: the everyday commands and three examples. The full map is
+/// `help --all`.
 pub fn root_help() -> String {
     let bin = invoked_bin();
     format!(
         "\
 {} – point any coding agent at AnyRouter
 
-Start
-  $ curl -fsSL https://anyrouter.dev/setup.sh | bash
-  $ {bin} auth login
-  $ {bin} claude                 # default model: anyrouter/auto
+Everyday
+  {bin} login                     Sign in (browser; --device on a server)
+  {bin} chat \"<prompt>\"           Ask a model; --json for scripts
+  {bin} models                    Browse models; `models use <id>` sets the default
+  {bin} claude                    Launch Claude Code (also codex, grok, opencode, pi, pool)
+  {bin} relay                     Serve this machine's local models
+  {bin} artifact publish <file>   Publish a page or folder to a URL
+  {bin} usage                     Credits remaining
 
-Swap the model, keep the agent
-  $ {bin} claude --model z-ai/glm-4.7-flash
-  $ {bin} claude --yolo --model anyrouter/auto[1m]
+Examples
   $ {bin} claude --model anyrouter/free[1m]
-  $ {bin} claude --model anyrouter/auto[500k]
-  $ {bin} claude --model auto --effort high
+  $ git diff | {bin} chat \"Review this\" -
+  $ {bin} models --free
 
-Same key, other agents
-  $ {bin} codex --model anthropic/claude-sonnet-4.6
-  $ {bin} grok --effort high
-
-Structured decisions (not chat)
-  $ {bin} decision --model typesafe/jev --state 'A payout is failing' --questions '{{\"urgent\":{{\"type\":\"noul\",\"instructions\":\"Is this urgent?\"}}}}'
-
-Dashboard from the terminal
-  $ {bin} api credits
-  $ {bin} api keys create ci-bot
-
-Preflight: bare {bin} confirms account / model / agent, then launches.
-{bin} help commands for the full map.
+More
+  {bin} help --all        every command, grouped
+  {bin} help agents       for scripts and agents: --json, exit codes
+  {bin} <command> --help
 ",
         crate::term::accent(&bin),
         bin = bin
     )
 }
 
-/// Full command map. `--help` stays examples-first; this is the catalog.
+/// Full command map (`help --all`, `help commands`, `commands`), grouped,
+/// generated from `crate::registry` so it lists exactly what dispatch runs.
+/// Headings are ALL CAPS and entries `  name: summary` — the cli-regression
+/// skill parses this layout.
 pub fn commands_help() -> String {
+    use crate::registry;
     let bin = invoked_bin();
     let header = crate::term::brand_chip(&[
         &format!(
@@ -126,60 +125,46 @@ pub fn commands_help() -> String {
         ),
         &crate::term::dim("One key. Every coding agent."),
     ]);
-    format!(
-        "\
-{header}
-USAGE
-  {bin}                  Confirm account / model / agent, then pick an action
-  {bin} <command> [flags]
-  {bin} <command> --help
-
-CORE COMMANDS
-  menu:       Compact HUD launcher (default on a TTY)
-  auth:       Authenticate with AnyRouter
-  config:     Print current settings (`--pick` for the TUI)
-  keys:       Manage API keys
-  byok:       Provider keys (BYOK); --donate shares one with the pool
-  models:     List catalog and set the default (`--pick` to choose)
-  usage:      Credits remaining
-  logs:       Recent requests and failures
-  generation: Cost, provider and timing of one call (alias: gen)
-  presets:    Saved routing presets (list, show, create, edit, rm)
-  mcp:        Wire the MCP gateway into an agent (url, add, connections)
-  embed:      Embed text (args, --file or stdin)
-  eval:       One prompt across several models, compared
-  transactions: Credit ledger (purchases, usage, refunds)
-  artifact:   Publish a file or folder to a shareable URL
-  publish:    Send a JSON document or HTML/SVG page to an app
-  apps:       List, delete or change what you published to apps
-  api:        Dashboard from the terminal (keys, credits, logs, presets…)
-  completion: Shell completion (bash, zsh, fish, powershell)
-  onboard:    Paste-ready prompts for coding agents
-  impl|plan|fix|deploy|cp
-              Shortcuts for onboard modes
-
-STRUCTURED DECISIONS
-  decision:   POST typed decisions (not chat); aliases: decisions, systemone
-
-LAUNCH
-  claude    Claude Code
-  cc        Alias of claude
-  codex     Codex
-  grok      Grok Build
-  opencode  OpenCode
-  pi        Pi
-  pool      Poolside
-  poolside  Alias of pool
-
-  {bin}                 Sign in if needed, then open the HUD
-  {bin} auth login      Sign in
-  {bin} onboard impl    Agent paste prompt to wire AnyRouter
-  {bin} decision        Typed decisions via POST /api/v1/decisions
-  {bin} claude          Launch Claude Code
-",
-        header = header,
-        bin = bin
-    )
+    let names = registry::canonical_names();
+    let mut out = format!(
+        "{header}\nUSAGE\n  {bin} <command> [subcommand] [flags]\n  {bin} <command> --help\n  {bin} commands --json      this map as JSON\n"
+    );
+    for (id, title) in registry::GROUPS {
+        let rows: Vec<(String, String)> = names
+            .iter()
+            .filter(|n| registry::group(n) == *id && !registry::is_shortcut(n))
+            .flat_map(|n| {
+                let aliases = registry::aliases(n);
+                let mut summary = crate::registry::summary(n).to_string();
+                let subs = registry::subcommands(n);
+                if !subs.is_empty() && *id != "launch" {
+                    summary = format!("{summary} [{}]", subs.join(" "));
+                }
+                let mut rows = vec![(n.to_string(), summary)];
+                if *id == "launch" {
+                    rows.extend(
+                        aliases
+                            .iter()
+                            .map(|a| (a.to_string(), format!("Alias of {n}"))),
+                    );
+                } else if !aliases.is_empty() {
+                    rows[0].1 = format!("{} (alias: {})", rows[0].1, aliases.join(", "));
+                }
+                rows
+            })
+            .collect();
+        if rows.is_empty() {
+            continue;
+        }
+        out.push_str(&format!("\n{}\n", title.to_uppercase()));
+        for (name, summary) in rows {
+            out.push_str(&format!("  {:<14}{summary}\n", format!("{name}:")));
+        }
+    }
+    out.push_str(&format!(
+        "\nMORE\n  {bin} help agents      using {bin} from scripts and coding agents\n  {bin}                  on a terminal: confirm account / model / agent, then launch\n"
+    ));
+    out
 }
 
 /// Lines tagged `@claude ` in the body only apply to Claude Code; other agents
@@ -999,9 +984,10 @@ mod tests {
         set_invoked_bin("ar");
         let out = root_help();
         assert!(out.contains("ar claude"), "{out}");
-        assert!(out.contains("ar auth login"), "{out}");
+        assert!(out.contains("ar login"), "{out}");
         assert!(out.contains("point any coding agent"), "{out}");
-        assert!(out.contains("ar help commands"), "{out}");
+        assert!(out.contains("ar help --all"), "{out}");
+        assert!(out.contains("ar help agents"), "{out}");
         assert!(!out.contains("npx @anyr/cli"), "{out}");
         assert!(!out.contains("Install:"), "{out}");
         assert!(!out.contains("anyrouter.dev/docs/cli"), "{out}");
@@ -1011,16 +997,56 @@ mod tests {
         );
 
         let map = commands_help();
-        assert!(map.contains("CORE COMMANDS"), "{map}");
-        assert!(map.contains("LAUNCH"), "{map}");
+        assert!(map.contains("\nLAUNCH\n"), "{map}");
         assert!(map.contains("▀█████████▄"), "{map}");
-        assert!(map.contains("ar claude"), "{map}");
+        assert!(map.contains("ar help agents"), "{map}");
 
         set_invoked_bin("npx @anyr/cli");
         let npx = root_help();
         assert!(npx.contains("npx @anyr/cli claude"), "{npx}");
-        assert!(npx.contains("npx @anyr/cli auth login"), "{npx}");
+        assert!(npx.contains("npx @anyr/cli login"), "{npx}");
         set_invoked_bin("anyr");
+    }
+
+    #[test]
+    fn short_help_shows_each_everyday_command_and_stays_short() {
+        set_invoked_bin("anyr");
+        let out = root_help();
+        for c in crate::registry::EVERYDAY {
+            assert!(out.contains(&format!("anyr {c}")), "{c} missing:\n{out}");
+        }
+        // WHY: the first screen is for the common path; the rest is one
+        // command away (`help --all`).
+        assert!(
+            out.lines().count() <= 25,
+            "{} lines:\n{out}",
+            out.lines().count()
+        );
+    }
+
+    #[test]
+    fn full_map_lists_every_command_under_an_all_caps_heading() {
+        set_invoked_bin("anyr");
+        let map = commands_help();
+        for name in crate::registry::canonical_names() {
+            if crate::registry::is_shortcut(name) {
+                continue; // listed under `onboard`
+            }
+            assert!(
+                map.contains(&format!("\n  {name}:")),
+                "{name} missing:\n{map}"
+            );
+        }
+        for alias in ["cc", "poolside"] {
+            assert!(map.contains(&format!("  {alias}:")), "{alias}:\n{map}");
+        }
+        for (_, title) in crate::registry::GROUPS {
+            let heading = title.to_uppercase();
+            assert!(
+                heading.chars().all(|c| c.is_ascii_uppercase() || c == ' '),
+                "cli-regression parses ^[A-Z ]+$ headings: {heading}"
+            );
+        }
     }
 
     #[test]

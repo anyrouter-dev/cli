@@ -23,7 +23,7 @@ pub const SCHEMA: &str = "anyr.commands/v1";
 
 /// The everyday commands the short `anyr --help` shows, in order.
 pub const EVERYDAY: &[&str] = &[
-    "login", "chat", "models", "claude", "codex", "relay", "artifact", "usage",
+    "login", "chat", "models", "claude", "relay", "artifact", "usage",
 ];
 
 /// Agents `anyr <agent>` launches.
@@ -68,13 +68,14 @@ pub fn group(canonical: &str) -> &'static str {
 }
 
 /// Group titles, in the order `anyr help --all` prints them.
+/// Titles are plain words: `help --all` prints them in capitals as headings.
 pub const GROUPS: &[(&str, &str)] = &[
     ("auth", "Sign in"),
-    ("chat", "Chat, models and tasks"),
-    ("launch", "Launch a coding agent"),
-    ("relay", "Serve local models"),
+    ("chat", "Chat and models"),
+    ("launch", "Launch"),
+    ("relay", "Relay"),
     ("publish", "Publish"),
-    ("account", "Account: usage, keys, presets, logs"),
+    ("account", "Account"),
     ("setup", "Setup and help"),
 ];
 
@@ -135,7 +136,7 @@ pub fn canonical_names() -> Vec<&'static str> {
     out
 }
 
-fn summary(name: &str) -> &'static str {
+pub fn summary(name: &str) -> &'static str {
     COMMANDS
         .iter()
         .find(|(n, _)| *n == name)
@@ -143,7 +144,7 @@ fn summary(name: &str) -> &'static str {
         .unwrap_or("")
 }
 
-fn aliases(canonical: &str) -> Vec<&'static str> {
+pub fn aliases(canonical: &str) -> Vec<&'static str> {
     COMMANDS
         .iter()
         .map(|(n, _)| *n)
@@ -158,6 +159,12 @@ fn flags(canonical: &str) -> Vec<&'static str> {
     f.retain(|x| !matches!(*x, "json" | "quiet" | "help" | "dump-tui"));
     f.sort_unstable();
     f
+}
+
+/// `anyr impl|plan|fix|deploy|cp` are shortcuts for `anyr onboard <mode>`;
+/// `help --all` lists them once, under `onboard`.
+pub fn is_shortcut(canonical: &str) -> bool {
+    subcommands("onboard").contains(&canonical)
 }
 
 /// Commands that print their help when run with no subcommand.
