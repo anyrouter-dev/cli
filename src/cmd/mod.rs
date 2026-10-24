@@ -17,6 +17,7 @@ pub(crate) mod logs;
 pub(crate) mod menu;
 pub(crate) mod models;
 pub(crate) mod pool;
+pub(crate) mod presets;
 pub(crate) mod transactions;
 pub(crate) mod usage;
 pub(crate) mod view;

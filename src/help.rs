@@ -18,6 +18,8 @@ are min-context floors on auto (not catalog SKUs).
 @claude   --sonnet <id>         Claude /model sonnet
 @claude   --opus <id>           Claude /model opus
 @claude   --fable <id>          Claude /model fable (also the auto-fallback target)
+  --preset <slug>       Launch with your saved preset (model @preset/<slug>); fails
+                        if it does not exist. Cannot be combined with --model
   --effort <level>      Reasoning effort: minimal | low | medium | high | xhigh | max
 @claude   --yolo                Launch with --dangerously-skip-permissions
 @claude   --hub <slug>          Load a hub: sync ~/.anyrouter/hubs + claude --plugin-dir
@@ -142,6 +144,7 @@ CORE COMMANDS
   usage:      Credits remaining
   logs:       Recent requests and failures
   generation: Cost, provider and timing of one call (alias: gen)
+  presets:    Saved routing presets (list, show, create, edit, rm)
   embed:      Embed text (args, --file or stdin)
   transactions: Credit ledger (purchases, usage, refunds)
   artifact:   Publish a file or folder to a shareable URL
@@ -219,6 +222,7 @@ pub fn command_help(command: &str) -> Option<String> {
         "account" => fill(&bin, ACCOUNT),
         "logs" => fill(&bin, LOGS),
         "generation" => fill(&bin, GENERATION),
+        "presets" => fill(&bin, PRESETS),
         "models" => fill(&bin, MODELS),
         "config" => fill(&bin, CONFIG),
         "chat" => fill(&bin, CHAT),
@@ -689,6 +693,38 @@ Examples:
 
 Exit codes: 0 ok, 1 error, 2 usage.
 Without a subcommand, `{bin} pool` launches Poolside (below).
+";
+
+const PRESETS: &str = "{bin} presets — saved routing presets
+
+Usage:
+  {bin} presets [list]             Slug, name, models, routing
+  {bin} presets show <slug>        One preset in full
+  {bin} presets create <slug> --model a,b [--fallback] [--sort price]
+  {bin} presets edit <slug> [--model a,b] [--fallback] [--sort <by>] [--name <n>]
+  {bin} presets rm <slug> --yes    Delete a preset
+  {bin} claude --preset <slug>     Launch an agent with model @preset/<slug>
+
+--model takes models in order: the first is primary, the rest are the fallback
+chain. --fallback also allows falling back to paid models. --sort is one of
+price, throughput, latency, exacto. --description <text> sets a description.
+
+Presets need a management key (ak_…), not an API key. Create one at
+https://anyrouter.dev/settings/management-keys with read:presets and
+write:presets, then `export ANYROUTER_MANAGEMENT_KEY=ak_…` (or pass --key ak_…).
+`--preset` at launch checks the preset exists first and starts nothing if not.
+
+Options:
+  --json            Print the raw API body
+  --yes             Confirm rm in a script
+  --profile <name>  Use another account
+
+Examples:
+  {bin} presets create coding --model z-ai/glm-4.7,qwen/qwen3-coder --fallback --sort price
+  {bin} presets edit coding --model z-ai/glm-4.7,qwen/qwen3-coder,openai/gpt-5
+  {bin} claude --preset coding
+
+Exit codes: 0 ok, 1 error or unknown preset, 2 usage.
 ";
 
 const GENERATION: &str = "{bin} generation — cost, provider and timing of one call

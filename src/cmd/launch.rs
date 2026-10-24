@@ -12,8 +12,9 @@ use crate::parse::{get_string_flag, ParsedArgs};
 use crate::spawn::{
     apply_model_id_routing, apply_routing_env, build_tool_env, catalog_context_window,
     catalog_model_id, default_profile_for_env, display_model_id, effort_args_for, env_command_path,
-    is_auto_model, is_virtual_preset, model_args_for, normalize_effort, prepare_pi_wrapper,
-    provider_args_for, render_dry_run, resolve_tool, spawn_child, BuildToolEnvInput,
+    is_auto_model, is_user_preset, is_virtual_preset, model_args_for, normalize_effort,
+    prepare_pi_wrapper, provider_args_for, render_dry_run, resolve_tool, spawn_child,
+    BuildToolEnvInput,
 };
 use crate::term;
 
@@ -39,7 +40,7 @@ pub(crate) fn resolve_session_model(
     } else {
         requested
     };
-    if is_virtual_preset(&id) || !catalog_lookup_enabled(env) {
+    if is_virtual_preset(&id) || is_user_preset(&id) || !catalog_lookup_enabled(env) {
         // Virtual anyrouter/* stays the preset + floor suffix. Do not remap
         // onto a catalog SKU or inherit auto's 200k listing window.
         return ResolvedModel {
@@ -62,6 +63,10 @@ pub(crate) fn run_launch(
     parsed: &ParsedArgs,
     env: &BTreeMap<String, String>,
 ) -> Result<i32, String> {
+    // `--preset <slug>` launches with the model id `@preset/<slug>`.
+    let preset_args = crate::cmd::presets::launch_args(parsed)?;
+    let preset_slug = preset_args.as_ref().map(|(_, slug)| slug.clone());
+    let parsed = preset_args.as_ref().map_or(parsed, |(next, _)| next);
     let path = config_path(parsed, env);
     let existing = load_config_if_present(&path);
     let stored = existing
@@ -93,6 +98,9 @@ pub(crate) fn run_launch(
         .as_ref()
         .and_then(|c| profile_for_agent(c, &parsed.flags, env, tool_name));
     let base = resolve_base_url(&parsed.flags, stored);
+    if let Some(slug) = &preset_slug {
+        crate::cmd::presets::verify_for_launch(parsed, env, &base, &key, slug)?;
+    }
     let mut profile = stored
         .cloned()
         .unwrap_or_else(|| default_profile_for_env(Some(&base), Some(&key)));
@@ -185,7 +193,9 @@ pub(crate) fn run_launch(
     // Remember the model this launch used as the session default, so a bare
     // `{bin} claude` next time starts with it. Also pin it on this agent so a
     // later grok launch does not inherit claude's model.
-    if let Some(flag_model) = get_string_flag(&parsed.flags, "model") {
+    // A preset launch is one-off: it never becomes the saved default model.
+    let flag_model = get_string_flag(&parsed.flags, "model").filter(|_| preset_slug.is_none());
+    if let Some(flag_model) = flag_model {
         let id = catalog_model_id(&flag_model);
         let stored = if is_auto_model(&id) { None } else { Some(id) };
         if let Some(p) = cfg.profiles.get_mut(&cfg.active_profile) {

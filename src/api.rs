@@ -371,20 +371,26 @@ fn run_inner(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32,
     }
 }
 
-fn presets(ctx: &Ctx, parsed: &ParsedArgs, verb: &str, rest: &[&str]) -> Result<i32, String> {
+/// A context that authenticates with the management key (`ak_…`), or the error
+/// that says how to get one. `what` names the resource, `scopes` the key scopes.
+pub(crate) fn management_ctx(ctx: &Ctx, what: &str, scopes: &str) -> Result<Ctx, String> {
     let Some(mk) = ctx.management_key.as_deref() else {
         return Err(format!(
-            "{} presets need a management key (ak_…); your API key cannot manage presets.\n{} create one at https://anyrouter.dev/settings/management-keys with read:presets and write:presets, then:\n      export ANYROUTER_MANAGEMENT_KEY=ak_…",
+            "{} {what} need a management key (ak_…); your API key cannot manage {what}.\n{} create one at https://anyrouter.dev/settings/management-keys with {scopes}, then:\n      export ANYROUTER_MANAGEMENT_KEY=ak_…",
             term::err("error:"),
             term::dim("hint:")
         ));
     };
-    let mctx = Ctx {
+    Ok(Ctx {
         key: Some(mk.to_string()),
         management_key: None,
         base: ctx.base.clone(),
         json: ctx.json,
-    };
+    })
+}
+
+fn presets(ctx: &Ctx, parsed: &ParsedArgs, verb: &str, rest: &[&str]) -> Result<i32, String> {
+    let mctx = management_ctx(ctx, "presets", "read:presets and write:presets")?;
     let slug = || {
         rest.first().copied().ok_or_else(|| {
             format!(
