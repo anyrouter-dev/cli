@@ -15,13 +15,15 @@ use crate::term;
 
 /// One decoded server-sent-event line.
 #[derive(Debug, PartialEq)]
-enum Sse {
+pub(crate) enum Sse {
     Delta(String),
+    /// Final chunk with token counts (prompt, completion).
+    Usage(u64, u64),
     Done,
     Skip,
 }
 
-fn parse_sse_line(line: &str) -> Sse {
+pub(crate) fn parse_sse_line(line: &str) -> Sse {
     let Some(data) = line.strip_prefix("data:") else {
         return Sse::Skip;
     };
@@ -37,13 +39,30 @@ fn parse_sse_line(line: &str) -> Sse {
         .and_then(Value::as_str)
     {
         Some(t) if !t.is_empty() => Sse::Delta(t.to_string()),
-        _ => Sse::Skip,
+        _ => match (
+            v.pointer("/usage/prompt_tokens").and_then(Value::as_u64),
+            v.pointer("/usage/completion_tokens")
+                .and_then(Value::as_u64),
+        ) {
+            (Some(p), Some(c)) => Sse::Usage(p, c),
+            _ => Sse::Skip,
+        },
     }
 }
 
 /// Copy streamed text to `out` as it arrives and return the full reply.
 fn stream_reply(reader: impl BufRead, out: &mut impl Write) -> Result<String, String> {
+    stream_reply_usage(reader, out).map(|(reply, _)| reply)
+}
+
+/// Like `stream_reply`, also returning the `(prompt, completion)` token counts
+/// when the server sent a usage chunk.
+pub(crate) fn stream_reply_usage(
+    reader: impl BufRead,
+    out: &mut impl Write,
+) -> Result<(String, Option<(u64, u64)>), String> {
     let mut reply = String::new();
+    let mut usage = None;
     for line in reader.lines() {
         let line = line.map_err(|e| format!("Stream interrupted: {e}"))?;
         match parse_sse_line(&line) {
@@ -52,11 +71,12 @@ fn stream_reply(reader: impl BufRead, out: &mut impl Write) -> Result<String, St
                 let _ = write!(out, "{t}");
                 let _ = out.flush();
             }
+            Sse::Usage(p, c) => usage = Some((p, c)),
             Sse::Done => break,
             Sse::Skip => {}
         }
     }
-    Ok(reply)
+    Ok((reply, usage))
 }
 
 struct Session {

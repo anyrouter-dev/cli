@@ -20,6 +20,8 @@ pub(crate) mod menu;
 pub(crate) mod models;
 pub(crate) mod pool;
 pub(crate) mod presets;
+#[cfg(feature = "native")]
+pub(crate) mod task;
 pub(crate) mod transactions;
 pub(crate) mod usage;
 pub(crate) mod view;

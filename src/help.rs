@@ -238,10 +238,7 @@ pub fn command_help(command: &str) -> Option<String> {
         "relay" => fill(&bin, RELAY),
         "byok" => fill(&bin, BYOK),
         "artifact" => fill(&bin, ARTIFACT),
-        "task" => fill(
-            &bin,
-            "{bin} task — not yet in the native CLI. Try {bin} onboard plan|impl instead.\n",
-        ),
+        "task" => fill(&bin, TASK),
         "delegate" => fill(
             &bin,
             "{bin} delegate — not yet in the native CLI (coming later).\n",
@@ -864,6 +861,29 @@ exit code is 1. Exit codes: 0 all ok, 1 any request failed, 2 usage.
 
 Example:
   {bin} eval \"Summarize RFC 8628 in 3 bullets\" --model openai/gpt-5-mini,z-ai/glm-4.7
+";
+
+const TASK: &str = "{bin} task — plan with one model, implement with another
+
+Usage:
+  {bin} task \"<request>\"
+  {bin} task \"<request>\" --plan-model <id> --do-model <id>
+  {bin} task \"<request>\" --yes --json | jq -r .result
+
+A planning model writes a numbered plan, then an implementation model follows
+it. Both answers stream. Before running, the models and their catalog prices
+are shown and you confirm; a task makes two model calls.
+
+Options:
+  --plan-model <id>   Model that writes the plan (default: profile default model)
+  --do-model <id>     Model that follows the plan (default: profile default model)
+  --yes               Skip the confirm prompt (required in scripts and CI)
+  --json              No streaming; print task, models, plan, result, usage, cost
+  --key <key>         Use this API key (or $ANYROUTER_API_KEY, or the saved login)
+  --profile <name>    Use another account
+
+Example:
+  {bin} task \"summarize RFC 8628 in five bullets\" --yes --json | jq -r .result
 ";
 
 const BYOK: &str = "{bin} byok — bring your own provider keys

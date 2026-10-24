@@ -248,6 +248,20 @@ anyr gen gen_abc123 --json | jq .total_cost
 Shows model, provider, status, tokens, cost, latency, cache hit and time for
 the response `id` (or `x-anyrouter-generation-id`). An unknown id prints the server message and exits 1.
 
+### Plan, then implement: `anyr task`
+
+```bash
+anyr task "write a script that dedupes my downloads folder"
+anyr task "refactor this CSV parser to stream" --plan-model openai/gpt-5.2 --do-model z-ai/glm-4.7-flash
+anyr task "summarize RFC 8628 in five bullets" --yes --json | jq -r .result
+```
+
+A planning model writes a numbered plan, then an implementation model follows
+it (two chat completions, plan text in the second prompt). Both stream. The
+models and catalog prices are shown first and you confirm; scripts and CI must
+pass `--yes`. `--json` skips streaming and prints `task`, `plan_model`,
+`do_model`, `plan`, `result`, `usage` and `cost`.
+
 ### Compare models: `anyr eval`
 
 ```bash
