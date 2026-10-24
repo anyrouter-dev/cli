@@ -7,7 +7,7 @@ use std::io::{self, BufRead, Read, Write};
 use serde_json::{json, Value};
 
 use crate::cmd::dispatch::config_path;
-use crate::http::{http_post_stream, join_api};
+use crate::http::{error_message, http_post_stream, join_api};
 use crate::key::{load_config_if_present, no_key_error, resolve_api_key, resolve_base_url};
 use crate::parse::{get_string_flag, ParsedArgs};
 use crate::spawn::catalog_model_id;
@@ -57,22 +57,6 @@ fn stream_reply(reader: impl BufRead, out: &mut impl Write) -> Result<String, St
         }
     }
     Ok(reply)
-}
-
-fn error_message(status: u16, body: &str) -> String {
-    let v: Value = serde_json::from_str(body).unwrap_or(Value::Null);
-    let msg = v
-        .pointer("/error/message")
-        .or_else(|| v.get("error"))
-        .and_then(Value::as_str)
-        .map(str::to_string)
-        .unwrap_or_else(|| {
-            body.split_whitespace()
-                .take(30)
-                .collect::<Vec<_>>()
-                .join(" ")
-        });
-    format!("HTTP {status}: {msg}")
 }
 
 struct Session {
@@ -199,13 +183,5 @@ mod tests {
         let reply = stream_reply(sse.as_bytes(), &mut out).unwrap();
         assert_eq!(reply, "Hello");
         assert_eq!(String::from_utf8(out).unwrap(), "Hello");
-    }
-
-    #[test]
-    fn error_message_prefers_the_server_message() {
-        assert_eq!(
-            error_message(402, r#"{"error":{"message":"no credits"}}"#),
-            "HTTP 402: no credits"
-        );
     }
 }

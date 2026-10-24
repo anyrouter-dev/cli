@@ -246,6 +246,20 @@ anyr gen gen_abc123 --json | jq .total_cost
 Shows model, provider, status, tokens, cost, latency, cache hit and time for
 the response `id` (or `x-anyrouter-generation-id`). An unknown id prints the server message and exits 1.
 
+### Compare models: `anyr eval`
+
+```bash
+anyr eval "Summarize RFC 8628 in 3 bullets" --model openai/gpt-5-mini,z-ai/glm-4.7
+anyr eval --file prompt.md --model a,b,c --max-tokens 400
+anyr eval --prompts cases.jsonl --model a,b --json > results.jsonl   # {"prompt":...} per line
+```
+
+Sends one non-streaming chat completion per model (`--concurrency`, default 4)
+and prints each answer (cut at 600 characters, `--full` for all), then a summary
+table: model, provider that answered, latency, tokens in/out, cost, status.
+`--json` prints one line per (prompt, model). Output follows `--model` order.
+If a model fails it shows `error` and the others still print; the exit code is 1.
+
 ### Credit ledger: `anyr transactions`
 
 ```bash
