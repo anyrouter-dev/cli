@@ -244,9 +244,8 @@ pub(crate) fn cmd_kind(command: &str) -> Option<CmdKind> {
         | "status" | "logout" | "account" | "usage" | "claude" | "codex" | "grok" | "opencode"
         | "pool" | "pi" | "upgrade" | "onboard" | "impl" | "plan" | "fix" | "deploy" | "cp"
         | "relay" | "decision" | "commands" | "api" | "completion" | "byok" | "publish"
-        | "apps" | "artifact" | "chat" | "logs" | "transactions" | "embed" | "generation" => {
-            CmdKind::Implemented
-        }
+        | "apps" | "artifact" | "chat" | "logs" | "transactions" | "embed" | "generation"
+        | "presets" => CmdKind::Implemented,
         "cursor" | "cline" | "windsurf" => CmdKind::HelpOnly,
         "task" | "delegate" | "audit" | "skills" | "prompt" => CmdKind::Stub,
         _ => return None,
@@ -302,6 +301,10 @@ pub(crate) const COMMANDS: &[(&str, &str)] = &[
     ("logs", "Recent requests, failures and sessions"),
     ("generation", "Cost, provider and timing of one call"),
     ("gen", "Alias of generation"),
+    (
+        "presets",
+        "Saved routing presets: list, show, create, edit, rm",
+    ),
     ("transactions", "Credit ledger: purchases, usage, refunds"),
     ("embed", "Embed text: args, --file or stdin"),
     ("keys", "Manage API keys"),
@@ -431,6 +434,19 @@ pub(crate) fn allowed_flags(command: &str) -> Option<&'static [&'static str]> {
             "profile", "base-url", "config", "json", "key", "limit", "model", "status",
         ],
         "generation" => &["profile", "base-url", "config", "json", "key"],
+        "presets" => &[
+            "profile",
+            "base-url",
+            "config",
+            "json",
+            "key",
+            "model",
+            "fallback",
+            "sort",
+            "name",
+            "description",
+            "yes",
+        ],
         "transactions" => &[
             "profile", "base-url", "config", "json", "key", "limit", "type",
         ],

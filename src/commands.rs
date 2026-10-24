@@ -23,6 +23,7 @@ use crate::cmd::logs::run_logs;
 use crate::cmd::menu::run_menu;
 use crate::cmd::models::run_models_cli;
 use crate::cmd::pool::{is_pool_subcommand, run_pool};
+use crate::cmd::presets::run_presets;
 use crate::cmd::transactions::run_transactions;
 use crate::cmd::usage::{run_usage, run_whoami};
 
@@ -225,6 +226,7 @@ fn dispatch(
         "byok" => run_byok(parsed, env),
         "logs" => run_logs(parsed, env),
         "generation" => run_generation(parsed, env),
+        "presets" => run_presets(parsed, env),
         "embed" => run_embed(parsed, env),
         "transactions" => run_transactions(parsed, env),
         "menu" => run_menu(parsed, env),

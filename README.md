@@ -209,6 +209,19 @@ All four read public endpoints, so no key is needed (one is sent if you have it)
 `stats`, `providers` and `free_coverage`. `anyr pool` with no subcommand still
 launches Poolside. Per-key status and last success are not exposed by the API.
 
+### Saved routing presets: `anyr presets`
+
+```sh
+anyr presets                                   # slug, name, models, routing
+anyr presets show coding
+anyr presets create coding --model a/one,b/two --fallback --sort price
+anyr presets edit coding --model a/one,b/two,c/three
+anyr presets rm coding --yes
+anyr claude --preset coding                    # launch with model @preset/coding
+```
+
+`--model` lists models in order (first is primary, the rest are the fallback chain); `--fallback` also allows paid fallback; `--sort` is `price`, `throughput`, `latency` or `exacto`. Presets need a management key (`ak_…`, scopes `read:presets` and `write:presets`) from <https://anyrouter.dev/settings/management-keys>: set `ANYROUTER_MANAGEMENT_KEY` or pass `--key ak_…`. `--preset` on a launch command checks the preset exists first and starts nothing if it does not; it cannot be combined with `--model`.
+
 ### One call: `anyr generation <id>`
 
 ```bash

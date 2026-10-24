@@ -60,6 +60,13 @@ pub fn subcommands(command: &str) -> &'static [(&'static str, &'static str)] {
             ("test", "Check a saved key (or --key-stdin before saving)"),
             ("providers", "Providers that accept BYOK, with your badge"),
         ],
+        "presets" => &[
+            ("list", "List presets"),
+            ("show", "Show one preset"),
+            ("create", "Create a preset from --model a,b"),
+            ("edit", "Change models, fallback, sort or name"),
+            ("rm", "Delete a preset"),
+        ],
         "pool" => &[
             ("stats", "Providers, keys, donors, free coverage"),
             ("providers", "Per provider: keys and donors"),

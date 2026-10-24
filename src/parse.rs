@@ -35,6 +35,7 @@ pub static VALUE_FLAGS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
         "token",
         "url",
         "name",
+        "description",
         "max-concurrency",
         "lines",
         "state",

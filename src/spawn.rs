@@ -531,6 +531,12 @@ pub fn is_auto_model(model: &str) -> bool {
     value.is_empty() || value == "auto" || value == "anyrouter/auto"
 }
 
+/// A saved preset used as a model id (`@preset/<slug>`). The gateway picks the
+/// hop per request, so there is no catalog entry, window or discovery remap.
+pub fn is_user_preset(model: &str) -> bool {
+    catalog_model_id(model).starts_with("@preset/")
+}
+
 /// Virtual routing presets. `[1m]` / `[500k]` are min_context floors, not listing ids.
 pub fn is_virtual_preset(model: &str) -> bool {
     if is_auto_model(model) {
@@ -582,14 +588,14 @@ pub fn claude_wants_auto_compact(
     if merged_floor(model, min_context).is_some_and(|n| n >= MIN_1M_CONTEXT) {
         return true;
     }
-    if is_virtual_preset(model) {
+    if is_virtual_preset(model) || is_user_preset(model) {
         return false;
     }
     claude_wants_1m(context_window)
 }
 
 pub fn claude_gateway_discovery_enabled(tool: &ToolConfig, model: &str) -> bool {
-    tool.enable_gateway_model_discovery && !is_virtual_preset(model)
+    tool.enable_gateway_model_discovery && !is_virtual_preset(model) && !is_user_preset(model)
 }
 
 /// Catalog `context_length` for a concrete id. Virtual `anyrouter/*` must not
