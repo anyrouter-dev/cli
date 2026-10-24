@@ -308,6 +308,11 @@ pub(crate) fn launch(
         )?;
     }
     let mut agent_args = Vec::new();
+    // Saved `launcher.<agent>.args` come after the mapped portable switches and
+    // before headless and user args, so the user's own flags come last and win.
+    if let Some(binding) = existing.as_ref().and_then(|c| c.agent_binding(tool_name)) {
+        agent_args.extend(binding.args.iter().cloned());
+    }
     if let Some(h) = &headless {
         agent_args.extend(h.args.clone());
         env_map.extend(h.extra_env.iter().cloned());

@@ -121,6 +121,9 @@ pub struct AgentBinding {
     pub profile: Option<String>,
     pub api_key: Option<String>,
     pub default_model: Option<String>,
+    /// Flags passed to the agent on every launch, before the user's own
+    /// (`agents.<id>.args`, space separated).
+    pub args: Vec<String>,
     /// Request-level routing controls. Field names match AnyRouter presets
     /// (`provider.sort`, `require_params`, `min_context`).
     pub routing: RoutingConstraints,
@@ -145,6 +148,7 @@ impl AgentBinding {
                 .map(str::trim)
                 .unwrap_or("")
                 .is_empty()
+            && self.args.is_empty()
             && self.routing.is_empty()
     }
 }
@@ -355,6 +359,21 @@ impl Config {
     pub fn agent_binding_mut(&mut self, tool: &str) -> &mut AgentBinding {
         let id = crate::spawn::canonical_tool(tool).to_string();
         self.agents.entry(id).or_default()
+    }
+
+    /// The agent a bare launch starts: `--tool`, then `launcher.agent`
+    /// (`default_tool`), then the last one launched.
+    pub fn preferred_agent(&self, flag: Option<&str>) -> Option<String> {
+        let pinned = self
+            .profiles
+            .get(&self.active_profile)
+            .and_then(|p| p.default_tool.as_deref());
+        [flag, pinned, self.last_tool.as_deref()]
+            .into_iter()
+            .flatten()
+            .map(str::trim)
+            .find(|s| !s.is_empty())
+            .map(str::to_string)
     }
 
     pub fn prune_empty_agents(&mut self) {
@@ -627,6 +646,7 @@ fn agent_binding_from_map(map: &BTreeMap<String, YamlValue>) -> AgentBinding {
                 }
             }
             "require_params" => b.routing.require_params = parse_require_params(v),
+            "args" => b.args = split_args(&v.as_string_lossy()),
             "min_context" => {
                 b.routing.min_context = match v {
                     YamlValue::Int(n) => Some(*n),
@@ -638,6 +658,12 @@ fn agent_binding_from_map(map: &BTreeMap<String, YamlValue>) -> AgentBinding {
         }
     }
     b
+}
+
+/// `agents.<id>.args`: flags split on whitespace. Quoting is not supported;
+/// an argument with spaces goes after `--` on the command line instead.
+pub fn split_args(raw: &str) -> Vec<String> {
+    raw.split_whitespace().map(str::to_string).collect()
 }
 
 fn parse_require_params(value: &YamlValue) -> Vec<String> {
@@ -826,6 +852,14 @@ pub fn serialize_config(config: &Config) -> String {
             }
             if let Some(m) = &binding.default_model {
                 lines.push(format!("    default_model: {}", yaml_scalar(m)));
+            }
+            if !binding.args.is_empty() {
+                // Always quoted: a leading `-` must not read as a YAML list item.
+                let joined = binding.args.join(" ");
+                lines.push(format!(
+                    "    args: {}",
+                    serde_json::to_string(&joined).unwrap_or_default()
+                ));
             }
             if let Some(sort) = binding
                 .routing

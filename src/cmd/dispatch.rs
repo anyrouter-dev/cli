@@ -760,11 +760,7 @@ pub(crate) fn launcher_last_tool(
     env: &BTreeMap<String, String>,
 ) -> String {
     let cfg = load_config_if_present(path).unwrap_or_default();
-    let profile = cfg.profiles.get(&cfg.active_profile);
-    cfg.last_tool
-        .clone()
-        .or_else(|| profile.and_then(|p| p.default_tool.clone()))
-        .or_else(|| get_string_flag(&parsed.flags, "tool"))
+    cfg.preferred_agent(get_string_flag(&parsed.flags, "tool").as_deref())
         .unwrap_or_else(|| {
             available_agents(env, |id| tool_command_for(path, id))
                 .first()
