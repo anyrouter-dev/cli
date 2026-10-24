@@ -1,7 +1,8 @@
 //! `anyr artifact` — publish a page or folder and manage the result.
 //!
 //!   anyr artifact publish <file|dir> [--title T] [--visibility V] [--id ID] [--label L]
-//!   anyr artifact ls | rm <id> | visibility <id> <v>
+//!                         [--show-author|--no-show-author]
+//!   anyr artifact ls | rm <id> | visibility <id> [<v>] [--show-author|--no-show-author]
 //!
 //! stdout carries the URL (or the server JSON with `--json`); progress and
 //! errors go to stderr. Exit codes: 0 ok, 1 error, 2 usage or version
@@ -33,13 +34,18 @@ pub const FLAGS: &[&str] = &[
     "id",
     "label",
     "limit",
+    "show-author",
+    "no-show-author",
 ];
 
 pub const VERBS: &[(&str, &str)] = &[
     ("publish", "Publish a file or folder, print its URL"),
     ("ls", "List your artifacts"),
     ("rm", "Delete an artifact"),
-    ("visibility", "Set private, unlisted or public"),
+    (
+        "visibility",
+        "Set private, unlisted or public, and whether your name shows",
+    ),
 ];
 
 const VISIBILITIES: [&str; 3] = ["private", "unlisted", "public"];
@@ -108,11 +114,7 @@ fn run_inner(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32,
         "rm" | "delete" => remove(&ctx, parsed, need("id")?),
         "visibility" => {
             let id = need("id")?;
-            let v = rest
-                .get(1)
-                .copied()
-                .ok_or_else(|| format!("{USAGE}Usage: {bin} artifact visibility <id> <v>"))?;
-            set_visibility(&ctx, parsed, id, v)
+            set_visibility(&ctx, parsed, id, rest.get(1).copied())
         }
         other => {
             return Err(format!(
@@ -132,6 +134,7 @@ fn run_inner(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32,
 
 fn publish(ctx: &Ctx, parsed: &ParsedArgs, path: &str) -> Res<()> {
     let visibility = visibility_flag(parsed)?;
+    let show_author = show_author_flag(parsed)?;
     let id = match get_string_flag(&parsed.flags, "id") {
         Some(id) => Some(checked_id(&id)?),
         None => None,
@@ -162,6 +165,10 @@ fn publish(ctx: &Ctx, parsed: &ParsedArgs, path: &str) -> Res<()> {
     }
     if let Some(l) = get_string_flag(&parsed.flags, "label") {
         body.insert("label".into(), json!(l));
+    }
+    // Sent only when asked: servers without the field reject unknown keys.
+    if let Some(s) = show_author {
+        body.insert("show_author".into(), json!(s));
     }
     let versions_path = match &id {
         Some(id) => {
@@ -337,27 +344,51 @@ fn remove(ctx: &Ctx, parsed: &ParsedArgs, id: &str) -> Res<()> {
     Ok(())
 }
 
-fn set_visibility(ctx: &Ctx, parsed: &ParsedArgs, id: &str, v: &str) -> Res<()> {
+fn set_visibility(ctx: &Ctx, parsed: &ParsedArgs, id: &str, v: Option<&str>) -> Res<()> {
     let id = checked_id(id)?;
-    let Some(v) = canonical_visibility(v) else {
-        return Err(usage(format!(
-            "unknown visibility \"{v}\"; use private, unlisted or public."
-        )));
+    let show_author = show_author_flag(parsed)?;
+    let v = match v {
+        Some(v) => Some(canonical_visibility(v).ok_or_else(|| {
+            usage(format!(
+                "unknown visibility \"{v}\"; use private, unlisted or public."
+            ))
+        })?),
+        None if show_author.is_some() => None,
+        None => {
+            let bin = crate::help::invoked_bin();
+            return Err(usage(format!(
+                "Usage: {bin} artifact visibility <id> <v> [--show-author|--no-show-author]"
+            )));
+        }
     };
     ctx.key().map_err(|e| Fail::new(4, e))?;
-    if v == "public" {
+    if v == Some("public") {
         confirm_public(parsed, "Make this artifact public?")?;
+    }
+    let mut body = Map::new();
+    if let Some(v) = v {
+        body.insert("visibility".into(), json!(v));
+    }
+    if let Some(s) = show_author {
+        body.insert("show_author".into(), json!(s));
     }
     let (_, out) = call(
         ctx,
         "PATCH",
         &format!("/v1/artifacts/{id}"),
-        Some(&json!({ "visibility": v })),
+        Some(&Value::Object(body)),
     )?;
     if ctx.json {
         println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
     } else {
-        eprintln!("{} {id} is now {v}", term::ok("✓"));
+        if let Some(v) = v {
+            eprintln!("{} {id} is now {v}", term::ok("✓"));
+        }
+        match show_author {
+            Some(true) => eprintln!("{} {id} shows your name", term::ok("✓")),
+            Some(false) => eprintln!("{} {id} hides your name", term::ok("✓")),
+            None => {}
+        }
     }
     Ok(())
 }
@@ -454,6 +485,21 @@ fn visibility_flag(parsed: &ParsedArgs) -> Res<Option<String>> {
                 "unknown visibility \"{v}\"; use private, unlisted or public."
             ))),
         },
+    }
+}
+
+/// `--show-author` / `--no-show-author`; None when neither is given.
+fn show_author_flag(parsed: &ParsedArgs) -> Res<Option<bool>> {
+    match (
+        parsed.flag_true("show-author"),
+        parsed.flag_true("no-show-author"),
+    ) {
+        (true, true) => Err(usage(
+            "--show-author and --no-show-author cannot be used together.",
+        )),
+        (true, false) => Ok(Some(true)),
+        (false, true) => Ok(Some(false)),
+        (false, false) => Ok(None),
     }
 }
 
