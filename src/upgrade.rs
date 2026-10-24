@@ -1363,6 +1363,81 @@ mod tests {
         (env, dir)
     }
 
+    /// Make the lock file look 1 h old, past the old 15-minute staleness.
+    fn backdate(path: &Path) {
+        let old = std::time::SystemTime::now() - Duration::from_secs(60 * 60);
+        fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+    }
+
+    #[test]
+    fn concurrent_lockers_of_an_old_lock_file_get_one_owner() {
+        // WHY: two stagers that both judged an old lock stale could both
+        // take it and race on the same pending build.
+        use std::sync::{Arc, Barrier};
+        let (env, dir) = isolated_home();
+        let path = dir.join("update.lock");
+        for _ in 0..200 {
+            drop(try_lock(&env));
+            if !path.exists() {
+                fs::write(&path, "1\n").unwrap();
+            }
+            backdate(&path);
+            let barrier = Arc::new(Barrier::new(8));
+            let handles: Vec<_> = (0..8)
+                .map(|_| {
+                    let (env, barrier) = (env.clone(), Arc::clone(&barrier));
+                    std::thread::spawn(move || {
+                        barrier.wait();
+                        try_lock(&env)
+                    })
+                })
+                .collect();
+            let guards: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+            let owners = guards.iter().filter(|g| g.is_some()).count();
+            assert!(owners <= 1, "{owners} processes hold the update lock");
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn dropping_a_lock_never_frees_a_newer_owner() {
+        // WHY: an updater slow enough to look stale must not, on exit, delete
+        // the lock a newer updater holds and let a third one in.
+        let (env, dir) = isolated_home();
+        let a = try_lock(&env).expect("first lock");
+        backdate(&dir.join("update.lock"));
+        let b = try_lock(&env);
+        drop(a);
+        let c = try_lock(&env);
+        assert!(
+            !(b.is_some() && c.is_some()),
+            "two live owners after the first one dropped"
+        );
+        drop((b, c));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_lock_left_by_a_dead_updater_is_free_at_once() {
+        // WHY: a killed updater must not block every update for 15 minutes.
+        let (env, dir) = isolated_home();
+        let mut child = std::process::Command::new(if cfg!(windows) { "cmd" } else { "true" })
+            .args(if cfg!(windows) { &["/C", "exit"][..] } else { &[][..] })
+            .spawn()
+            .unwrap();
+        let dead = child.id();
+        child.wait().unwrap();
+        // A fresh file, so the time-based fallback cannot be what frees it.
+        fs::write(dir.join("update.lock"), format!("{dead}\n")).unwrap();
+        assert!(try_lock(&env).is_some(), "dead updater still holds the lock");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn auto_update_enabled_defaults_on() {
         let (env, _) = isolated_home();

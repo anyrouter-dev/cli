@@ -185,6 +185,20 @@ impl Install {
     /// Run the installed copy. Auto-update is allowed off a TTY (tests have
     /// none) unless `extra` turns it off.
     fn run(&self, mock: &MockRelease, args: &[&str], extra: &[(&str, &str)]) -> Output {
+        // A binary copied in while another test thread forks can briefly be
+        // "text file busy" (ETXTBSY); that is the harness, not the updater.
+        for attempt in 0.. {
+            match self.command(mock, args, extra).output() {
+                Err(e) if e.raw_os_error() == Some(26) && attempt < 20 => {
+                    thread::sleep(Duration::from_millis(50));
+                }
+                out => return out.unwrap(),
+            }
+        }
+        unreachable!()
+    }
+
+    fn command(&self, mock: &MockRelease, args: &[&str], extra: &[(&str, &str)]) -> Command {
         let home = self.home();
         let mut env: BTreeMap<&str, &str> = BTreeMap::from([
             ("ANYROUTER_HOME", home.to_str().unwrap()),
@@ -217,9 +231,24 @@ impl Install {
             .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .unwrap()
+            .stderr(Stdio::piped());
+        cmd
+    }
+
+    /// Is `update.lock` held by a live process right now?
+    fn lock_held(&self) -> bool {
+        let Ok(file) = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(self.home().join("update.lock"))
+        else {
+            return false;
+        };
+        match file.try_lock() {
+            Ok(()) => false,
+            Err(fs::TryLockError::WouldBlock) => true,
+            Err(fs::TryLockError::Error(e)) => panic!("lock probe failed: {e}"),
+        }
     }
 
     /// Wait for the detached checker to finish (it records `last_check`).
@@ -227,8 +256,7 @@ impl Install {
         let deadline = Instant::now() + Duration::from_secs(20);
         loop {
             let state = self.state();
-            let done = state["last_check"].as_u64().unwrap_or(0) > 0
-                && !self.home().join("update.lock").exists();
+            let done = state["last_check"].as_u64().unwrap_or(0) > 0 && !self.lock_held();
             if done {
                 return state;
             }
@@ -463,7 +491,14 @@ fn manual_update_refuses_while_the_stager_holds_the_lock() {
     // running together they could swap a half-written download in.
     let mock = serve(vec![Release::good("v999.0.0", false)], Duration::ZERO);
     let install = Install::new();
-    fs::write(install.home().join("update.lock"), "1\n").unwrap();
+    // Stand in for a live stager: hold the OS lock on update.lock.
+    let held = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(install.home().join("update.lock"))
+        .unwrap();
+    held.lock().unwrap();
     let out = install.run(&mock, &["update"], &[]);
     assert!(!out.status.success(), "update ran while the lock was held");
     assert!(
@@ -472,10 +507,8 @@ fn manual_update_refuses_while_the_stager_holds_the_lock() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert_eq!(fs::read(&install.bin).unwrap(), install.original);
-    assert!(
-        install.home().join("update.lock").exists(),
-        "lock is not ours to remove"
-    );
+    assert!(install.lock_held(), "lock is not ours to release");
+    drop(held);
 }
 
 #[test]
@@ -491,10 +524,7 @@ fn manual_update_installs_and_uses_a_per_process_staging_file() {
     assert_eq!(fs::read(&install.bin).unwrap(), NEW_BUILD);
     assert_eq!(fs::read(install.sibling("prev")).unwrap(), install.original);
     assert_no_download_files(&install);
-    assert!(
-        !install.home().join("update.lock").exists(),
-        "lock released"
-    );
+    assert!(!install.lock_held(), "lock released");
 }
 
 fn assert_no_download_files(install: &Install) {
@@ -560,7 +590,7 @@ fn last_check_is_saved_before_the_slow_network_work() {
         thread::sleep(Duration::from_millis(20));
     }
     assert!(
-        install.home().join("update.lock").exists(),
+        install.lock_held(),
         "last_check only appeared after the check finished"
     );
     install.wait_checked();
@@ -614,4 +644,35 @@ fn staged_hash_matches_the_verified_build() {
     let state = install.wait_checked();
     assert_eq!(state["pending_sha256"], sha_hex(NEW_BUILD), "{state}");
     assert_no_download_files(&install);
+}
+
+#[test]
+fn a_killed_stager_does_not_block_the_next_update() {
+    // WHY: an updater killed mid-check (closed laptop, OOM, kill -9) used to
+    // leave update.lock behind and block every update for 15 minutes.
+    let mock = serve(
+        vec![Release::good("v999.0.0", false)],
+        Duration::from_secs(30),
+    );
+    let install = Install::new();
+    let mut stager = install
+        .command(&mock, &["update", "--auto"], &[])
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while install.state()["last_check"].as_u64().unwrap_or(0) == 0 {
+        assert!(Instant::now() < deadline, "stager never took the lock");
+        thread::sleep(Duration::from_millis(20));
+    }
+    stager.kill().unwrap();
+    stager.wait().unwrap();
+
+    let fast = serve(vec![Release::good("v999.0.0", false)], Duration::ZERO);
+    let out = install.run(&fast, &["update"], &[]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(fs::read(&install.bin).unwrap(), NEW_BUILD);
 }
