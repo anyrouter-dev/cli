@@ -586,6 +586,7 @@ pub(crate) fn allowed_flags(command: &str) -> Option<&'static [&'static str]> {
         "onboard" | "impl" | "plan" | "fix" | "deploy" | "cp" => &["json", "copy"],
         "upgrade" => &[
             "check", "channel", "fixture", "dry-run", "yes", "auto", "force", "beta", "stable",
+            "status", "rollback", "json",
         ],
         "pool" => POOL_FLAGS,
         "claude" | "codex" | "grok" | "opencode" | "pi" => LAUNCH_FLAGS,

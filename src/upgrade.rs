@@ -7,10 +7,11 @@ use std::fs;
 use std::io;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use sha2::{Digest, Sha256};
 
+use crate::autoupdate::{state_dir, UpdateState};
 use crate::channel::{
     asset_name, channel_update_candidates, current_arch, current_os, github_token,
     merge_expanded_assets, parse_checksums, parse_releases, parse_releases_html, release_asset_url,
@@ -24,9 +25,6 @@ use crate::parse::{get_string_flag, ParsedArgs};
 use crate::spawn::redact_value;
 use crate::term;
 use crate::VERSION;
-
-/// How often the background checker hits GitHub Releases.
-pub const DEFAULT_UPDATE_INTERVAL_SECS: u64 = 6 * 60 * 60;
 
 /// True when `latest` is a higher version than `current` (leading `v` ignored).
 pub fn needs_upgrade(current: &str, latest: &str) -> bool {
@@ -86,6 +84,13 @@ pub fn load_releases(
         let json = fs::read_to_string(path)
             .map_err(|e| format!("could not read releases fixture {path}: {e}"))?;
         return parse_releases(&json);
+    }
+    if let Some(base) = mock_release_base(env) {
+        let (status, body) = http_get_web(&format!("{base}/releases.json"))?;
+        if !(200..300).contains(&status) {
+            return Err(releases_http_error(status, &body));
+        }
+        return parse_releases(&body);
     }
     fetch_releases(env)
 }
@@ -165,8 +170,18 @@ fn resolve_channel(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Resul
     if let Some(flag) = get_string_flag(&parsed.flags, "channel") {
         return Channel::parse(&flag);
     }
-    // Config wins over ANYR_CHANNEL so bare `anyr update` does not jump tracks
-    // when a stale env is set. Only --beta/--stable persist a switch.
+    configured_channel_checked(env)
+}
+
+/// The channel this install follows, ignoring command-line flags. Config wins
+/// over ANYR_CHANNEL so bare `anyr update` does not jump tracks when a stale
+/// env is set. Only --beta/--stable persist a switch. An unparsable value
+/// falls back to the build's own track.
+pub(crate) fn configured_channel(env: &BTreeMap<String, String>) -> Channel {
+    configured_channel_checked(env).unwrap_or_else(|_| channel_of_version(VERSION))
+}
+
+fn configured_channel_checked(env: &BTreeMap<String, String>) -> Result<Channel, String> {
     let path = resolve_config_path(None, env);
     if let Some(ch) = load_config_if_present(&path).and_then(|c| c.channel) {
         return Channel::parse(&ch);
@@ -178,7 +193,17 @@ fn resolve_channel(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Resul
     {
         return Channel::parse(v);
     }
-    Ok(Channel::Stable)
+    Ok(channel_of_version(VERSION))
+}
+
+/// With no channel configured, stay on the track this build came from: a
+/// beta build follows beta. Falling back to stable would strand a beta
+/// install, since stable 0.1.29 sorts above 0.1.29-beta.390.
+fn channel_of_version(version: &str) -> Channel {
+    match crate::channel::parse_version(version) {
+        Some(v) if v.prerelease.is_some() => Channel::Beta,
+        _ => Channel::Stable,
+    }
 }
 
 /// Persist `channel:` so future auto-updates follow the switched track.
@@ -329,14 +354,29 @@ const RELEASE_DOWNLOAD_PREFIX: &str = "https://github.com/anyrouter-dev/cli/rele
 /// may install unverified (with a warning); newer ones fail closed.
 const CHECKSUMS_REQUIRED_FROM: &str = "0.1.14";
 
-fn validate_download_url(url: &str) -> Result<(), String> {
-    if url.starts_with(RELEASE_DOWNLOAD_PREFIX) {
+fn validate_download_url(url: &str, env: &BTreeMap<String, String>) -> Result<(), String> {
+    let mock = mock_release_base(env).filter(|base| url.starts_with(&format!("{base}/")));
+    if url.starts_with(RELEASE_DOWNLOAD_PREFIX) || mock.is_some() {
         Ok(())
     } else {
         Err(format!(
             "refusing to install from {url}: updates must come from {RELEASE_DOWNLOAD_PREFIX}"
         ))
     }
+}
+
+/// `ANYR_UPDATE_BASE_URL` points the updater at a mock release server in
+/// tests. Only loopback is accepted, so it can never redirect a real install
+/// to another host.
+pub(crate) fn mock_release_base(env: &BTreeMap<String, String>) -> Option<String> {
+    let base = env
+        .get(crate::autoupdate::ENV_UPDATE_BASE_URL)?
+        .trim()
+        .trim_end_matches('/');
+    ["http://127.0.0.1:", "http://localhost:", "http://[::1]:"]
+        .iter()
+        .any(|p| base.starts_with(p))
+        .then(|| base.to_string())
 }
 
 fn release_tag_from_url(url: &str) -> Option<&str> {
@@ -354,28 +394,6 @@ fn checksums_required(url: &str) -> bool {
         },
         None => true,
     }
-}
-
-/// A binary under a cargo `target/{debug,release}` dir is a dev build; the
-/// updater must never overwrite it.
-fn is_cargo_target_build(exe: &Path) -> bool {
-    let parts: Vec<String> = exe
-        .components()
-        .map(|c| c.as_os_str().to_string_lossy().into_owned())
-        .collect();
-    parts.iter().enumerate().any(|(i, p)| {
-        p == "target"
-            && parts[i + 1..]
-                .iter()
-                .take(2)
-                .any(|n| n == "debug" || n == "release")
-    })
-}
-
-fn running_from_cargo_target() -> bool {
-    std::env::current_exe()
-        .map(|exe| is_cargo_target_build(&exe))
-        .unwrap_or(false)
 }
 
 /// Version of the binary currently on disk at `path` (it may differ from the
@@ -415,53 +433,83 @@ fn guard_not_older(
     }
 }
 
-fn replace_current_binary(url: &str, allow_downgrade: bool) -> Result<PathBuf, String> {
-    validate_download_url(url)?;
+/// The installed binary this process should update: `current_exe` with one
+/// symlink resolved. Refuses cargo dev builds.
+pub(crate) fn install_dest() -> Result<PathBuf, String> {
     let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
-    if is_cargo_target_build(&exe) {
+    if crate::autoupdate::is_cargo_target_build(&exe) {
         return Err(format!(
             "refusing to self-update a cargo build at {}; rebuild with cargo instead",
             exe.display()
         ));
     }
-    let dest = match fs::read_link(&exe) {
-        Ok(target) => {
-            if target.is_absolute() {
-                target
-            } else {
-                exe.parent().unwrap_or(Path::new(".")).join(target)
-            }
-        }
+    Ok(match fs::read_link(&exe) {
+        Ok(target) if target.is_absolute() => target,
+        Ok(target) => exe.parent().unwrap_or(Path::new(".")).join(target),
         Err(_) => exe,
-    };
-    let tmp = dest.with_file_name(format!(
-        ".{}.new",
-        dest.file_name()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "anyr".into())
-    ));
+    })
+}
+
+/// Download `url` into a per-process staging file beside `dest`, verify it
+/// against the release's checksums.txt and make it executable. Returns the
+/// staging path and the SHA-256 it was verified as. Any failure removes the
+/// partial file and leaves `dest` untouched. The caller holds the update lock.
+fn download_verified(
+    url: &str,
+    dest: &Path,
+    allow_downgrade: bool,
+    env: &BTreeMap<String, String>,
+) -> Result<(PathBuf, String), String> {
+    validate_download_url(url, env)?;
     if let Some(target) = release_tag_from_url(url) {
         let target = target.strip_prefix('v').unwrap_or(target);
-        guard_not_older(on_disk_version(&dest).as_deref(), target, allow_downgrade)?;
+        guard_not_older(on_disk_version(dest).as_deref(), target, allow_downgrade)?;
     }
-    download_binary(url, &tmp)?;
-    if let Err(e) = verify_downloaded_asset(url, &tmp) {
-        return abort_download(&tmp, e);
-    }
+    crate::autoupdate::clear_stale_downloads(dest);
+    let tmp = crate::autoupdate::sibling(dest, &format!("download.{}", std::process::id()));
+    let sha = match download_binary(url, &tmp).and_then(|_| verify_downloaded_asset(url, &tmp)) {
+        Ok(sha) => sha,
+        Err(e) => return abort_download(&tmp, e),
+    };
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(&tmp)
-            .map_err(|e| format!("stat {}: {e}", tmp.display()))?
-            .permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&tmp, perms).map_err(|e| format!("chmod {}: {e}", tmp.display()))?;
+        if let Err(e) = fs::set_permissions(&tmp, fs::Permissions::from_mode(0o755)) {
+            return abort_download(&tmp, format!("chmod {}: {e}", tmp.display()));
+        }
     }
-    fs::rename(&tmp, &dest).map_err(|e| {
+    Ok((tmp, sha))
+}
+
+/// `anyr update`: download, verify and swap now, keeping the old build for
+/// `--rollback`.
+fn replace_current_binary(
+    url: &str,
+    allow_downgrade: bool,
+    env: &BTreeMap<String, String>,
+) -> Result<PathBuf, String> {
+    let dest = install_dest()?;
+    let (tmp, _) = download_verified(url, &dest, allow_downgrade, env)?;
+    crate::autoupdate::swap_in(&tmp, &dest).inspect_err(|_| {
         let _ = fs::remove_file(&tmp);
-        format!("could not replace {}: {e}", dest.display())
     })?;
     Ok(dest)
+}
+
+/// Background check: download and verify into `.anyr.pending`, never swap.
+/// Returns the pending path and the hash it was verified as.
+fn stage_binary(
+    url: &str,
+    dest: &Path,
+    env: &BTreeMap<String, String>,
+) -> Result<(PathBuf, String), String> {
+    let (tmp, sha) = download_verified(url, dest, false, env)?;
+    let pending = crate::autoupdate::sibling(dest, "pending");
+    fs::rename(&tmp, &pending).map_err(|e| {
+        let _ = fs::remove_file(&tmp);
+        format!("could not stage {}: {e}", pending.display())
+    })?;
+    Ok((pending, sha))
 }
 
 /// Sibling `checksums.txt` in the same release-asset directory as `asset_url`.
@@ -503,12 +551,12 @@ fn verify_checksum_file(
     }
 }
 
-fn abort_download(tmp: &Path, err: String) -> Result<PathBuf, String> {
+fn abort_download<T>(tmp: &Path, err: String) -> Result<T, String> {
     let _ = fs::remove_file(tmp);
     Err(err)
 }
 
-fn sha256_hex_file(path: &Path) -> Result<String, String> {
+pub(crate) fn sha256_hex_file(path: &Path) -> Result<String, String> {
     let mut file =
         fs::File::open(path).map_err(|e| format!("could not read {}: {e}", path.display()))?;
     let mut hasher = Sha256::new();
@@ -577,13 +625,13 @@ pub fn skippable_release_error(err: &str) -> bool {
 
 /// Newest-first install: warn and skip a broken latest (checksum / missing
 /// asset / corrupt) rather than aborting the whole update.
-fn try_releases(
+fn try_releases<T>(
     candidates: &[Release],
     os: &str,
     arch: &str,
-    mut install: impl FnMut(&str) -> Result<PathBuf, String>,
+    mut install: impl FnMut(&str) -> Result<T, String>,
     mut warn: impl FnMut(&str),
-) -> Result<(Release, PathBuf), String> {
+) -> Result<(Release, T), String> {
     let mut last = String::from("no installable release on this channel");
     for (i, rel) in candidates.iter().enumerate() {
         let url = release_asset_url(rel, os, arch);
@@ -607,9 +655,15 @@ fn try_releases(
 }
 
 /// Verify `tmp` against sibling `checksums.txt`. 404 → warn and skip (legacy).
-fn verify_downloaded_asset(url: &str, tmp: &Path) -> Result<(), String> {
+/// Returns the SHA-256 of `tmp` as verified, which is what a staged build is
+/// later re-checked against.
+fn verify_downloaded_asset(url: &str, tmp: &Path) -> Result<String, String> {
     let checksums = checksums_url(url);
-    match fetch_checksums_body(&checksums)? {
+    verify_against_checksums(fetch_checksums_body(&checksums)?, url, tmp)
+}
+
+fn verify_against_checksums(body: Option<String>, url: &str, tmp: &Path) -> Result<String, String> {
+    match body {
         None if checksums_required(url) => Err(format!(
             "release {} has no checksums.txt; refusing to install an unverified binary",
             release_tag_from_url(url).unwrap_or("?")
@@ -618,97 +672,21 @@ fn verify_downloaded_asset(url: &str, tmp: &Path) -> Result<(), String> {
             crate::spinner::warn_beside_spinner(
                 "warning: legacy release has no checksums.txt — skipping verification",
             );
-            Ok(())
+            sha256_hex_file(tmp)
         }
         Some(body) => {
             let map = parse_checksums(&body);
             let asset = asset_name_from_url(url);
             let actual = sha256_hex_file(tmp)?;
-            verify_checksum_file(&map, asset, &actual)
+            verify_checksum_file(&map, asset, &actual)?;
+            Ok(actual)
         }
     }
 }
 
-fn env_flag(env: &BTreeMap<String, String>, key: &str) -> Option<bool> {
-    let raw = env.get(key)?.trim().to_ascii_lowercase();
-    match raw.as_str() {
-        "1" | "true" | "on" | "yes" => Some(true),
-        "0" | "false" | "off" | "no" => Some(false),
-        _ => None,
-    }
-}
+const ANOTHER_UPDATE_RUNNING: &str = "another anyr update is running; try again shortly";
 
-/// Auto-update is on unless config/env turns it off. `CI` and `ANYR_NO_UPDATE` always skip.
-pub fn auto_update_enabled(env: &BTreeMap<String, String>) -> bool {
-    if env_flag(env, "ANYR_NO_UPDATE") == Some(true) {
-        return false;
-    }
-    if env_flag(env, "CI") == Some(true) {
-        return false;
-    }
-    if let Some(v) = env_flag(env, "ANYR_AUTO_UPDATE") {
-        return v;
-    }
-    let path = resolve_config_path(None, env);
-    load_config_if_present(&path)
-        .map(|c| c.auto_update())
-        .unwrap_or(true)
-}
-
-fn state_dir(env: &BTreeMap<String, String>) -> PathBuf {
-    resolve_config_path(None, env)
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."))
-}
-
-fn update_interval_secs(env: &BTreeMap<String, String>) -> u64 {
-    env.get("ANYR_UPDATE_INTERVAL_SECS")
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(DEFAULT_UPDATE_INTERVAL_SECS)
-}
-
-fn now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
-
-fn stamp_is_fresh(env: &BTreeMap<String, String>) -> bool {
-    let interval = update_interval_secs(env);
-    if interval == 0 {
-        return false;
-    }
-    let path = state_dir(env).join("update.stamp");
-    let Ok(raw) = fs::read_to_string(&path) else {
-        return false;
-    };
-    let Ok(then) = raw.trim().parse::<u64>() else {
-        return false;
-    };
-    now_secs().saturating_sub(then) < interval
-}
-
-fn write_stamp(env: &BTreeMap<String, String>) {
-    let dir = state_dir(env);
-    let _ = crate::config::ensure_private_dir(&dir);
-    let _ = crate::config::write_private(
-        &dir.join("update.stamp"),
-        format!("{}\n", now_secs()).as_bytes(),
-    );
-}
-
-fn write_notice(env: &BTreeMap<String, String>, version: &str) {
-    let dir = state_dir(env);
-    let _ = crate::config::ensure_private_dir(&dir);
-    let _ = crate::config::write_private(
-        &dir.join("update.notice"),
-        format!("{version}\n").as_bytes(),
-    );
-}
-
-struct UpdateLock {
+pub(crate) struct UpdateLock {
     path: PathBuf,
 }
 
@@ -718,7 +696,7 @@ impl Drop for UpdateLock {
     }
 }
 
-fn try_lock(env: &BTreeMap<String, String>) -> Option<UpdateLock> {
+pub(crate) fn try_lock(env: &BTreeMap<String, String>) -> Option<UpdateLock> {
     let dir = state_dir(env);
     let _ = crate::config::ensure_private_dir(&dir);
     let path = dir.join("update.lock");
@@ -743,171 +721,206 @@ fn try_lock(env: &BTreeMap<String, String>) -> Option<UpdateLock> {
     }
 }
 
-fn print_pending_notice(env: &BTreeMap<String, String>) {
-    let path = state_dir(env).join("update.notice");
-    let Ok(raw) = fs::read_to_string(&path) else {
-        return;
-    };
-    let ver = raw.trim().strip_prefix('v').unwrap_or(raw.trim());
-    if ver.is_empty() {
-        return;
-    }
-    let running = VERSION.trim().strip_prefix('v').unwrap_or(VERSION.trim());
-    if ver == running {
-        eprintln!("anyr: auto-updated to {ver}");
-        eprintln!("{}", crate::spinner::RESTART_RESUME_HINT);
-        let _ = fs::remove_file(&path);
-    }
-}
-
-/// Quiet check+install used by `--auto` and the background worker.
+/// `anyr update --auto`, run detached by `autoupdate::on_startup`. Checks
+/// the channel and stages a verified build for the next run. Never swaps the
+/// binary and never prints; every failure lands in the state file.
 fn run_auto(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, String> {
-    let _lock = match try_lock(env) {
-        Some(lock) => lock,
-        None => return Ok(0),
+    let Some(_lock) = try_lock(env) else {
+        return Ok(0);
     };
-    if stamp_is_fresh(env) && !parsed.flag_true("force") {
+    let mut state = UpdateState::load(env);
+    if crate::autoupdate::checked_recently(&state, env) && !parsed.flag_true("force") {
         return Ok(0);
     }
+    // Record the check before the network work: a stager that dies or times
+    // out must not be respawned by every command until the next interval.
+    state.last_check = crate::autoupdate::now_secs();
+    state.save(env);
+    if let Ok(dest) = install_dest() {
+        crate::autoupdate::clean_trash(&dest);
+    }
+    state.last_error = auto_stage(parsed, env, &mut state).err();
+    state.save(env);
+    Ok(0)
+}
+
+/// Candidates the background stager tries, newest first. Falling further
+/// back is for a person running `anyr update`.
+const AUTO_MAX_CANDIDATES: usize = 2;
+
+/// Hard stop for one background run, well under the 15-minute lock staleness.
+/// Each request is also capped at 60s by its own timeout.
+const AUTO_DEADLINE_SECS: u64 = 5 * 60;
+
+fn auto_deadline(env: &BTreeMap<String, String>) -> Instant {
+    let secs = env
+        .get("ANYR_UPDATE_DEADLINE_SECS")
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(AUTO_DEADLINE_SECS);
+    Instant::now() + Duration::from_secs(secs)
+}
+
+fn check_deadline(deadline: Instant) -> Result<(), String> {
+    if Instant::now() >= deadline {
+        return Err("background update check timed out".into());
+    }
+    Ok(())
+}
+
+fn auto_stage(
+    parsed: &ParsedArgs,
+    env: &BTreeMap<String, String>,
+    state: &mut UpdateState,
+) -> Result<(), String> {
+    let deadline = auto_deadline(env);
     let channel = resolve_channel(parsed, env)?;
+    state.channel = Some(channel.as_str().into());
     let fixture = fixture_path(parsed, env);
-    let releases = match load_releases(fixture.as_deref(), env) {
-        Ok(j) => j,
-        Err(_) => {
-            write_stamp(env);
-            return Ok(0);
-        }
-    };
+    let releases = load_releases(fixture.as_deref(), env)?;
+    check_deadline(deadline)?;
     let os = current_os();
     let arch = current_arch();
     let asset = asset_name(os, arch);
-    let candidates = channel_update_candidates(&releases, channel, &asset);
-    write_stamp(env);
+    let skip = state.skip_version.clone();
+    let candidates: Vec<Release> = channel_update_candidates(&releases, channel, &asset)
+        .into_iter()
+        .filter(|r| {
+            !skip
+                .as_deref()
+                .is_some_and(|v| version_eq(v, r.version_str()))
+        })
+        .collect();
     let UpdatePlan::Install(installable) = plan_update(VERSION, candidates, false) else {
-        return Ok(0);
+        state.latest_seen = None;
+        return Ok(());
     };
-    let dry = parsed.flag_true("dry-run") || fixture.is_some();
-    if dry {
-        println!("would update {VERSION} -> {}", installable[0].version_str());
-        return Ok(0);
+    let latest = installable[0].version_str().to_string();
+    state.latest_seen = Some(latest.clone());
+    if fixture.is_some() || parsed.flag_true("dry-run") {
+        return Ok(());
     }
-    match try_releases(
-        &installable,
+    let dest = install_dest()?;
+    let staged = crate::autoupdate::sibling(&dest, "pending");
+    if state.pending_version.as_deref() == Some(latest.as_str()) && staged.is_file() {
+        return Ok(());
+    }
+    if let Some(hint) = crate::autoupdate::package_manager_hint(&dest) {
+        state.hint = Some(hint);
+        return Ok(());
+    }
+    if !crate::autoupdate::dir_writable(&dest) {
+        state.hint = Some(format!("sudo {} update", crate::help::invoked_bin()));
+        return Err(format!("{} is not writable", dest.display()));
+    }
+    state.hint = None;
+    let tried = &installable[..installable.len().min(AUTO_MAX_CANDIDATES)];
+    let (rel, (path, sha)) = try_releases(
+        tried,
         os,
         arch,
-        |url| replace_current_binary(url, false),
-        crate::spinner::warn_beside_spinner,
-    ) {
-        Ok((rel, _)) => {
-            let ver = rel.version_str().to_string();
-            write_notice(env, &ver);
-            println!("updated {VERSION} -> {ver}");
-            Ok(0)
-        }
-        Err(_) => Ok(0),
-    }
+        |url| {
+            check_deadline(deadline)?;
+            stage_binary(url, &dest, env)
+        },
+        |_| {},
+    )?;
+    state.pending_sha256 = Some(sha);
+    state.pending_path = Some(path.to_string_lossy().into_owned());
+    state.pending_version = Some(rel.version_str().to_string());
+    Ok(())
 }
 
-/// Fire-and-forget `anyr upgrade --auto` so short commands still update.
-#[cfg(feature = "native")]
-fn spawn_detached_auto(env: &BTreeMap<String, String>) {
-    let Ok(exe) = std::env::current_exe() else {
-        return;
+/// `anyr update --status`: what the background updater last did.
+fn print_status(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, String> {
+    let state = UpdateState::load(env);
+    let auto = crate::autoupdate::auto_update_enabled(env);
+    let channel = resolve_channel(parsed, env)?;
+    if parsed.flag_true("json") {
+        let mut body = state.to_json();
+        body["current"] = VERSION.into();
+        body["auto_update"] = auto.into();
+        body["channel"] = channel.as_str().into();
+        println!("{body}");
+        return Ok(0);
+    }
+    let when = match state.last_check {
+        0 => "never".to_string(),
+        t => format!("{}s ago", crate::autoupdate::now_secs().saturating_sub(t)),
     };
-    let mut cmd = std::process::Command::new(exe);
-    cmd.arg("upgrade")
-        .arg("--auto")
-        .env("ANYR_AUTO_CHILD", "1")
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    for (k, v) in env {
-        if k.starts_with("ANYR") || k == "ANYROUTER_HOME" || k == "HOME" {
-            cmd.env(k, v);
-        }
+    println!("{}", field("current", VERSION));
+    println!("{}", field("channel", channel.as_str()));
+    println!("{}", field("auto", if auto { "on" } else { "off" }));
+    println!("{}", field("checked", when));
+    if let Some(v) = &state.latest_seen {
+        println!("{}", field("latest", v));
     }
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        cmd.process_group(0);
+    if let Some(v) = &state.pending_version {
+        println!(
+            "{}",
+            field("pending", format!("{v} (installs on next run)"))
+        );
     }
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-        const DETACHED_PROCESS: u32 = 0x0000_0008;
-        cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS);
+    if let Some(v) = &state.skip_version {
+        println!("{}", field("skipped", format!("{v} (rolled back)")));
     }
-    let _ = cmd.spawn();
+    if let Some(h) = &state.hint {
+        println!("{}", field("run", h));
+    }
+    if let Some(e) = &state.last_error {
+        println!("{}", field("error", term::warn(e)));
+    }
+    Ok(0)
 }
 
-#[cfg(not(feature = "native"))]
-fn spawn_detached_auto(_env: &BTreeMap<String, String>) {}
-
-/// Background check on startup. No-op when auto-update is off, already a
-/// child, or we checked recently.
-pub fn on_startup(command: &str, parsed: &ParsedArgs, env: &BTreeMap<String, String>) {
-    let is_help = matches!(command, "help" | "--help" | "-h") || parsed.flag_true("help");
-    let is_upgrade = matches!(command, "upgrade" | "update");
-    if !is_help && command != "--version" && command != "-v" {
-        print_pending_notice(env);
+/// `anyr update --rollback`: put the previous build back and skip this
+/// version in auto-update until a newer one ships.
+fn run_rollback(env: &BTreeMap<String, String>) -> Result<i32, String> {
+    let _lock = try_lock(env).ok_or(ANOTHER_UPDATE_RUNNING)?;
+    let dest = install_dest()?;
+    crate::autoupdate::rollback(&dest)?;
+    let mut state = UpdateState::load(env);
+    if let Some(p) = state.pending_path.take() {
+        let _ = fs::remove_file(p);
     }
-    if is_upgrade || env.get("ANYR_AUTO_CHILD").is_some() {
-        return;
-    }
-    if !auto_update_enabled(env) {
-        return;
-    }
-    if stamp_is_fresh(env) || running_from_cargo_target() {
-        return;
-    }
-    spawn_detached_auto(env);
-}
-
-/// Recheck GitHub while a long-running agent is open (every interval).
-#[cfg(feature = "native")]
-pub fn start_session_checker(
-    env: &BTreeMap<String, String>,
-) -> Option<std::thread::JoinHandle<()>> {
-    if !auto_update_enabled(env)
-        || env.get("ANYR_AUTO_CHILD").is_some()
-        || running_from_cargo_target()
-    {
-        return None;
-    }
-    let env = env.clone();
-    std::thread::Builder::new()
-        .name("anyr-update".into())
-        .spawn(move || {
-            let parsed = ParsedArgs {
-                command: "upgrade".into(),
-                flags: std::collections::HashMap::new(),
-                passthrough: Vec::new(),
-            };
-            loop {
-                let _ = run_auto(&parsed, &env);
-                let sleep_for = update_interval_secs(&env).max(60);
-                std::thread::sleep(Duration::from_secs(sleep_for));
-            }
-        })
-        .ok()
-}
-
-#[cfg(not(feature = "native"))]
-pub fn start_session_checker(_env: &BTreeMap<String, String>) -> Option<()> {
-    None
+    state.clear_pending();
+    state.skip_version = Some(VERSION.to_string());
+    state.save(env);
+    let now = on_disk_version(&dest).unwrap_or_else(|| "the previous build".into());
+    println!(
+        "{} Rolled back {} -> {}. Auto-update skips {} until a newer release.",
+        term::ok("✔"),
+        display_tag(VERSION),
+        display_tag(&now),
+        display_tag(VERSION)
+    );
+    Ok(0)
 }
 
 pub fn run(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, String> {
     if parsed.flag_true("auto") {
         return run_auto(parsed, env);
     }
+    if parsed.flag_true("status") {
+        return print_status(parsed, env);
+    }
+    if parsed.flag_true("rollback") {
+        return run_rollback(env);
+    }
     let switch = channel_switch_flag(parsed)?;
     if let Some(ch) = switch {
+        // A staged build belongs to the channel it was found on: drop it so a
+        // beta cannot apply after switching to stable.
+        let _lock = try_lock(env).ok_or(ANOTHER_UPDATE_RUNNING)?;
         let changed = persist_channel(ch, env)?;
         if changed {
             println!("channel set to {}", ch.as_str());
         }
+        let mut state = UpdateState::load(env);
+        if let Some(p) = state.pending_path.take() {
+            let _ = fs::remove_file(p);
+        }
+        state.clear_pending();
+        state.save(env);
     }
     let channel = resolve_channel(parsed, env)?;
     let fixture = fixture_path(parsed, env);
@@ -927,6 +940,23 @@ pub fn run(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, S
     let check = wants_check(parsed);
     let dry = parsed.flag_true("dry-run") || fixture.is_some();
 
+    if check && parsed.flag_true("json") {
+        let status = match &plan {
+            UpdatePlan::Install(_) if needs_upgrade(VERSION, latest_ver) => "update_available",
+            UpdatePlan::Install(_) => "downgrade_available",
+            UpdatePlan::UpToDate => "up_to_date",
+            UpdatePlan::Ahead { .. } => "ahead",
+        };
+        let body = serde_json::json!({
+            "current": VERSION,
+            "latest": latest_ver,
+            "channel": channel.as_str(),
+            "status": status,
+            "asset": url,
+        });
+        println!("{body}");
+        return Ok(0);
+    }
     if check {
         print_version_report(channel, latest_ver);
         println!("{}", field("asset", url));
@@ -995,6 +1025,12 @@ pub fn run(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, S
     };
 
     let target_ver = installable[0].version_str().to_string();
+    // The staging and swap steps share files with the background stager.
+    let _lock = if dry {
+        None
+    } else {
+        Some(try_lock(env).ok_or(ANOTHER_UPDATE_RUNNING)?)
+    };
     let spinner = crate::spinner::Spinner::start(updating_line(VERSION, &target_ver, channel));
     if dry {
         spinner.succeed(&would_update_line(&target_ver));
@@ -1008,7 +1044,7 @@ pub fn run(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, S
         &installable,
         os,
         arch,
-        |url| replace_current_binary(url, allow_downgrade),
+        |url| replace_current_binary(url, allow_downgrade, env),
         crate::spinner::warn_beside_spinner,
     ) {
         Ok((rel, _)) => {
@@ -1021,6 +1057,13 @@ pub fn run(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, S
                 ));
             }
             spinner.succeed(&updated_line(rel.version_str()));
+            let mut state = UpdateState::load(env);
+            if let Some(p) = state.pending_path.take() {
+                let _ = fs::remove_file(p);
+            }
+            state.clear_pending();
+            state.skip_version = None;
+            state.save(env);
             Ok(0)
         }
         Err(err) => {
@@ -1081,6 +1124,7 @@ fn status_change(status: impl std::fmt::Display, from: &str, to: &str) -> String
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::autoupdate::auto_update_enabled;
     use crate::channel::{release_asset_url, select_latest, Channel, GITHUB_DOWNLOAD_PREFIX};
 
     const FIXTURE: &str = r#"[
@@ -1155,14 +1199,17 @@ mod tests {
         // WHY: a tampered releases listing must not point the updater at an
         // arbitrary host or plain http.
         let ok = "https://github.com/anyrouter-dev/cli/releases/download/v0.1.15/anyr-linux-x86_64";
-        assert!(validate_download_url(ok).is_ok());
+        assert!(validate_download_url(ok, &BTreeMap::new()).is_ok());
         for bad in [
             "http://github.com/anyrouter-dev/cli/releases/download/v0.1.15/anyr-linux-x86_64",
             "https://evil.example/anyrouter-dev/cli/releases/download/v0.1.15/anyr",
             "https://github.com/someone-else/cli/releases/download/v0.1.15/anyr",
             "file:///tmp/anyr",
         ] {
-            assert!(validate_download_url(bad).is_err(), "{bad}");
+            assert!(
+                validate_download_url(bad, &BTreeMap::new()).is_err(),
+                "{bad}"
+            );
         }
     }
 
@@ -1182,14 +1229,41 @@ mod tests {
     }
 
     #[test]
-    fn cargo_target_builds_are_never_self_updated() {
-        // WHY: auto-update replaced a dev build in target/ with a release.
-        assert!(is_cargo_target_build(Path::new("/w/cli/target/debug/anyr")));
-        assert!(is_cargo_target_build(Path::new(
-            "/w/cli/target/x86_64-unknown-linux-gnu/release/anyr"
-        )));
-        assert!(!is_cargo_target_build(Path::new("/home/u/.local/bin/anyr")));
-        assert!(!is_cargo_target_build(Path::new("/opt/target/bin/anyr")));
+    fn mock_release_base_is_loopback_only() {
+        // WHY: the test hook must not let an env var send a real install to
+        // another host.
+        let env = |v: &str| {
+            BTreeMap::from([(
+                crate::autoupdate::ENV_UPDATE_BASE_URL.to_string(),
+                v.to_string(),
+            )])
+        };
+        let local = env("http://127.0.0.1:4000/");
+        assert_eq!(
+            mock_release_base(&local).as_deref(),
+            Some("http://127.0.0.1:4000")
+        );
+        assert!(validate_download_url(
+            "http://127.0.0.1:4000/releases/download/v9.9.9/anyr-linux-x86_64",
+            &local
+        )
+        .is_ok());
+        assert!(validate_download_url("http://127.0.0.2:4000/x", &local).is_err());
+        for bad in [
+            "https://evil.example",
+            "http://127.0.0.1.evil.example:80",
+            "http://evil.example/?http://127.0.0.1:1",
+        ] {
+            assert_eq!(mock_release_base(&env(bad)), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn unset_channel_follows_the_running_build() {
+        // WHY: a 0.1.29-beta.390 install with no `channel:` resolved to stable
+        // and was then moved off beta onto stable 0.1.29.
+        assert_eq!(channel_of_version("0.1.29-beta.390"), Channel::Beta);
+        assert_eq!(channel_of_version("0.1.29"), Channel::Stable);
     }
 
     #[test]
@@ -1255,17 +1329,20 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
         let (env, dir) = isolated_home();
-        // Dir exists with the default loose mode, and a stale notice is world-readable.
+        // Dir exists with the default loose mode, and a stale state file is world-readable.
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
-        fs::write(dir.join("update.notice"), "0.0.1\n").unwrap();
-        fs::set_permissions(dir.join("update.notice"), fs::Permissions::from_mode(0o644)).unwrap();
+        fs::write(dir.join("update-state.json"), "{}\n").unwrap();
+        fs::set_permissions(
+            dir.join("update-state.json"),
+            fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
 
-        write_stamp(&env);
-        write_notice(&env, "9.9.9");
+        UpdateState::default().save(&env);
         let lock = try_lock(&env).expect("lock");
 
         assert_eq!(mode(&dir), 0o700);
-        for name in ["update.stamp", "update.notice", "update.lock"] {
+        for name in ["update-state.json", "update.lock"] {
             assert_eq!(mode(&dir.join(name)), 0o600, "{name}");
         }
         drop(lock);
@@ -1323,13 +1400,6 @@ mod tests {
         )
         .unwrap();
         assert!(!auto_update_enabled(&env));
-    }
-
-    #[test]
-    fn pending_notice_mentions_auto_update_and_ctrl_g() {
-        assert!(crate::spinner::RESTART_RESUME_HINT.contains("Ctrl+G"));
-        assert!(crate::spinner::RESTART_RESUME_HINT.contains("restart and resume"));
-        assert!(crate::spinner::START_USING.contains("Ctrl+G"));
     }
 
     fn parsed_check() -> ParsedArgs {
@@ -1596,7 +1666,7 @@ mod tests {
         let (_env, dir) = isolated_home();
         let tmp = dir.join(".anyr.new");
         fs::write(&tmp, b"downloaded-bytes-must-not-appear-in-error").unwrap();
-        let err = abort_download(
+        let err = abort_download::<()>(
             &tmp,
             "checksum mismatch for anyr-linux-x86_64: expected aaa, got bbb".into(),
         )
@@ -1675,5 +1745,26 @@ mod tests {
                 .any(|w| w.contains("v0.1.14") && w.contains("trying v0.1.13")),
             "{warns:?}"
         );
+    }
+
+    #[test]
+    fn verified_hash_is_the_one_the_checksum_matched() {
+        // WHY: a staged build is re-checked against this hash before the swap;
+        // hashing it again after the rename would bless a file swapped in
+        // between verification and staging.
+        let dir = std::env::temp_dir().join(format!("anyr-verify-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("asset");
+        fs::write(&file, b"build").unwrap();
+        let want = sha256_hex_file(&file).unwrap();
+        let url = "https://github.com/anyrouter-dev/cli/releases/download/v0.1.31/anyr-x";
+        let body = format!("{want}  anyr-x\n");
+        assert_eq!(
+            verify_against_checksums(Some(body), url, &file).unwrap(),
+            want
+        );
+        let wrong = format!("{}  anyr-x\n", "0".repeat(64));
+        assert!(verify_against_checksums(Some(wrong), url, &file).is_err());
+        let _ = fs::remove_dir_all(&dir);
     }
 }

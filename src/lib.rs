@@ -3,6 +3,7 @@
 pub mod api;
 pub mod artifact;
 pub mod auth;
+pub mod autoupdate;
 pub mod buildinfo;
 pub mod channel;
 #[cfg(feature = "native")]
