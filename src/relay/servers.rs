@@ -66,8 +66,10 @@ pub(super) struct ServerSpec {
     pub label: &'static str,
     /// Oldest macOS major version it runs on, when it has one.
     pub min_macos: Option<u32>,
-    /// What to tell a user when it is not reachable.
+    /// What to tell a user when it is installed but not reachable.
     pub enable_hint: &'static str,
+    /// What to tell a user when it is not installed on this Mac.
+    pub install_hint: &'static str,
     /// How long start waits for it to answer before moving on.
     pub ready_timeout: Duration,
 }
@@ -92,6 +94,7 @@ pub(super) static SERVERS: [ServerSpec; 2] = [
         label: "Apple Foundation Models",
         min_macos: Some(26),
         enable_hint: "turn on Apple Intelligence and run `fm serve`",
+        install_hint: "turn on Apple Intelligence (macOS 26+), which provides `fm serve`",
         ready_timeout: Duration::from_secs(20),
     },
     ServerSpec {
@@ -117,11 +120,45 @@ pub(super) static SERVERS: [ServerSpec; 2] = [
         label: "PPLX Decider Flash v1.2",
         min_macos: None,
         enable_hint: "open the Decider for Mac app (serves on :8080)",
+        install_hint: "install the Decider for Mac app into /Applications \
+                       (anyr has no download link for it; see \
+                       https://anyrouter.dev/docs/features/local-relay)",
         // The first launch downloads ~5.8 GB before it answers; start does
         // not wait for that, supervision keeps watching.
         ready_timeout: Duration::from_secs(60),
     },
 ];
+
+/// Why a server is not being served, in the order a user fixes it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Absent {
+    NeedsMac,
+    NotInstalled,
+    /// Installed, but not running (start launches it unless `--no-launch`).
+    Stopped,
+}
+
+impl Absent {
+    /// Stable name for `--json`.
+    pub(super) fn name(self) -> &'static str {
+        match self {
+            Absent::NeedsMac => "needs_mac",
+            Absent::NotInstalled => "not_installed",
+            Absent::Stopped => "stopped",
+        }
+    }
+}
+
+impl ServerSpec {
+    /// One sentence that ends in the next step for `why`.
+    pub(super) fn next_step(&self, why: Absent) -> String {
+        match why {
+            Absent::NeedsMac => "needs a Mac".into(),
+            Absent::NotInstalled => format!("not installed: {}", self.install_hint),
+            Absent::Stopped => self.enable_hint.into(),
+        }
+    }
+}
 
 /// The table row for `model`. Every variant has one (tested).
 pub(super) fn spec(model: OnDeviceModel) -> &'static ServerSpec {
@@ -140,6 +177,8 @@ pub(super) trait Host: Send {
     fn running(&self, spec: &ServerSpec) -> bool;
     /// It can be launched on this machine.
     fn installed(&self, spec: &ServerSpec) -> bool;
+    /// This machine is a Mac (the on-device servers only run there).
+    fn is_mac(&self) -> bool;
     fn launch(&mut self, spec: &ServerSpec) -> Result<(), String>;
     /// The copy this host launched is gone.
     fn exited(&mut self, spec: &ServerSpec) -> bool;
@@ -220,26 +259,31 @@ impl Supervisor {
             let status = if healthy || sup.host.running(spec) {
                 (sup.log)(&format!("found {} running (external)", spec.endpoint));
                 Status::External
+            } else if !sup.host.is_mac() {
+                sup.say_skipped(spec, Absent::NeedsMac);
+                Status::Off
             } else if no_launch {
                 (sup.log)(&format!(
-                    "{} is not running; not starting it (--no-launch)",
-                    spec.endpoint
+                    "{}: not started (--no-launch). {}, or drop --no-launch",
+                    spec.label, spec.enable_hint
                 ));
                 Status::Off
             } else if !sup.host.installed(spec) {
-                (sup.log)(&format!(
-                    "{} is not running and not installed",
-                    spec.endpoint
-                ));
+                sup.say_skipped(spec, Absent::NotInstalled);
                 Status::Off
             } else {
                 match sup.host.launch(spec) {
                     Ok(()) => {
-                        (sup.log)(&format!("started {} (managed)", spec.endpoint));
+                        (sup.log)(&format!("{}: started", spec.label));
                         Status::Managed
                     }
                     Err(e) => {
-                        (sup.log)(&format!("could not start {}: {e}", spec.endpoint));
+                        (sup.log)(&format!("{}: could not start: {e}", spec.label));
+                        (sup.log)(&format!(
+                            "{}: start it yourself ({}), then re-run the relay. \
+                             Other models are still served",
+                            spec.label, spec.enable_hint
+                        ));
                         Status::Off
                     }
                 }
@@ -257,6 +301,16 @@ impl Supervisor {
             sup.wait_ready();
         }
         sup
+    }
+
+    /// The server is not served and cannot be launched: say why and what
+    /// to do, and that the rest keep serving.
+    fn say_skipped(&self, spec: &ServerSpec, why: Absent) {
+        (self.log)(&format!("{}: {}", spec.label, spec.next_step(why)));
+        (self.log)(&format!(
+            "{}: skipped; the relay still serves your other models",
+            spec.label
+        ));
     }
 
     /// Wait for every managed server to answer, each up to its timeout.
@@ -279,6 +333,9 @@ impl Supervisor {
             self.host.sleep(READY_POLL);
         }
         for e in &self.entries {
+            if e.status == Status::Managed && e.healthy {
+                (self.log)(&format!("{}: ready", e.spec.label));
+            }
             if e.status == Status::Managed && !e.healthy {
                 (self.log)(&format!(
                     "{} is still starting after {}s; serving it once it answers",
@@ -434,6 +491,10 @@ impl Host for SystemHost {
         quiet_status(&mut cmd)
     }
 
+    fn is_mac(&self) -> bool {
+        cfg!(target_os = "macos")
+    }
+
     fn installed(&self, spec: &ServerSpec) -> bool {
         if !cfg!(target_os = "macos") {
             return false;
@@ -544,6 +605,7 @@ mod tests {
         /// A launch makes the server healthy (fm-style) unless listed here.
         slow: Vec<&'static str>,
         fail_launch: Vec<&'static str>,
+        not_mac: bool,
         launches: Vec<&'static str>,
         stops: Vec<&'static str>,
         health_checks: usize,
@@ -581,6 +643,9 @@ mod tests {
         }
         fn installed(&self, s: &ServerSpec) -> bool {
             self.w().installed.get(s.name).copied().unwrap_or(false)
+        }
+        fn is_mac(&self) -> bool {
+            !self.w().not_mac
         }
         fn launch(&mut self, s: &ServerSpec) -> Result<(), String> {
             let mut w = self.w();
@@ -686,7 +751,81 @@ mod tests {
             .lock()
             .unwrap()
             .iter()
-            .any(|l| l == "started Perplexity Decider (managed)"));
+            .any(|l| l == "PPLX Decider Flash v1.2: started"));
+    }
+
+    fn decider_lines(m: &Mock, no_launch: bool) -> Vec<String> {
+        let (_sup, lines) = start(m, no_launch);
+        let all = lines.lock().unwrap().clone();
+        all.into_iter()
+            .filter(|l| l.starts_with("PPLX Decider Flash v1.2"))
+            .collect()
+    }
+
+    #[test]
+    fn decider_not_installed_says_how_to_install_and_that_others_still_serve() {
+        // WHY: "not running and not installed" was a dead end; the owner
+        // must see the next step and know the other models are unaffected.
+        let m = Mock::new(World::default());
+        let l = decider_lines(&m, false);
+        assert!(m.w().launches.is_empty());
+        assert!(
+            l[0].contains("not installed: install the Decider for Mac app"),
+            "{l:?}"
+        );
+        assert!(
+            l[0].contains("https://anyrouter.dev/docs/features/local-relay"),
+            "{l:?}"
+        );
+        assert!(l[1].contains("still serves your other models"), "{l:?}");
+    }
+
+    #[test]
+    fn decider_off_a_mac_says_it_needs_a_mac_and_keeps_serving() {
+        let m = Mock::new(World {
+            not_mac: true,
+            ..installed_all()
+        });
+        let l = decider_lines(&m, false);
+        assert!(
+            m.w().launches.is_empty(),
+            "never try to open an app off-Mac"
+        );
+        assert_eq!(l[0], "PPLX Decider Flash v1.2: needs a Mac");
+        assert!(l[1].contains("still serves your other models"));
+    }
+
+    #[test]
+    fn decider_launch_failure_names_the_manual_step() {
+        let m = Mock::new(World {
+            fail_launch: vec!["decider"],
+            ..installed_all()
+        });
+        let l = decider_lines(&m, false);
+        assert!(l[0].contains("could not start: boom"), "{l:?}");
+        assert!(l[1].contains("open the Decider for Mac app"), "{l:?}");
+        assert!(l[1].contains("Other models are still served"), "{l:?}");
+    }
+
+    #[test]
+    fn no_launch_says_how_to_start_it() {
+        let m = Mock::new(installed_all());
+        let l = decider_lines(&m, true);
+        assert!(l[0].contains("--no-launch"), "{l:?}");
+        assert!(l[0].contains("open the Decider for Mac app"), "{l:?}");
+    }
+
+    #[test]
+    fn a_decider_that_answers_after_launch_reports_ready() {
+        let m = Mock::new(installed_all());
+        let l = decider_lines(&m, false);
+        assert_eq!(
+            l,
+            [
+                "PPLX Decider Flash v1.2: started",
+                "PPLX Decider Flash v1.2: ready"
+            ]
+        );
     }
 
     #[test]
@@ -887,7 +1026,7 @@ mod tests {
             .lock()
             .unwrap()
             .iter()
-            .any(|l| l == "could not start fm serve (Apple Foundation Models): boom"));
+            .any(|l| l == "Apple Foundation Models: could not start: boom"));
     }
 
     #[test]

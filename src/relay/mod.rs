@@ -688,10 +688,16 @@ impl OnDeviceDetector for SystemDetector {
             }
         }
         if on_device_listening(spec) {
-            Ok(())
-        } else {
-            Err(spec.enable_hint.into())
+            return Ok(());
         }
+        let why = if !cfg!(target_os = "macos") {
+            servers::Absent::NeedsMac
+        } else if servers::Host::installed(&servers::SystemHost::default(), spec) {
+            servers::Absent::Stopped
+        } else {
+            servers::Absent::NotInstalled
+        };
+        Err(spec.next_step(why))
     }
 }
 
@@ -2628,6 +2634,9 @@ impl doctor::Probe for SystemProbe<'_> {
     }
     fn decider(&self) -> bool {
         probe_decider(DECIDER_TARGET)
+    }
+    fn installed(&self, model: OnDeviceModel) -> bool {
+        servers::Host::installed(&servers::SystemHost::default(), model.spec())
     }
     fn other_servers(&self) -> Vec<String> {
         CHAT_PROBES
