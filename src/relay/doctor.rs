@@ -163,7 +163,10 @@ pub(super) fn run_checks(p: &dyn Probe, bin: &str) -> Vec<Check> {
         Err(e) => check(
             "Network",
             Level::Fail,
-            format!("cannot reach anyrouter.dev: {e}"),
+            format!(
+                "cannot reach anyrouter.dev: {}",
+                crate::exit::classify(&e).1
+            ),
             "check your connection, VPN or HTTPS_PROXY",
         ),
     });
@@ -186,7 +189,10 @@ pub(super) fn run_checks(p: &dyn Probe, bin: &str) -> Vec<Check> {
         Auth::Unverified(e) => check(
             "Auth",
             Level::Warn,
-            format!("key stored but not verified: {e}"),
+            format!(
+                "key stored but not verified: {}",
+                crate::exit::classify(&e).1
+            ),
             format!("re-run `{bin} relay doctor` once online"),
         ),
     });
