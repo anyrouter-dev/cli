@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use crate::auth::acquire_api_key;
 use crate::config::{write_config, DEFAULT_PROFILE};
 use crate::http::fetch_models;
-use crate::install::ensure_tool_installed;
+use crate::install::{ensure_tool_installed, Install};
 use crate::key::{
     load_config_if_present, profile_for_agent, resolve_base_url, resolve_launch_api_key,
     resolve_launch_model,
@@ -27,6 +27,8 @@ use crate::cmd::models::apply_claude_alias_flags;
 pub(crate) struct ResolvedModel {
     id: String,
     context_window: Option<i64>,
+    /// The catalog fetched to resolve `id`, kept so pi does not fetch it again.
+    catalog: Option<Vec<crate::http::CatalogModel>>,
 }
 
 pub(crate) fn resolve_session_model(
@@ -47,16 +49,22 @@ pub(crate) fn resolve_session_model(
         return ResolvedModel {
             id,
             context_window: None,
+            catalog: None,
         };
     }
     let Ok(models) = fetch_models(base, key) else {
         return ResolvedModel {
             id,
             context_window: None,
+            catalog: None,
         };
     };
     let context_window = catalog_context_window(&id, &models);
-    ResolvedModel { id, context_window }
+    ResolvedModel {
+        id,
+        context_window,
+        catalog: Some(models),
+    }
 }
 
 /// Put the agent's native skip-permission argv in `args`: after its
@@ -208,7 +216,7 @@ pub(crate) fn launch(
         &resolve_launch_model(&parsed.flags, existing.as_ref(), &profile, tool_name),
         &mut routing,
     );
-    let resolved = resolve_session_model(&requested, &base, Some(&key), env);
+    let mut resolved = resolve_session_model(&requested, &base, Some(&key), env);
     let model = resolved.id;
     if is_systemone_model(&model) {
         return Err(chat_model_error(&model, tool_name));
@@ -234,7 +242,10 @@ pub(crate) fn launch(
     // An `anyr` the agent runs itself must not update or print mid-session.
     env_map.insert(crate::autoupdate::ENV_LAUNCHER_CHILD.into(), "1".into());
     if tool_name == "pi" {
-        let catalog = fetch_models(&base, Some(&key)).unwrap_or_default();
+        let catalog = match resolved.catalog.take() {
+            Some(models) => models,
+            None => fetch_models(&base, Some(&key)).unwrap_or_default(),
+        };
         prepare_pi_wrapper(&mut env_map, &path, &profile, &tool, &model, &catalog)?;
     }
     if tool_name == "grok" {
@@ -308,6 +319,13 @@ pub(crate) fn launch(
         println!("{}", mcp.summary);
         return Ok(0);
     }
+    let install = if parsed.flag_true("install") {
+        Install::Yes
+    } else if term::agent_mode(parsed, env) {
+        Install::Never
+    } else {
+        Install::Ask
+    };
     if headless.is_some() {
         crate::api::confirm(
             parsed,
@@ -315,17 +333,13 @@ pub(crate) fn launch(
                 "Run {tool_name} headlessly with model {model}? An agent run can make many model calls."
             ),
         )?;
-        let resolved = ensure_tool_installed(tool_name, &command, false)?;
+        let resolved = ensure_tool_installed(tool_name, &command, install)?;
         if tool_name == "opencode" {
             args = opencode_standalone_args(&args, opencode_major_version(&resolved));
         }
         return Ok(spawn_child(&resolved, &args, &env_map, unset));
     }
-    let resolved = ensure_tool_installed(
-        tool_name,
-        &command,
-        parsed.flag_true("install") || term::is_interactive(),
-    )?;
+    let resolved = ensure_tool_installed(tool_name, &command, install)?;
     // Persist on top of the existing config when there is one; a fresh setup
     // (no config yet) gets one so last_tool and the model are remembered.
     let mut cfg = existing.clone().unwrap_or_else(|| crate::config::Config {

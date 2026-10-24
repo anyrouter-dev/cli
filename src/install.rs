@@ -253,12 +253,23 @@ pub fn run_installer(install_command: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Locate `command` on PATH. If missing: `--install` (or a TTY y/N) runs the
-/// documented installer, then re-resolves.
+/// What a launch may do when the agent binary is missing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Install {
+    /// `--install`, or an explicit pick in the menu: run the installer.
+    Yes,
+    /// A person at a TTY: ask y/N first.
+    Ask,
+    /// A script or agent: never install, fail with the command to run.
+    Never,
+}
+
+/// Locate `command` on PATH. If missing, `install` decides whether the
+/// documented installer runs; it never runs without an explicit yes.
 pub fn ensure_tool_installed(
     tool_name: &str,
     command: &str,
-    auto_install: bool,
+    install: Install,
 ) -> Result<String, String> {
     if let Some(path) = resolve_executable(command) {
         return Ok(path);
@@ -268,14 +279,30 @@ pub fn ensure_tool_installed(
             "Missing child executable \"{command}\". Install it, or pass --command-path <path>."
         ));
     };
-    let want = auto_install
-        || (term::is_interactive()
-            && term::confirm(&format!(
-                "{} (\"{command}\") isn't on your PATH. Install it now?",
-                hint.label
-            )));
+    let want = match install {
+        Install::Yes => true,
+        Install::Ask => {
+            term::is_interactive()
+                && term::confirm(&format!(
+                    "{} (\"{command}\") isn't on your PATH. Install it now?",
+                    hint.label
+                ))
+        }
+        Install::Never => {
+            return Err(crate::exit::tag(
+                crate::exit::NOT_FOUND,
+                format!(
+                    "{} (\"{command}\") is not on PATH; install it with `{}` or pass --install",
+                    hint.label, hint.install
+                ),
+            ))
+        }
+    };
     if !want {
-        return Err(missing_tool_hint(command, hint));
+        return Err(crate::exit::tag(
+            crate::exit::NOT_FOUND,
+            missing_tool_hint(command, hint),
+        ));
     }
     eprintln!(
         "{}",

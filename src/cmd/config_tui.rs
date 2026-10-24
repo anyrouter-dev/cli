@@ -3,7 +3,9 @@ use std::path::Path;
 
 use crate::config::{valid_account_name, write_config, Profile};
 use crate::http::{fetch_credits, fetch_me};
-use crate::install::{agent_available, available_agents, ensure_tool_installed, KNOWN_AGENTS};
+use crate::install::{
+    agent_available, available_agents, ensure_tool_installed, Install, KNOWN_AGENTS,
+};
 use crate::key::{
     load_config_if_present, mask_api_key, no_key_error, resolve_api_key, resolve_base_url,
 };
@@ -826,7 +828,7 @@ pub(crate) fn config_edit_row(
         }
         SettingKind::Install(id) => {
             let command = tool_command_for(path, id);
-            match ensure_tool_installed(id, &command, true) {
+            match ensure_tool_installed(id, &command, Install::Yes) {
                 Ok(resolved) => {
                     persist_tool_command(path, id, &resolved)?;
                     println!(

@@ -383,8 +383,11 @@ pub fn acquire_api_key(
         });
     }
 
-    let interactive =
-        term::is_interactive() && !matches!(flags.get("yes"), Some(FlagValue::Bool(true)));
+    // Machine output (`--json`, `ANYR_OUTPUT=json`, `--quiet`) never logs in,
+    // even on a TTY: an agent driving anyr cannot answer a device-code page.
+    let interactive = term::is_interactive()
+        && !matches!(flags.get("yes"), Some(FlagValue::Bool(true)))
+        && !term::machine_output_flags(flags, env);
     if !interactive {
         return Err(no_key_error());
     }
