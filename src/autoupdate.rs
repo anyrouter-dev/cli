@@ -480,7 +480,63 @@ fn spawn_detached_check(env: &BTreeMap<String, String>) {
         const DETACHED_PROCESS: u32 = 0x0000_0008;
         cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS);
     }
+    #[cfg(windows)]
+    let _guard = NoStdInherit::new();
     let _ = cmd.spawn();
+}
+
+/// Windows hands every inheritable handle to a child, including the pipes
+/// our caller reads our stdout/stderr from. The detached checker would then
+/// hold those pipes open and the caller would wait for it to finish. Clear
+/// the inherit flag on our std handles while spawning it, then restore it.
+#[cfg(all(feature = "native", windows))]
+struct NoStdInherit(Vec<std::os::windows::io::RawHandle>);
+
+#[cfg(all(feature = "native", windows))]
+const HANDLE_FLAG_INHERIT: u32 = 1;
+
+#[cfg(all(feature = "native", windows))]
+#[link(name = "kernel32")]
+extern "system" {
+    fn SetHandleInformation(handle: std::os::windows::io::RawHandle, mask: u32, flags: u32) -> i32;
+    fn GetHandleInformation(handle: std::os::windows::io::RawHandle, flags: *mut u32) -> i32;
+}
+
+#[cfg(all(feature = "native", windows))]
+impl NoStdInherit {
+    fn new() -> Self {
+        use std::os::windows::io::AsRawHandle;
+        let handles = [
+            std::io::stdin().as_raw_handle(),
+            std::io::stdout().as_raw_handle(),
+            std::io::stderr().as_raw_handle(),
+        ];
+        let cleared = handles
+            .into_iter()
+            .filter(|h| !h.is_null())
+            // SAFETY: std handles of this process; only the inherit flag is
+            // read and cleared, and only where it was set.
+            .filter(|h| {
+                let mut flags = 0u32;
+                unsafe {
+                    GetHandleInformation(*h, &mut flags) != 0
+                        && flags & HANDLE_FLAG_INHERIT != 0
+                        && SetHandleInformation(*h, HANDLE_FLAG_INHERIT, 0) != 0
+                }
+            })
+            .collect();
+        Self(cleared)
+    }
+}
+
+#[cfg(all(feature = "native", windows))]
+impl Drop for NoStdInherit {
+    fn drop(&mut self) {
+        for h in &self.0 {
+            // SAFETY: restores the flag cleared in `new` on the same handle.
+            unsafe { SetHandleInformation(*h, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) };
+        }
+    }
 }
 
 #[cfg(test)]
