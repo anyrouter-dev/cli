@@ -68,8 +68,9 @@ pub(crate) fn run_account(
         .first()
         .map(String::as_str)
         .unwrap_or("list");
+    // `ls` and `rm` are hidden aliases, matching the other list/remove verbs.
     match sub {
-        "list" => {
+        "list" | "ls" => {
             let Some(cfg) = load_config_if_present(&path) else {
                 return Err(no_key_error());
             };
@@ -172,7 +173,7 @@ pub(crate) fn run_account(
             println!("{}  {old} → {}", term::ok("Renamed"), term::accent(&new));
             Ok(0)
         }
-        "remove" => {
+        "remove" | "rm" => {
             let name = parsed
                 .passthrough
                 .get(1)

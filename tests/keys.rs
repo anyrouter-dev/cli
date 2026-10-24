@@ -152,3 +152,24 @@ fn restricted_key_exits_4() {
     assert_eq!(code, 4, "{err}");
     assert!(err.starts_with("error:"), "{err}");
 }
+
+#[test]
+fn ls_and_rm_are_hidden_aliases_of_list_and_revoke() {
+    // WHY: artifact, byok and relay devices take `ls` / `rm`; keys must too,
+    // so one verb works everywhere.
+    let (base, rx) = serve(vec![
+        (200, LIST.into()),
+        (200, LIST.into()),
+        (200, LIST.into()),
+    ]);
+    let (code, out, err) = run(&base, &["keys", "ls", "--json"], None);
+    assert_eq!(code, 0, "{out}{err}");
+    assert!(out.contains("ci-bot"), "{out}");
+    assert_eq!(rx.recv().unwrap().path, "/api/v1/keys");
+    // Without a TTY or --yes, `rm` refuses like `revoke` (usage, nothing deleted).
+    let (code, _, err) = run(&base, &["keys", "rm", "abc123"], None);
+    assert_eq!(code, 2, "{err}");
+    assert!(err.contains("--yes"), "{err}");
+    let (code, _, err) = run(&base, &["keys", "rm", "zzz"], None);
+    assert_eq!(code, 3, "an unknown hash is not found: {err}");
+}
