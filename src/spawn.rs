@@ -772,20 +772,158 @@ pub fn pi_resolved_model(model: &str) -> String {
 /// `$VAR` only works on the new versions. A `!` command runs on both, and the
 /// key stays out of the file and argv.
 pub fn pi_api_key_ref(auth_env: &str) -> Result<String, String> {
-    let valid = auth_env
-        .chars()
-        .next()
-        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
-        && auth_env
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_');
-    if !valid {
+    if !is_env_var_name(auth_env) {
         return Err(format!(
             "Pi's auth_env \"{auth_env}\" is not a valid environment variable name. Fix tools.pi.auth_env in your AnyRouter config."
         ));
     }
     Ok(format!("!printf %s \"${auth_env}\""))
 }
+
+fn is_env_var_name(name: &str) -> bool {
+    name.chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+pub fn grok_home_dir(config_path: &Path) -> PathBuf {
+    config_path
+        .parent()
+        .map(|p| p.join("grok"))
+        .unwrap_or_else(|| PathBuf::from("grok"))
+}
+
+/// Variables a Grok launch must not inherit. Grok probes a key in either one
+/// against xAI with a 400 ms timeout and, when xAI answers 401 in time, drops
+/// it and never falls back to the auth provider (`Not signed in`). Blank is not
+/// the same as unset: an empty value breaks the provider path too.
+pub const GROK_UNSET_ENV: &[&str] = &["XAI_API_KEY", "GROK_CODE_XAI_API_KEY"];
+
+/// Environment variable the Grok auth provider reads the AnyRouter key from.
+const GROK_KEY_ENV: &str = "ANYROUTER_API_KEY";
+
+/// Auth provider command that prints the AnyRouter key as the token.
+///
+/// Grok ranks a stored session (`~/.grok/auth.json`) above both
+/// `GROK_CODE_XAI_API_KEY` and an auth provider, so a signed-in user sent their
+/// own JWT to AnyRouter (401). Pointing `GROK_HOME` at an AnyRouter-owned
+/// directory leaves no session, and then the provider command supplies the
+/// token. The key stays out of argv and files: the command reads it from the
+/// environment each time it runs.
+///
+/// The key must not be exported as `XAI_API_KEY` / `GROK_CODE_XAI_API_KEY`:
+/// Grok probes such a key against xAI with a 400 ms timeout and, when xAI
+/// rejects it in time, falls back to no credential at all (`Not signed in`),
+/// never to this provider. Provider-only auth is deterministic. A saved
+/// `tools.grok.auth_env` from an older `anyr` may still name one of those, so
+/// the provider uses its own fixed variable.
+fn grok_auth_provider_command() -> String {
+    format!(
+        "sh -c 'printf \"{{\\\"access_token\\\":\\\"%s\\\",\\\"expires_in\\\":3600}}\" \"${GROK_KEY_ENV}\"'"
+    )
+}
+
+/// Entries of the user's Grok home that carry their own setup. `auth.json`
+/// (the session) and runtime state (locks, sockets, caches, logs) are left out.
+const GROK_SHARED_ENTRIES: &[&str] = &[
+    "managed_config.toml",
+    "requirements.toml",
+    "trusted_folders.toml",
+    "mcp_credentials.json",
+    "skills",
+    "hooks",
+    "rules",
+    "installed-plugins",
+    "marketplace-cache",
+    "plugin-data",
+    "memory",
+    "memory-v2",
+    "sessions",
+];
+
+/// The Grok home the user would get without `anyr`: `$GROK_HOME`, else `~/.grok`.
+pub fn grok_user_home(env: &dyn Fn(&str) -> Option<String>) -> Option<PathBuf> {
+    env("GROK_HOME")
+        .filter(|h| !h.is_empty())
+        .or_else(|| {
+            env("HOME")
+                .filter(|h| !h.is_empty())
+                .map(|h| format!("{h}/.grok"))
+        })
+        .map(PathBuf::from)
+}
+
+/// Give Grok an AnyRouter-owned home so a `grok login` session cannot outrank the key.
+///
+/// The user's own setup (config, MCP, skills, hooks, memory, history) is
+/// symlinked in from `user_home` (`config.toml` is copied fresh each launch); `auth.json` is not. The user's home is only
+/// read, never written, so a plain `grok` keeps its login.
+pub fn prepare_grok_home(
+    env: &mut BTreeMap<String, String>,
+    config_path: &Path,
+    api_key: &str,
+    user_home: Option<&Path>,
+) -> Result<(), String> {
+    let dir = grok_home_dir(config_path);
+    #[cfg(feature = "native")]
+    {
+        std::fs::create_dir_all(&dir).map_err(|e| {
+            format!(
+                "Could not create Grok home directory {}: {e}",
+                dir.display()
+            )
+        })?;
+        if let Some(src) = user_home.filter(|s| s.is_dir() && *s != dir.as_path()) {
+            link_grok_entries(src, &dir);
+            copy_grok_config(src, &dir);
+        }
+    }
+    #[cfg(not(feature = "native"))]
+    let _ = user_home;
+    env.insert("GROK_HOME".into(), dir.to_string_lossy().into_owned());
+    env.insert(
+        "GROK_AUTH_PROVIDER_COMMAND".into(),
+        grok_auth_provider_command(),
+    );
+    env.insert(GROK_KEY_ENV.into(), api_key.to_string());
+    // A saved `tools.grok.auth_env` from an older `anyr` put the key there.
+    for name in GROK_UNSET_ENV {
+        env.remove(*name);
+    }
+    Ok(())
+}
+
+/// `config.toml` is copied, not linked, on every launch: Grok and other `anyr`
+/// steps may rewrite it, and that must never reach the user's own file.
+#[cfg(feature = "native")]
+fn copy_grok_config(src: &Path, dir: &Path) {
+    let to = dir.join("config.toml");
+    let _ = std::fs::remove_file(&to);
+    let _ = std::fs::copy(src.join("config.toml"), &to);
+}
+
+#[cfg(all(feature = "native", unix))]
+fn link_grok_entries(src: &Path, dir: &Path) {
+    for name in GROK_SHARED_ENTRIES {
+        let from = src.join(name);
+        let to = dir.join(name);
+        let is_link = std::fs::symlink_metadata(&to).is_ok_and(|m| m.file_type().is_symlink());
+        if is_link {
+            if std::fs::read_link(&to).is_ok_and(|t| t == from) && from.exists() {
+                continue;
+            }
+            let _ = std::fs::remove_file(&to);
+        }
+        // A real file or directory Grok made here is the user's; leave it.
+        if from.exists() && std::fs::symlink_metadata(&to).is_err() {
+            let _ = std::os::unix::fs::symlink(&from, &to);
+        }
+    }
+}
+
+#[cfg(all(feature = "native", not(unix)))]
+fn link_grok_entries(_src: &Path, _dir: &Path) {}
 
 /// Build Pi `models.json` for the AnyRouter provider.
 ///
@@ -955,6 +1093,11 @@ pub fn model_args_for(
     if catalog.is_empty() || is_auto_model(&catalog) || model_mode == "auto" {
         return vec![];
     }
+    if tool_name == "grok" {
+        // Without `-m` Grok opens its own default model (`grok-4.7`), which
+        // AnyRouter does not serve.
+        return vec!["-m".into(), catalog];
+    }
     if tool_name != "codex" {
         return vec![];
     }
@@ -1088,15 +1231,29 @@ pub fn env_command_path(tool: &str, env: &BTreeMap<String, String>) -> Option<St
 }
 
 #[cfg(not(feature = "native"))]
-pub fn spawn_child(command: &str, args: &[String], extra_env: &BTreeMap<String, String>) -> i32 {
-    let _ = (args, extra_env);
+pub fn spawn_child(
+    command: &str,
+    args: &[String],
+    extra_env: &BTreeMap<String, String>,
+    unset: &[&str],
+) -> i32 {
+    let _ = (args, extra_env, unset);
     eprintln!("spawn is not available in the browser demo ({command})");
     1
 }
 
 #[cfg(feature = "native")]
-pub fn spawn_child(command: &str, args: &[String], extra_env: &BTreeMap<String, String>) -> i32 {
-    match Command::new(command)
+pub fn spawn_child(
+    command: &str,
+    args: &[String],
+    extra_env: &BTreeMap<String, String>,
+    unset: &[&str],
+) -> i32 {
+    let mut cmd = Command::new(command);
+    for name in unset {
+        cmd.env_remove(name);
+    }
+    match cmd
         .args(args)
         .envs(extra_env)
         .stdin(Stdio::inherit())
