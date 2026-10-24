@@ -967,6 +967,48 @@ pub fn model_args_for(
     args
 }
 
+/// OpenCode 2.x runs `run` and the TUI against a long-lived background
+/// service started earlier with its own environment, so the
+/// `OPENCODE_CONFIG_CONTENT` we inject never reaches it and OpenCode answers
+/// from its built-in provider. `--standalone` makes it start a private server
+/// that inherits our env. OpenCode 1.x has no service and rejects the flag.
+pub fn opencode_standalone_args(args: &[String], major: Option<u32>) -> Vec<String> {
+    let mut out = args.to_vec();
+    if major.is_some_and(|m| m >= 2) {
+        match out.first().map(String::as_str) {
+            // `--standalone` is a flag of `run`, not a root flag placed before it.
+            Some("run") => out.insert(1, "--standalone".into()),
+            None => out.push("--standalone".into()),
+            Some(first) if first.starts_with('-') => out.insert(0, "--standalone".into()),
+            Some(_) => {}
+        }
+    }
+    out
+}
+
+/// Major version from `opencode --version` output such as `opencode v2.0.24`
+/// or `1.4.3`.
+pub fn parse_opencode_major(output: &str) -> Option<u32> {
+    let digits: String = output
+        .trim()
+        .trim_start_matches(|c: char| !c.is_ascii_digit())
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    digits.parse().ok()
+}
+
+#[cfg(not(feature = "native"))]
+pub fn opencode_major_version(_command: &str) -> Option<u32> {
+    None
+}
+
+#[cfg(feature = "native")]
+pub fn opencode_major_version(command: &str) -> Option<u32> {
+    let out = Command::new(command).arg("--version").output().ok()?;
+    parse_opencode_major(&String::from_utf8_lossy(&out.stdout))
+}
+
 pub fn provider_args_for(tool_name: &str, profile: &Profile) -> Vec<String> {
     if tool_name == "pi" {
         return vec!["--provider".into(), "anyrouter".into()];
@@ -1072,6 +1114,35 @@ pub fn spawn_child(command: &str, args: &[String], extra_env: &BTreeMap<String, 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn opencode_two_runs_standalone_so_injected_config_applies() {
+        let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            opencode_standalone_args(&a(&["run", "hi"]), Some(2)),
+            a(&["run", "--standalone", "hi"])
+        );
+        assert_eq!(
+            opencode_standalone_args(&a(&["-c"]), Some(2)),
+            a(&["--standalone", "-c"])
+        );
+        assert_eq!(opencode_standalone_args(&[], Some(2)), a(&["--standalone"]));
+        assert_eq!(
+            opencode_standalone_args(&a(&["models"]), Some(2)),
+            a(&["models"])
+        );
+        assert_eq!(
+            opencode_standalone_args(&a(&["run", "hi"]), Some(1)),
+            a(&["run", "hi"])
+        );
+        assert_eq!(
+            opencode_standalone_args(&a(&["run", "hi"]), None),
+            a(&["run", "hi"])
+        );
+        assert_eq!(parse_opencode_major("opencode v2.0.24\n"), Some(2));
+        assert_eq!(parse_opencode_major("1.4.3"), Some(1));
+        assert_eq!(parse_opencode_major("garbage"), None);
+    }
+
     #[test]
     fn codex_gets_model_context_window_only_for_a_concrete_model() {
         let args = model_args_for(
