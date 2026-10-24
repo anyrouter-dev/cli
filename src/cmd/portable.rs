@@ -1150,6 +1150,29 @@ mod tests {
     }
 
     #[test]
+    fn goose_yolo_sets_its_env_and_keeps_its_own_session_flags() {
+        let lead = [("yolo", None)];
+        let t = apply("goose", &lead, &s(&["session", "--resume"]), 2).unwrap();
+        assert_eq!(t.env, vec![("GOOSE_MODE", "auto")]);
+        assert_eq!(t.args, s(&["session", "--resume"]));
+        assert_eq!(
+            run("goose", &["session", "--resume", "abc"]).args,
+            s(&["session", "--resume", "--session-id", "abc"])
+        );
+    }
+
+    #[test]
+    fn kilo_follows_opencode_and_crush_keeps_yolo_off_run() {
+        assert_eq!(
+            run("kilo", &["--continue", "run", "x"]).args,
+            s(&["run", "--continue", "x"])
+        );
+        assert_eq!(run("crush", &["--print", "x"]).args, s(&["run", "x"]));
+        let lead = [("yolo", None)];
+        assert_eq!(apply("crush", &lead, &[], 0).unwrap().args, s(&["-y"]));
+    }
+
+    #[test]
     fn raw_boundary_past_the_end_reads_as_no_raw_tail() {
         assert_eq!(
             apply("pi", &[], &s(&["--continue"]), 9).unwrap().args,
