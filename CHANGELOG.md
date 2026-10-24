@@ -10,6 +10,27 @@ GitHub Releases use this file as the release notes (full history through that ta
 
 * **cli:** add `anyr decision` for typed `POST /api/v1/decisions` requests with flag or stdin JSON input. Known Decisions models are refused by chat-agent launchers. ([duyet/anyrouter#3550](https://github.com/duyet/anyrouter/issues/3550))
 
+## [0.1.31](https://github.com/anyrouter-dev/cli/compare/v0.1.30...v0.1.31) (2026-10-24)
+
+
+### Features
+
+* **agent:** --json and JSON errors on every command, one exit-code table ([#193](https://github.com/anyrouter-dev/cli/issues/193)) ([18dfbfe](https://github.com/anyrouter-dev/cli/commit/18dfbfe8b16884ac79dfb6b3904bbc831a4c0067))
+* **help:** short --help with the everyday commands; help --all from the registry ([#195](https://github.com/anyrouter-dev/cli/issues/195)) ([24fdb2a](https://github.com/anyrouter-dev/cli/commit/24fdb2a4a94c1c1ab99f772b68c7269a45725948))
+* **mcp:** connect the AnyRouter MCP gateway when launching an agent ([#184](https://github.com/anyrouter-dev/cli/issues/184)) ([327608e](https://github.com/anyrouter-dev/cli/commit/327608ef81f435d12b7d77710984810111230bb4))
+* **relay:** say how to serve the Decider when it is missing, stopped or off-Mac ([#199](https://github.com/anyrouter-dev/cli/issues/199)) ([596f721](https://github.com/anyrouter-dev/cli/commit/596f721487e56b420978ff5d3ddbcdb8c9160872))
+
+
+### Bug Fixes
+
+* **cli:** mask API keys in error output ([#197](https://github.com/anyrouter-dev/cli/issues/197)) ([55ed01f](https://github.com/anyrouter-dev/cli/commit/55ed01f6374fdc3751b3ced79512561728775a9d))
+* **relay:** bind each machine to its own device and send pool in hello ([#187](https://github.com/anyrouter-dev/cli/issues/187)) ([a1531dd](https://github.com/anyrouter-dev/cli/commit/a1531dd426b77da88f4948630156c9ce0152d4f9))
+
+
+### Performance Improvements
+
+* **build:** fat LTO and opt-level z, -20% binary ([#191](https://github.com/anyrouter-dev/cli/issues/191)) ([7728831](https://github.com/anyrouter-dev/cli/commit/77288315efbeb507dc797dee49e044bff0275bb7))
+
 ## [0.1.30](https://github.com/anyrouter-dev/cli/compare/v0.1.29...v0.1.30) (2026-10-24)
 
 
