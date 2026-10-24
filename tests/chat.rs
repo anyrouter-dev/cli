@@ -213,6 +213,7 @@ mod stream {
         assert!(!err.contains("tokens"), "{err}");
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_terminal_gets_one_footer_from_the_final_usage_chunk() {
         let (base, release, _seen) = serve_sse();
@@ -238,6 +239,7 @@ mod stream {
         assert_eq!(lines.len(), 2, "{text:?}");
     }
 
+    #[cfg(unix)]
     #[test]
     fn quiet_on_a_terminal_prints_no_footer() {
         let (base, release, _seen) = serve_sse();
@@ -250,6 +252,7 @@ mod stream {
         assert_eq!(text.trim_end(), "AAABBB");
     }
 
+    #[cfg(unix)]
     fn pty() -> (std::os::fd::OwnedFd, std::os::fd::OwnedFd) {
         use std::os::fd::FromRawFd;
         let (mut m, mut s) = (0, 0);
@@ -258,8 +261,8 @@ mod stream {
                 &mut m,
                 &mut s,
                 std::ptr::null_mut(),
-                std::ptr::null(),
-                std::ptr::null(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
             )
         };
         assert_eq!(rc, 0);
