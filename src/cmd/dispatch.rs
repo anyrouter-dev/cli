@@ -272,7 +272,9 @@ pub(crate) struct Yolo {
 }
 
 /// Each from the agent's own `--help`, except pool (docs.poolside.ai; not
-/// installed where checked).
+/// installed where checked). opencode 2.0.24 takes `--auto` on both the root
+/// command and `run`; with a `run` subcommand it goes after it, otherwise it
+/// leads the agent's args.
 pub(crate) const YOLO: &[Yolo] = &[
     Yolo {
         agent: "claude",

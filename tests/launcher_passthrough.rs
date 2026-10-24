@@ -260,3 +260,49 @@ fn pool_yolo_passes_unsafe_auto_allow_and_not_yolo() {
         got.args
     );
 }
+
+#[test]
+fn json_and_quiet_reach_the_agent_on_launchers() {
+    let codex = dry_run("codex", &["exec", "--json", "x"]);
+    assert_eq!(codex.code, 0, "{}", codex.stderr);
+    assert!(
+        codex.args.ends_with(&strs(&["exec", "--json", "x"])),
+        "{:?}",
+        codex.args
+    );
+    let claude = dry_run("claude", &["--quiet", "-p", "x"]);
+    assert_eq!(claude.code, 0, "{}", claude.stderr);
+    assert!(
+        claude.args.ends_with(&strs(&["--quiet", "-p", "x"])),
+        "{:?}",
+        claude.args
+    );
+}
+
+#[test]
+fn pool_keeps_its_documented_json_flag() {
+    let got = dry_run("pool", &["--json"]);
+    assert_eq!(got.code, 0, "{}", got.stderr);
+    assert!(!got.args.iter().any(|a| a == "--json"), "{:?}", got.args);
+}
+
+#[test]
+fn non_launcher_unknown_flag_still_exits_2() {
+    let out = Command::new(env!("CARGO_BIN_EXE_anyr"))
+        .args(["models", "--bogus"])
+        .env("ANYR_NO_UPDATE", "1")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+}
+
+#[test]
+fn opencode_top_level_yolo_leads_the_args() {
+    // opencode 2.0.24 `--help` lists `--auto` on the root command too.
+    let base = dry_run("opencode", &["fix it"]).args;
+    let got = dry_run("opencode", &["--yolo", "fix it"]);
+    assert_eq!(got.code, 0, "{}", got.stderr);
+    let mut want = strs(&["--auto"]);
+    want.extend(base);
+    assert_eq!(got.args, want);
+}
