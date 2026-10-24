@@ -198,3 +198,107 @@ fn live_artifact_publish_private_then_delete() {
     assert_eq!(code, 3, "a deleted artifact must be not found (exit 3)");
     std::mem::forget(guard);
 }
+
+/// Real coding agents, launched by `anyr`, answering through prod. The fakes
+/// in tests/e2e.rs pin what anyr writes; this catches an agent release that
+/// reads it differently (#173 Pi, #174 grok, #175 OpenCode).
+///
+/// `ANYR_E2E_AGENTS` lists `label=tool=path` entries separated by `;`, e.g.
+/// `pi-old=pi=/opt/pi073/bin/pi;opencode=opencode=/usr/bin/opencode`. Unset
+/// means skip; CI installs the agents and sets it.
+#[test]
+fn live_real_agents_answer_through_anyr() {
+    let Some(key) = key() else { return };
+    let Ok(list) = std::env::var("ANYR_E2E_AGENTS") else {
+        eprintln!("skipped: ANYR_E2E_AGENTS is not set");
+        return;
+    };
+    let prompt = "Reply with exactly the single word: pong";
+    let mut failures = Vec::new();
+    for entry in list.split(';').map(str::trim).filter(|e| !e.is_empty()) {
+        let mut parts = entry.splitn(3, '=');
+        let (label, tool, path) = match (parts.next(), parts.next(), parts.next()) {
+            (Some(l), Some(t), Some(p)) => (l, t, p),
+            _ => panic!("bad ANYR_E2E_AGENTS entry: {entry}"),
+        };
+        let tail: Vec<&str> = match tool {
+            "pi" | "claude" | "grok" => vec!["--", "-p", prompt],
+            "opencode" => vec!["--", "run", prompt],
+            "codex" => vec!["--", "exec", "--skip-git-repo-check", prompt],
+            other => panic!("no non-interactive form for {other}"),
+        };
+        let home = temp_home(&format!("agent-{label}"));
+        let path_var = format!("ANYROUTER_{}_PATH", tool.to_ascii_uppercase());
+        let mut last = String::new();
+        let mut ok = false;
+        // One retry: a free upstream can drop a single request.
+        for _ in 0..2 {
+            let started = std::time::Instant::now();
+            let out = run_with_deadline(
+                Command::new(env!("CARGO_BIN_EXE_anyr"))
+                    .env("ANYR_NO_UPDATE", "1")
+                    .env("NO_COLOR", "1")
+                    // A fresh HOME per agent: no saved logins or state from
+                    // another version can change what it sends.
+                    .env("HOME", &home)
+                    .env("XDG_CONFIG_HOME", home.join(".config"))
+                    .env("XDG_DATA_HOME", home.join(".local/share"))
+                    .env("XDG_STATE_HOME", home.join(".local/state"))
+                    .env("ANYROUTER_HOME", &home)
+                    .env("ANYROUTER_API_KEY", &key)
+                    .env(&path_var, path)
+                    .env_remove("ANYROUTER_MANAGEMENT_KEY")
+                    .args([tool, "--yes", "--model", "poolside/laguna-s-2.1"])
+                    .args(&tail),
+                std::time::Duration::from_secs(180),
+            );
+            eprintln!("{label}: {:?}", started.elapsed());
+            let text = format!(
+                "exit {:?}\nstdout: {}\nstderr: {}",
+                out.status.code(),
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            )
+            .replace(&key, "<key>");
+            if out.status.success()
+                && String::from_utf8_lossy(&out.stdout)
+                    .to_ascii_lowercase()
+                    .contains("pong")
+            {
+                ok = true;
+                break;
+            }
+            last = text;
+        }
+        if ok {
+            eprintln!("{label}: answered");
+        } else {
+            failures.push(format!("{label} ({tool} at {path}):\n{last}"));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "agents failed:\n{}",
+        failures.join("\n\n")
+    );
+}
+
+/// Run `cmd` with stdin closed; kill it if it runs past `limit`, so a hung
+/// agent fails the test instead of the CI job timing out.
+fn run_with_deadline(cmd: &mut Command, limit: std::time::Duration) -> std::process::Output {
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn anyr");
+    let deadline = std::time::Instant::now() + limit;
+    while child.try_wait().expect("wait").is_none() {
+        if std::time::Instant::now() > deadline {
+            let _ = child.kill();
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    child.wait_with_output().expect("collect output")
+}
