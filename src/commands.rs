@@ -232,6 +232,16 @@ fn dispatch(
         "mcp" => run_mcp(parsed, env),
         "embed" => run_embed(parsed, env),
         "eval" => run_eval(parsed, env),
+        "task" => {
+            #[cfg(feature = "native")]
+            {
+                crate::cmd::task::run_task(parsed, env)
+            }
+            #[cfg(not(feature = "native"))]
+            {
+                stub("task")
+            }
+        }
         "transactions" => run_transactions(parsed, env),
         "menu" => run_menu(parsed, env),
         "commands" => {

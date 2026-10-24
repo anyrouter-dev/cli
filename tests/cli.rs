@@ -455,7 +455,7 @@ fn onboard_without_mode_non_tty_errors() {
 
 #[test]
 fn stub_help_is_honest() {
-    let (code, stdout, stderr) = run(&["task", "--help"]);
+    let (code, stdout, stderr) = run(&["delegate", "--help"]);
     assert_eq!(code, 0, "{stderr}");
     assert!(
         stdout.contains("not yet in the native CLI"),

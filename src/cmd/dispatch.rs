@@ -245,9 +245,9 @@ pub(crate) fn cmd_kind(command: &str) -> Option<CmdKind> {
         | "pool" | "pi" | "upgrade" | "onboard" | "impl" | "plan" | "fix" | "deploy" | "cp"
         | "relay" | "decision" | "commands" | "api" | "completion" | "byok" | "publish"
         | "apps" | "artifact" | "chat" | "logs" | "transactions" | "embed" | "generation"
-        | "presets" | "mcp" | "eval" => CmdKind::Implemented,
+        | "presets" | "mcp" | "eval" | "task" => CmdKind::Implemented,
         "cursor" | "cline" | "windsurf" => CmdKind::HelpOnly,
-        "task" | "delegate" | "audit" | "skills" | "prompt" => CmdKind::Stub,
+        "delegate" | "audit" | "skills" | "prompt" => CmdKind::Stub,
         _ => return None,
     })
 }
