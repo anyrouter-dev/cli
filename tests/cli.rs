@@ -879,7 +879,7 @@ fn claude_yolo_with_ox_alpha_1m_still_works() {
 }
 
 #[test]
-fn codex_yolo_flag_is_accepted_but_not_forwarded() {
+fn codex_yolo_flag_maps_to_codex_bypass_flag() {
     let key = "sk-ar-v1-fixture-key-0001";
     let (code, stdout, stderr) = {
         let out = anyr()
@@ -896,8 +896,12 @@ fn codex_yolo_flag_is_accepted_but_not_forwarded() {
     };
     assert_eq!(code, 0, "stderr={stderr}");
     assert!(
+        stdout.contains("\"--dangerously-bypass-approvals-and-sandbox\""),
+        "--yolo should map to codex's own bypass flag:\n{stdout}"
+    );
+    assert!(
         !stdout.contains("--dangerously-skip-permissions"),
-        "codex has no equivalent flag; --yolo should be a no-op:\n{stdout}"
+        "{stdout}"
     );
 }
 
@@ -2888,13 +2892,30 @@ fn cursor_is_honest_stub_not_silent_success() {
 }
 
 #[test]
-fn launch_rejects_unknown_flag() {
-    let (code, _stdout, stderr) = run(&["claude", "--bogus"]);
-    assert_eq!(code, 2);
-    assert!(
-        stderr.contains("Unknown") || stderr.contains("bogus"),
-        "{stderr}"
+fn launch_forwards_unknown_flag_to_the_agent() {
+    // WHY: contract change. A flag anyr does not own on a launcher used to be
+    // a usage error (exit 2); it now goes to the agent, which reports it.
+    let out = anyr()
+        .args([
+            "claude",
+            "--dry-run",
+            "--yes",
+            "--key",
+            "sk-ar-v1-fixture-key-0001",
+            "--bogus",
+        ])
+        .env("ANYROUTER_HOME", temp_home())
+        .env_remove("ANYROUTER_API_KEY")
+        .output()
+        .expect("dry-run");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
     );
+    assert!(stdout.contains("\"--bogus\"]"), "{stdout}");
 }
 #[test]
 fn whoami_and_keys_fail_loud_without_config() {
@@ -3110,7 +3131,6 @@ fn usage_errors_all_exit_2() {
     for args in [
         &["nonsense"][..],
         &["auth", "bogus"],
-        &["claude", "--bogus-flag"],
         &["completion", "bogus"],
         &["api", "bogus"],
         &["model", "bogus"],
@@ -3236,17 +3256,29 @@ fn dash_key_with_empty_stdin_fails_on_non_login_commands() {
 
 #[test]
 fn launch_help_lists_claude_only_flags_for_claude_alone() {
-    // WHY: `codex --help` used to advertise --haiku/--yolo/--hub, which only
-    // Claude Code honours, so users tried flags that silently did nothing.
+    // WHY: `codex --help` used to advertise --haiku/--hub, which only Claude
+    // Code honours, so users tried flags that silently did nothing. --yolo is
+    // portable, so each help names what it maps to.
     let (_, claude, _) = run(&["claude", "--help"]);
-    for flag in ["--haiku", "--yolo", "--hub"] {
+    for flag in ["--haiku", "--hub", "passes --dangerously-skip-permissions"] {
         assert!(claude.contains(flag), "claude help lacks {flag}:\n{claude}");
     }
-    for agent in ["codex", "grok", "opencode", "pi", "pool"] {
+    for (agent, yolo) in [
+        ("codex", "passes --dangerously-bypass-approvals-and-sandbox"),
+        ("grok", "passes --always-approve"),
+        ("opencode", "passes --auto"),
+        ("pi", "No effect: Pi has no flag to skip permission prompts"),
+        ("pool", "passes --unsafe-auto-allow (from docs, unverified)"),
+    ] {
         let (code, out, _) = run(&[agent, "--help"]);
         assert_eq!(code, 0);
         assert!(out.contains("--model"), "{agent} help lost --model:\n{out}");
-        for flag in ["--haiku", "--sonnet", "--yolo", "--hub"] {
+        assert!(out.contains(yolo), "{agent} help lacks `{yolo}`:\n{out}");
+        assert!(
+            out.contains("Any other flag goes to the agent"),
+            "{agent}:\n{out}"
+        );
+        for flag in ["--haiku", "--sonnet", "--hub"] {
             assert!(!out.contains(flag), "{agent} help shows {flag}:\n{out}");
         }
     }

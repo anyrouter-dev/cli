@@ -20,7 +20,7 @@ use crate::spawn::{
 use crate::term;
 
 use crate::cmd::decision::{chat_model_error, is_systemone_model};
-use crate::cmd::dispatch::{catalog_lookup_enabled, config_path};
+use crate::cmd::dispatch::{catalog_lookup_enabled, config_path, yolo_for};
 use crate::cmd::login::persist_login;
 use crate::cmd::models::apply_claude_alias_flags;
 
@@ -57,6 +57,39 @@ pub(crate) fn resolve_session_model(
     };
     let context_window = catalog_context_window(&id, &models);
     ResolvedModel { id, context_window }
+}
+
+/// Put the agent's native skip-permission argv in `args`: after its
+/// subcommand when the user runs one, else before the agent's own args.
+/// Never twice: a native flag the user passed already wins.
+fn add_yolo(tool_name: &str, args: &mut Vec<String>, agent_args_at: usize, quiet: bool) {
+    let Some(yolo) = yolo_for(tool_name).filter(|y| !y.args.is_empty()) else {
+        if !quiet {
+            eprintln!(
+                "{} {tool_name} has no flag to skip permission prompts; --yolo ignored.",
+                term::dim("note:")
+            );
+        }
+        return;
+    };
+    let first = yolo.args[0];
+    let forwarded = &args[agent_args_at..];
+    if forwarded
+        .iter()
+        .any(|a| a == first || a.starts_with(&format!("{first}=")))
+    {
+        return;
+    }
+    let at = yolo
+        .after
+        .and_then(|sub| {
+            forwarded
+                .iter()
+                .position(|a| !a.starts_with('-'))
+                .filter(|&i| forwarded[i] == sub)
+        })
+        .map_or(agent_args_at, |i| agent_args_at + i + 1);
+    args.splice(at..at, yolo.args.iter().map(|a| a.to_string()));
 }
 
 pub(crate) fn run_launch(
@@ -174,11 +207,6 @@ pub(crate) fn launch(
         model_mode,
         resolved.context_window,
     ));
-    // --yolo is shorthand for Claude Code's full-permission flag; other tools
-    // don't have an equivalent, so it only maps there.
-    if tool_name == "claude" && (parsed.flag_true("yolo") || tool.extra_flag("yolo")) {
-        args.push("--dangerously-skip-permissions".into());
-    }
     // Wire the AnyRouter MCP gateway in when the workspace asks for it.
     let mcp_decision = crate::mcp_wiring::decide(&crate::mcp_wiring::DecideInput {
         tool: tool_name,
@@ -201,11 +229,20 @@ pub(crate) fn launch(
         &mut args,
         &mut env_map,
     );
+    let agent_args_at = args.len();
     if let Some(h) = &headless {
         args.extend(h.args.clone());
         env_map.extend(h.extra_env.iter().cloned());
     }
     args.extend(parsed.passthrough.clone());
+    if parsed.flag_true("yolo") || tool.extra_flag("yolo") {
+        add_yolo(
+            tool_name,
+            &mut args,
+            agent_args_at,
+            term::machine_output(parsed, env),
+        );
+    }
     let unset: &[&str] = if tool_name == "grok" {
         GROK_UNSET_ENV
     } else {

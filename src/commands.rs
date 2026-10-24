@@ -55,7 +55,10 @@ pub fn run(argv: Vec<String>, env: HashMap<String, String>) -> i32 {
 
     let mut parsed = match parse_cli_args(&raw) {
         Ok(p) => p,
-        Err(err) => return usage_fail(&err),
+        Err(err) => {
+            crate::exit::set_json_errors(raw.iter().any(|a| a == "--json") || env_says_json(&env));
+            return usage_fail(&err);
+        }
     };
     let json_mode = parsed.flag_true("json") || env_says_json(&env);
     crate::exit::set_json_errors(json_mode);

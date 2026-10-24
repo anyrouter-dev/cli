@@ -479,6 +479,34 @@ python scripts/bench.py measure --bin target/release/anyr \
 Interactive `menu` / `config` use a centered Ratatui dialog (GrokNight theme);
 pickers stay full-pane. `anyr menu --dump-tui` prints one ANSI-free frame for CI.
 
+## Passing flags to the agent
+
+On the launchers (`claude`, `codex`, `grok`, `opencode`, `pi`, `pool`) you do
+not need `--`. anyr takes its own flags (`--model`, `--key`, `--dry-run`,
+`--yolo`, `--help`, ...) and forwards every other flag to the agent in order:
+
+```bash
+anyr codex exec --json "fix the tests"   # --json reaches codex
+anyr claude --quiet -p "hi"              # --quiet reaches claude
+anyr claude -- --model raw               # after `--`, everything is raw
+```
+
+`--help` is always anyr's. `--json` and `--quiet` belong to the agent; anyr's
+own machine-output mode on a launcher is set with `ANYR_OUTPUT=json` and
+`ANYR_QUIET=1`. The exception is `anyr pool --json`, a documented anyr flag.
+Other commands (`anyr models --bogus`) still reject unknown flags with exit 2.
+
+`--yolo` becomes each agent's own flag to skip permission prompts:
+
+| Agent | `--yolo` becomes | Verified |
+|-------|------------------|----------|
+| claude | `--dangerously-skip-permissions` | yes |
+| codex | `--dangerously-bypass-approvals-and-sandbox` | yes |
+| grok | `--always-approve` | yes |
+| opencode | `--auto` (root and after `run`, opencode 2.0.24) | yes |
+| pi | none; `--yolo` is dropped with a note | yes |
+| pool | `--unsafe-auto-allow` | no (docs only, not installed) |
+
 ## Version lock (0.1.x)
 
 `Cargo.toml`, `package.json`, and `.release-please-manifest.json` stay on

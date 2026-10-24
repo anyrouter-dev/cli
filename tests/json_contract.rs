@@ -204,11 +204,17 @@ fn every_command_and_subcommand_honours_the_json_contract() {
 #[test]
 fn skipped_commands_still_return_json_usage_errors() {
     // The skipped runs above would launch things; a bad flag on each must
-    // still fail before that, as JSON with exit 2.
+    // still fail before that, as JSON with exit 2. Launchers forward unknown
+    // flags to the agent, so they get anyr's `--model` without a value.
     let base = serve_ok();
+    let launchers = ["claude", "codex", "grok", "opencode", "pi", "pool"];
     for name in SKIP {
         let mut args: Vec<&str> = name.split(' ').collect();
-        args.push("--no-such-flag");
+        args.push(if launchers.contains(name) {
+            "--model"
+        } else {
+            "--no-such-flag"
+        });
         let home = tempdir();
         let (code, out, err) = anyr(&args, &base, &home);
         assert_eq!(code, 2, "anyr {name}: {out}{err}");

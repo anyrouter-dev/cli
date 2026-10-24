@@ -174,7 +174,33 @@ pub(crate) fn tui_dump_settings(
     crate::tui::dump_settings(&state, crate::tui::dump_cols(env))
 }
 
+/// The flags `anyr <agent>` keeps for itself. Every other flag goes to the
+/// agent unchanged and in order; `--` sends the rest raw, so an agent flag
+/// spelled like one of these can still reach it.
 pub(crate) const LAUNCH_FLAGS: &[&str] = &[
+    "model",
+    "effort",
+    "profile",
+    "preset",
+    "key",
+    "base-url",
+    "command-path",
+    "config",
+    "timeout",
+    "plaintext",
+    "dry-run",
+    "yes",
+    "ok",
+    "device",
+    "device-code",
+    "paste",
+    "install",
+    "yolo",
+    "no-mcp",
+];
+
+/// Claude Code also takes the `/model` alias flags and hubs.
+const CLAUDE_LAUNCH_FLAGS: &[&str] = &[
     "model",
     "effort",
     "haiku",
@@ -206,16 +232,11 @@ pub(crate) const LAUNCH_FLAGS: &[&str] = &[
 pub(crate) const POOL_FLAGS: &[&str] = &[
     "model",
     "effort",
-    "haiku",
-    "sonnet",
-    "opus",
-    "fable",
     "profile",
     "preset",
     "key",
     "base-url",
     "command-path",
-    "claude-path",
     "config",
     "timeout",
     "plaintext",
@@ -225,12 +246,72 @@ pub(crate) const POOL_FLAGS: &[&str] = &[
     "device",
     "device-code",
     "paste",
-    "hub",
     "install",
     "yolo",
     "no-mcp",
     "json",
 ];
+
+/// Flags anyr owns on a launcher, or None when `command` is not one.
+pub(crate) fn launch_flags(command: &str) -> Option<&'static [&'static str]> {
+    Some(match canonical_command(command) {
+        "claude" => CLAUDE_LAUNCH_FLAGS,
+        "pool" => POOL_FLAGS,
+        "codex" | "grok" | "opencode" | "pi" => LAUNCH_FLAGS,
+        _ => return None,
+    })
+}
+
+/// `--yolo` on one launcher: the agent's own argv for skipping permission
+/// prompts, and the subcommand it must follow when the user runs one.
+pub(crate) struct Yolo {
+    pub(crate) agent: &'static str,
+    /// Empty: the agent has none, so `--yolo` is dropped with a notice.
+    pub(crate) args: &'static [&'static str],
+    pub(crate) after: Option<&'static str>,
+}
+
+/// Each from the agent's own `--help`, except pool (docs.poolside.ai; not
+/// installed where checked). opencode 2.0.24 takes `--auto` on both the root
+/// command and `run`; with a `run` subcommand it goes after it, otherwise it
+/// leads the agent's args.
+pub(crate) const YOLO: &[Yolo] = &[
+    Yolo {
+        agent: "claude",
+        args: &["--dangerously-skip-permissions"],
+        after: None,
+    },
+    Yolo {
+        agent: "codex",
+        args: &["--dangerously-bypass-approvals-and-sandbox"],
+        after: None,
+    },
+    Yolo {
+        agent: "grok",
+        args: &["--always-approve"],
+        after: None,
+    },
+    // `--standalone` before `run` did not reach the run (#181); same for `--auto`.
+    Yolo {
+        agent: "opencode",
+        args: &["--auto"],
+        after: Some("run"),
+    },
+    Yolo {
+        agent: "pi",
+        args: &[],
+        after: None,
+    },
+    Yolo {
+        agent: "pool",
+        args: &["--unsafe-auto-allow"],
+        after: None,
+    },
+];
+
+pub(crate) fn yolo_for(agent: &str) -> Option<&'static Yolo> {
+    YOLO.iter().find(|y| y.agent == agent)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CmdKind {
@@ -583,8 +664,7 @@ pub(crate) fn allowed_flags(command: &str) -> Option<&'static [&'static str]> {
         "upgrade" => &[
             "check", "channel", "fixture", "dry-run", "yes", "auto", "force", "beta", "stable",
         ],
-        "pool" => POOL_FLAGS,
-        "claude" | "codex" | "grok" | "opencode" | "pi" => LAUNCH_FLAGS,
+        "claude" | "codex" | "grok" | "opencode" | "pi" | "pool" => return launch_flags(canonical),
         "cursor" | "cline" | "windsurf" => &["profile", "key", "base-url", "config", "yes"],
         "byok" => &[
             "profile",
