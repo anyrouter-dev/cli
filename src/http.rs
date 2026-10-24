@@ -437,6 +437,21 @@ pub fn fetch_models_sorted(
     parse_models_body(&body)
 }
 
+/// `fetch_models` with an overall timeout, for a launch that must not wait long.
+#[cfg(feature = "native")]
+pub fn fetch_models_timeout(
+    base_url: &str,
+    api_key: Option<&str>,
+    timeout: std::time::Duration,
+) -> Result<Vec<CatalogModel>, String> {
+    let url = join_api(base_url, "/v1/models?privacy=0&sort=usage");
+    let (status, body) = http_get_timeout(&url, api_key, timeout)?;
+    if !(200..300).contains(&status) {
+        return Err(format!("Could not fetch models (HTTP {status})."));
+    }
+    parse_models_body(&body)
+}
+
 /// First catalog id from a `sort=usage` list (7-day request volume).
 pub fn most_used_model_id(models: &[CatalogModel]) -> Option<String> {
     models.iter().find_map(|m| {
@@ -449,7 +464,7 @@ pub fn most_used_model_id(models: &[CatalogModel]) -> Option<String> {
     })
 }
 
-fn parse_models_body(body: &str) -> Result<Vec<CatalogModel>, String> {
+pub(crate) fn parse_models_body(body: &str) -> Result<Vec<CatalogModel>, String> {
     let value: serde_json::Value =
         serde_json::from_str(body).map_err(|e| format!("Invalid models response: {e}"))?;
     let list = value

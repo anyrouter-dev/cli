@@ -2,7 +2,6 @@ use std::collections::BTreeMap;
 
 use crate::auth::acquire_api_key;
 use crate::config::{write_config, DEFAULT_PROFILE};
-use crate::http::fetch_models;
 use crate::install::{ensure_tool_installed, Install};
 use crate::key::{
     load_config_if_present, profile_for_agent, resolve_base_url, resolve_launch_api_key,
@@ -13,7 +12,7 @@ use crate::spawn::{
     apply_model_id_routing, apply_routing_env, build_tool_env, catalog_context_window,
     catalog_model_id, crush_user_dir, default_profile_for_env, display_model_id, env_command_path,
     grok_user_home, is_auto_model, is_user_preset, is_virtual_preset, model_args_for,
-    normalize_effort, opencode_major_version, opencode_standalone_args, prepare_crush_config,
+    normalize_effort, opencode_standalone_args, prepare_crush_config,
     prepare_grok_home, prepare_pi_wrapper, provider_args_for, render_dry_run, resolve_tool,
     spawn_child, BuildToolEnvInput, GROK_UNSET_ENV,
 };
@@ -27,8 +26,46 @@ use crate::cmd::models::apply_claude_alias_flags;
 pub(crate) struct ResolvedModel {
     id: String,
     context_window: Option<i64>,
-    /// The catalog fetched to resolve `id`, kept so pi does not fetch it again.
+    /// The catalog read to resolve `id`, kept so pi does not read it again.
     catalog: Option<Vec<crate::http::CatalogModel>>,
+    refresh: crate::launch_cache::Refresh,
+}
+
+/// Where the launch caches live: next to the config file.
+pub(crate) struct CacheSpot<'a> {
+    pub(crate) dir: Option<&'a std::path::Path>,
+    pub(crate) dry_run: bool,
+}
+
+/// The catalog the model resolution already read, or the cached one, so an
+/// agent that writes its own model list (pi, crush) never fetches it twice.
+fn take_catalog(
+    resolved: &mut ResolvedModel,
+    spot: &CacheSpot<'_>,
+    base: &str,
+    key: &str,
+) -> Vec<crate::http::CatalogModel> {
+    if let Some(models) = resolved.catalog.take() {
+        return models;
+    }
+    let launch = crate::launch_cache::catalog_for_launch(spot.dir, base, Some(key), spot.dry_run);
+    resolved.refresh = resolved.refresh.take().or(launch.refresh);
+    launch.models.unwrap_or_default()
+}
+
+/// Run `a` and `b` at the same time where threads exist.
+#[cfg(feature = "native")]
+fn both<A: Send, B: Send>(a: impl FnOnce() -> A + Send, b: impl FnOnce() -> B + Send) -> (A, B) {
+    std::thread::scope(|s| {
+        let b = s.spawn(b);
+        let a = a();
+        (a, b.join().unwrap_or_else(|e| std::panic::resume_unwind(e)))
+    })
+}
+
+#[cfg(not(feature = "native"))]
+fn both<A, B>(a: impl FnOnce() -> A, b: impl FnOnce() -> B) -> (A, B) {
+    (a(), b())
 }
 
 pub(crate) fn resolve_session_model(
@@ -36,6 +73,7 @@ pub(crate) fn resolve_session_model(
     base: &str,
     key: Option<&str>,
     env: &BTreeMap<String, String>,
+    spot: &CacheSpot<'_>,
 ) -> ResolvedModel {
     let requested = catalog_model_id(requested);
     let id = if is_auto_model(&requested) {
@@ -50,20 +88,18 @@ pub(crate) fn resolve_session_model(
             id,
             context_window: None,
             catalog: None,
+            refresh: None,
         };
     }
-    let Ok(models) = fetch_models(base, key) else {
-        return ResolvedModel {
-            id,
-            context_window: None,
-            catalog: None,
-        };
-    };
-    let context_window = catalog_context_window(&id, &models);
+    let launch = crate::launch_cache::catalog_for_launch(spot.dir, base, key, spot.dry_run);
     ResolvedModel {
+        context_window: launch
+            .models
+            .as_deref()
+            .and_then(|models| catalog_context_window(&id, models)),
         id,
-        context_window,
-        catalog: Some(models),
+        catalog: launch.models,
+        refresh: launch.refresh,
     }
 }
 
@@ -170,8 +206,26 @@ pub(crate) fn launch(
         &resolve_launch_model(&parsed.flags, existing.as_ref(), &profile, tool_name),
         &mut routing,
     );
-    let mut resolved = resolve_session_model(&requested, &base, Some(&key), env);
-    let model = resolved.id;
+    let spot = CacheSpot {
+        dir: path.parent(),
+        dry_run: parsed.flag_true("dry-run"),
+    };
+    // A cold launch asks for the catalog and the MCP setting at the same time.
+    let (mut resolved, mcp_decision) = both(
+        || resolve_session_model(&requested, &base, Some(&key), env, &spot),
+        || {
+            crate::mcp_wiring::decide(&crate::mcp_wiring::DecideInput {
+                tool: tool_name,
+                no_mcp_flag: parsed.flag_true("no-mcp"),
+                config: existing.as_ref(),
+                base: &base,
+                key: &key,
+                cache_dir: path.parent(),
+                dry_run: parsed.flag_true("dry-run"),
+            })
+        },
+    );
+    let model = std::mem::take(&mut resolved.id);
     if is_systemone_model(&model) {
         return Err(chat_model_error(&model, tool_name));
     }
@@ -196,10 +250,7 @@ pub(crate) fn launch(
     // An `anyr` the agent runs itself must not update or print mid-session.
     env_map.insert(crate::autoupdate::ENV_LAUNCHER_CHILD.into(), "1".into());
     if tool_name == "pi" {
-        let catalog = match resolved.catalog.take() {
-            Some(models) => models,
-            None => fetch_models(&base, Some(&key)).unwrap_or_default(),
-        };
+        let catalog = take_catalog(&mut resolved, &spot, &base, &key);
         prepare_pi_wrapper(&mut env_map, &path, &profile, &tool, &model, &catalog)?;
     }
     if tool_name == "grok" {
@@ -222,15 +273,6 @@ pub(crate) fn launch(
         ));
     }
     // Wire the AnyRouter MCP gateway in when the workspace asks for it.
-    let mcp_decision = crate::mcp_wiring::decide(&crate::mcp_wiring::DecideInput {
-        tool: tool_name,
-        no_mcp_flag: parsed.flag_true("no-mcp"),
-        config: existing.as_ref(),
-        base: &base,
-        key: &key,
-        cache_dir: path.parent(),
-        dry_run: parsed.flag_true("dry-run"),
-    });
     let mcp = crate::mcp_wiring::apply(
         &crate::mcp_wiring::ApplyInput {
             tool: tool_name,
@@ -245,7 +287,7 @@ pub(crate) fn launch(
     );
     if tool_name == "crush" {
         let catalog = if catalog_lookup_enabled(env) {
-            fetch_models(&base, Some(&key)).unwrap_or_default()
+            take_catalog(&mut resolved, &spot, &base, &key)
         } else {
             Vec::new()
         };
@@ -308,7 +350,10 @@ pub(crate) fn launch(
     if parsed.flag_true("dry-run") {
         if tool_name == "opencode" {
             if let Some(path) = crate::install::resolve_executable(&command) {
-                args = opencode_standalone_args(&args, opencode_major_version(&path));
+                args = opencode_standalone_args(
+                    &args,
+                    crate::launch_cache::opencode_major(spot.dir, &path),
+                );
             }
         }
         println!("{}", render_dry_run(&command, &args, &env_map));
@@ -331,7 +376,10 @@ pub(crate) fn launch(
         )?;
         let resolved = ensure_tool_installed(tool_name, &command, install)?;
         if tool_name == "opencode" {
-            args = opencode_standalone_args(&args, opencode_major_version(&resolved));
+            args = opencode_standalone_args(
+                &args,
+                crate::launch_cache::opencode_major(spot.dir, &resolved),
+            );
         }
         return Ok(run_agent(
             tool_name,
@@ -381,7 +429,10 @@ pub(crate) fn launch(
     }
     let _ = write_config(&cfg, &path);
     if tool_name == "opencode" {
-        args = opencode_standalone_args(&args, opencode_major_version(&resolved));
+        args = opencode_standalone_args(
+            &args,
+            crate::launch_cache::opencode_major(spot.dir, &resolved),
+        );
     }
     Ok(run_agent(
         tool_name,
