@@ -375,10 +375,13 @@ fn run_inner(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32,
 /// that says how to get one. `what` names the resource, `scopes` the key scopes.
 pub(crate) fn management_ctx(ctx: &Ctx, what: &str, scopes: &str) -> Result<Ctx, String> {
     let Some(mk) = ctx.management_key.as_deref() else {
-        return Err(format!(
+        return Err(crate::exit::tag(
+            crate::exit::AUTH,
+            format!(
             "{} {what} need a management key (ak_…); your API key cannot manage {what}.\n{} create one at https://anyrouter.dev/settings/management-keys with {scopes}, then:\n      export ANYROUTER_MANAGEMENT_KEY=ak_…",
             term::err("error:"),
             term::dim("hint:")
+        ),
         ));
     };
     Ok(Ctx {
@@ -555,8 +558,9 @@ fn raw(
     if (200..300).contains(&status) {
         Ok(0)
     } else {
-        eprintln!("{} HTTP {status} {method} {path}", term::err("error:"));
-        Ok(exit_for(status))
+        let code = exit_for(status);
+        crate::exit::print(code, &format!("HTTP {status} {method} {path}"));
+        Ok(code)
     }
 }
 
@@ -637,9 +641,9 @@ pub(crate) fn send(
         ),
         _ => String::new(),
     };
-    Err(format!(
-        "{} HTTP {status}: {msg}{hint}",
-        term::err("error:")
+    Err(crate::exit::tag(
+        exit_for(status),
+        format!("{} HTTP {status}: {msg}{hint}", term::err("error:")),
     ))
 }
 
@@ -677,11 +681,7 @@ fn error_summary(status: u16, body: &str) -> String {
 }
 
 pub(crate) fn exit_for(status: u16) -> i32 {
-    match status {
-        401 | 403 => 4,
-        404 => 3,
-        _ => 1,
-    }
+    crate::exit::for_status(status)
 }
 
 /// `--data '<json>'`, `--data @file` or `--data -` (stdin) wins; otherwise
@@ -964,7 +964,7 @@ pub fn help() -> String {
         out.push_str(&format!("  {name:<12}{desc}  [{}]\n", verbs.join(" ")));
     }
     out.push_str(
-        "\nFlags\n  --json            Print server JSON (default when piped for get)\n  --yes             Skip confirmation on revoke/delete\n  --limit <n>       Page size for list verbs\n  --data <json>     JSON body: inline, @file, or - for stdin (raw / presets)\n  -H key:value      Extra request header on raw calls (repeatable)\n  --idempotency-key <k>  Send an Idempotency-Key header on raw calls\n  --profile <name>  Use another account\n\nExit codes: 0 ok, 1 error, 2 usage, 3 not found, 4 auth/permission.\n",
+        "\nFlags\n  --json            Print server JSON (default when piped for get)\n  --yes             Skip confirmation on revoke/delete\n  --limit <n>       Page size for list verbs\n  --data <json>     JSON body: inline, @file, or - for stdin (raw / presets)\n  -H key:value      Extra request header on raw calls (repeatable)\n  --idempotency-key <k>  Send an Idempotency-Key header on raw calls\n  --profile <name>  Use another account\n\nExit codes: 0 ok, 1 error, 2 usage, 3 not found, 4 auth/permission, 5 rate limited.\n",
     );
     out
 }

@@ -268,11 +268,14 @@ pub fn mask_api_key(key: Option<&str>) -> String {
     format!("{prefix}…{suffix}")
 }
 
+/// Exits 4 (auth) through `commands::run`.
 pub fn no_key_error() -> String {
-    "No AnyRouter config and no key. Pass --key sk-ar-... or set ANYROUTER_API_KEY, \
+    crate::exit::tag(
+        crate::exit::AUTH,
+        "No AnyRouter config and no key. Pass --key sk-ar-... or set ANYROUTER_API_KEY, \
 or use --device/--device-code for headless environments, \
-or run in an interactive terminal to log in."
-        .into()
+or run in an interactive terminal to log in.",
+    )
 }
 
 #[cfg(test)]

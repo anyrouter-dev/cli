@@ -26,6 +26,10 @@ pub(crate) fn run_logout(
     profile.api_key = None;
     profile.management_key = None;
     write_config(&cfg, &path)?;
+    if parsed.flag_true("json") {
+        println!("{}", serde_json::json!({ "logged_out": name }));
+        return Ok(0);
+    }
     println!(
         "{}  cleared keys for {}",
         term::ok("Logged out"),
@@ -151,10 +155,12 @@ pub(crate) fn run_account(
                 ));
             }
             let mut cfg = load_config_if_present(&path).ok_or_else(no_key_error)?;
-            let profile = cfg
-                .profiles
-                .remove(&old)
-                .ok_or_else(|| format!("Account \"{old}\" was not found."))?;
+            let profile = cfg.profiles.remove(&old).ok_or_else(|| {
+                crate::exit::tag(
+                    crate::exit::NOT_FOUND,
+                    format!("Account \"{old}\" was not found."),
+                )
+            })?;
             if cfg.profiles.contains_key(&new) {
                 return Err(format!("Account \"{new}\" already exists."));
             }
@@ -179,14 +185,17 @@ pub(crate) fn run_account(
                 )));
             }
             if cfg.profiles.remove(&name).is_none() {
-                return Err(format!("Account \"{name}\" was not found."));
+                return Err(crate::exit::tag(
+                    crate::exit::NOT_FOUND,
+                    format!("Account \"{name}\" was not found."),
+                ));
             }
             write_config(&cfg, &path)?;
             println!("{}  removed {}", term::ok("Removed"), term::accent(&name));
             Ok(0)
         }
-        other => Err(format!(
+        other => Err(hint(&format!(
             "Unknown account subcommand \"{other}\". Try: list | use | add | rename | remove"
-        )),
+        ))),
     }
 }

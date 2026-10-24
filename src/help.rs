@@ -418,6 +418,8 @@ Usage:
   {bin} account use <name>
   {bin} account use <name> --agent <claude|codex|grok|opencode|pi|pool>
   {bin} account add [--yes]
+  {bin} account rename <old> <new>
+  {bin} account remove <name>
 
 Options:
   --yes            Skip confirmations
@@ -633,7 +635,26 @@ Examples:
   {bin} relay doctor
 ";
 
-const CHAT: &str = "{bin} chat [prompt] [--model ID] [--system TEXT]\n\nStream a reply from /v1/chat/completions. With a prompt (or piped stdin) it answers once;\nin a terminal with no prompt it opens a REPL (/exit or Ctrl-D to quit).\n";
+const CHAT: &str = "\
+{bin} chat [prompt] [--model ID] [--system TEXT] [--json | --no-stream]
+
+Ask a model through /v1/chat/completions. With a prompt (or piped stdin) it
+answers once; in a terminal with no prompt it opens a REPL (/exit or Ctrl-D).
+
+Input:
+  {bin} chat \"Summarise this\"            the prompt as words
+  git diff | {bin} chat                     the prompt from stdin
+  git diff | {bin} chat \"Review this\" -    `-` puts stdin where it stands
+
+Options:
+  --model <id>      Model (default: your default, else anyrouter/auto)
+  --system <text>   System prompt
+  --no-stream       Wait for the whole answer, then print it
+  --json            One JSON object: id, model, content, finish_reason, usage
+                    (`id` works with `{bin} generation <id>`)
+
+Exit codes: 0 ok, 1 error, 2 usage, 3 not found, 4 auth, 5 rate limited.
+";
 
 const ARTIFACT: &str = "{bin} artifact — publish a page or folder to a shareable URL
 
@@ -705,7 +726,7 @@ Examples:
   {bin} pool stats
   {bin} pool providers --json | jq '.providers[].key_count'
 
-Exit codes: 0 ok, 1 error, 2 usage.
+Exit codes: 0 ok, 1 error, 2 usage, 3 not found, 4 auth, 5 rate limited.
 Without a subcommand, `{bin} pool` launches Poolside (below).
 ";
 
@@ -738,7 +759,7 @@ Examples:
   {bin} presets edit coding --model z-ai/glm-4.7,qwen/qwen3-coder,openai/gpt-5
   {bin} claude --preset coding
 
-Exit codes: 0 ok, 1 error or unknown preset, 2 usage.
+Exit codes: 0 ok, 1 error, 2 usage, 3 not found, 4 auth, 5 rate limited.
 ";
 
 const MCP: &str = "{bin} mcp — wire the AnyRouter MCP gateway into an agent
@@ -772,7 +793,7 @@ Examples:
   {bin} mcp add opencode
   {bin} mcp connections --json
 
-Exit codes: 0 ok, 1 error, 2 usage.
+Exit codes: 0 ok, 1 error, 2 usage, 3 not found, 4 auth, 5 rate limited.
 ";
 
 const GENERATION: &str = "{bin} generation — cost, provider and timing of one call
@@ -793,7 +814,7 @@ Examples:
   {bin} generation gen_abc123
   {bin} gen gen_abc123 --json | jq .total_cost
 
-Exit codes: 0 ok, 1 error or unknown id, 2 usage.
+Exit codes: 0 ok, 1 error, 2 usage, 3 unknown id, 4 auth, 5 rate limited.
 ";
 
 const TRANSACTIONS: &str = "{bin} transactions — your credit ledger

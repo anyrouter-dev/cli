@@ -348,6 +348,34 @@ pub fn is_interactive() -> bool {
     io::stdin().is_terminal() && io::stdout().is_terminal()
 }
 
+/// True when an agent or script drives this run: `--json`, `ANYR_OUTPUT=json`,
+/// `--quiet`, `ANYR_QUIET=1`, or no TTY on stdin/stdout. Such runs get no
+/// update notices, no background update check and no prompts.
+pub fn agent_mode(
+    parsed: &crate::parse::ParsedArgs,
+    env: &std::collections::BTreeMap<String, String>,
+) -> bool {
+    machine_output(parsed, env) || !is_interactive()
+}
+
+/// `agent_mode` without the TTY check: the run asked for machine output
+/// (`--json`, `--quiet`, `ANYR_OUTPUT=json`, `ANYR_QUIET=1`).
+pub fn machine_output(
+    parsed: &crate::parse::ParsedArgs,
+    env: &std::collections::BTreeMap<String, String>,
+) -> bool {
+    let on = |k: &str| {
+        env.get(k)
+            .is_some_and(|v| !matches!(v.trim(), "" | "0" | "false"))
+    };
+    parsed.flag_true("json")
+        || parsed.flag_true("quiet")
+        || env
+            .get("ANYR_OUTPUT")
+            .is_some_and(|v| v.trim().eq_ignore_ascii_case("json"))
+        || on("ANYR_QUIET")
+}
+
 pub fn prompt(label: &str) -> Result<String, String> {
     prompt_from(label, &mut io::stdin().lock())
 }

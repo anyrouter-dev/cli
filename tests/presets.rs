@@ -182,7 +182,10 @@ fn rm_needs_yes_and_sends_nothing_without_it() {
 fn missing_management_key_says_how_to_get_one_and_sends_nothing() {
     let (base, rx) = serve(vec![(200, "{}".into())]);
     let (code, _, err) = run_with(&base, &["presets"], &[], "nokey");
-    assert_eq!(code, 1);
+    assert_eq!(
+        code, 4,
+        "a missing management key is an auth failure: {err}"
+    );
     assert!(
         err.contains("management key") && err.contains("settings/management-keys"),
         "{err}"
@@ -249,7 +252,7 @@ fn launch_with_a_missing_preset_fails_before_the_agent_starts() {
         ],
         "launch404",
     );
-    assert_eq!(code, 1, "{err}");
+    assert_eq!(code, 3, "a missing preset is not found: {err}");
     assert!(
         err.contains("preset \"nope\" not found") && err.contains("presets create"),
         "{err}"

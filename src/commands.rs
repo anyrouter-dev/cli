@@ -12,7 +12,7 @@ use crate::cmd::config_tui::run_config;
 use crate::cmd::decision::run_decision;
 use crate::cmd::dispatch::{
     allowed_flags, assert_known_flags, canonical_command, help_topic, known_command,
-    should_open_launcher, stub, suggest_command, tui_wants_dump, usage_exit, wants_help, USAGE,
+    should_open_launcher, stub, suggest_command, tui_wants_dump, wants_help, USAGE,
 };
 use crate::cmd::embed::run_embed;
 use crate::cmd::eval::run_eval;
@@ -53,13 +53,27 @@ pub fn run(argv: Vec<String>, env: HashMap<String, String>) -> i32 {
         env.get("ANYR_DISPLAY_BIN").map(String::as_str),
     ));
 
-    let parsed = match parse_cli_args(&raw) {
+    let mut parsed = match parse_cli_args(&raw) {
         Ok(p) => p,
         Err(err) => return usage_fail(&err),
     };
+    let json_mode = parsed.flag_true("json") || env_says_json(&env);
+    crate::exit::set_json_errors(json_mode);
+    if json_mode && !parsed.flags.contains_key("json") {
+        parsed
+            .flags
+            .insert("json".into(), crate::parse::FlagValue::Bool(true));
+    }
 
     let command = parsed.command.as_str();
     if command == "--version" || command == "-v" {
+        if json_mode {
+            println!(
+                "{}",
+                serde_json::json!({"version": VERSION, "built": crate::buildinfo::display_time()})
+            );
+            return 0;
+        }
         println!("{VERSION} (built {})", crate::buildinfo::display_time());
         return 0;
     }
@@ -77,22 +91,27 @@ pub fn run(argv: Vec<String>, env: HashMap<String, String>) -> i32 {
         };
         return match run_menu(&empty, &env) {
             Ok(code) => code,
-            Err(err) => {
-                eprintln!("{}", format_error(&err));
-                1
-            }
+            Err(err) => fail(&err),
         };
     }
 
+    // Update notices and the background update check stay out of agent and
+    // scripted runs (`--json`, `--quiet`, no TTY).
     #[cfg(feature = "native")]
-    crate::upgrade::on_startup(command, &parsed, &env);
+    if !term::agent_mode(&parsed, &env) {
+        crate::upgrade::on_startup(command, &parsed, &env);
+    }
 
     if raw.is_empty() || command == "help" || command == "--help" || command == "-h" {
         if let Some(bad) = unknown_help_topic(&parsed.passthrough) {
             return help_topic_fail(&bad);
         }
         let topic = parsed.passthrough.first().map(String::as_str);
-        if topic == Some("commands") || topic == Some("help") {
+        if json_mode && matches!(topic, None | Some("commands" | "help" | "all")) {
+            println!("{}", crate::registry::tree_json());
+        } else if topic == Some("agents") {
+            print!("{}", crate::registry::agents_guide());
+        } else if topic == Some("commands") || topic == Some("help") {
             print!("{}", commands_help());
         } else if let Some(help) = topic_help(&parsed.passthrough) {
             print!("{help}");
@@ -103,12 +122,25 @@ pub fn run(argv: Vec<String>, env: HashMap<String, String>) -> i32 {
     }
     if !known_command(command) {
         let bin = crate::help::invoked_bin();
-        eprintln!("{} unknown command \"{command}\"", term::err("error:"));
-        match suggest_command(command) {
-            Some(near) => eprintln!("{} did you mean `{bin} {near}`?", term::dim("hint:")),
-            None => eprintln!("{} run `{bin} --help`", term::dim("hint:")),
+        let hint = match suggest_command(command) {
+            Some(near) => format!("did you mean `{bin} {near}`?"),
+            None => format!("run `{bin} --help`"),
+        };
+        return usage_fail(&format!(
+            "{} unknown command \"{command}\"\n{} {hint}",
+            term::err("error:"),
+            term::dim("hint:")
+        ));
+    }
+    if json_mode
+        && (wants_help(&parsed)
+            || (parsed.passthrough.is_empty()
+                && crate::registry::bare_is_help(canonical_command(command))))
+    {
+        if let Some(entry) = crate::registry::command_entry(command) {
+            println!("{entry}");
+            return 0;
         }
-        return 2;
     }
     if wants_help(&parsed) {
         let topic = help_topic(&parsed);
@@ -138,47 +170,57 @@ pub fn run(argv: Vec<String>, env: HashMap<String, String>) -> i32 {
                 Some("login" | "setup")
             ));
     if !own_key_handling {
+        // JSON mode keeps stderr to error objects, so the `--key` advice is
+        // dropped there.
+        let mut warn: Box<dyn std::io::Write> = if json_mode {
+            Box::new(std::io::sink())
+        } else {
+            Box::new(std::io::stderr())
+        };
         if let Err(err) = crate::key::normalize_key_flag(
             &mut parsed.flags,
             &mut std::io::stdin().lock(),
-            &mut std::io::stderr(),
+            &mut warn,
         ) {
             return usage_fail(&err);
         }
     }
-    match usage_exit(dispatch(canonical, &parsed, &env)) {
+    match dispatch(canonical, &parsed, &env) {
         Ok(code) => code,
-        Err(err) => {
-            eprintln!("{}", format_error(&err));
-            if err.contains(crate::http::SCOPE_ERROR) {
-                4
-            } else {
-                1
-            }
-        }
+        Err(err) => fail(&err),
     }
 }
 
-/// Every failure prints as `error: <message>` on stderr (messages that already
-/// carry the prefix are left alone).
-fn format_error(err: &str) -> String {
-    if err.contains("error:") && err.find("error:").is_some_and(|i| i < 12) {
-        err.to_string()
+/// `ANYR_OUTPUT=json` turns on `--json` for every command.
+fn env_says_json(env: &BTreeMap<String, String>) -> bool {
+    env.get("ANYR_OUTPUT")
+        .is_some_and(|v| v.trim().eq_ignore_ascii_case("json"))
+}
+
+/// Print a failed command's error once and return its exit code. Tagged
+/// errors carry their code (`crate::exit::tag`); a restricted-key message
+/// exits 4; anything else exits 1.
+fn fail(err: &str) -> i32 {
+    let (code, message) = crate::exit::classify(err);
+    let code = if code == crate::exit::ERROR && message.contains(crate::http::SCOPE_ERROR) {
+        crate::exit::AUTH
     } else {
-        format!("{} {err}", term::err("error:"))
-    }
+        code
+    };
+    crate::exit::print(code, &message);
+    code
 }
 
 /// The one exit path for usage errors (bad flag, bad subcommand, bad topic).
 fn usage_fail(message: &str) -> i32 {
-    eprintln!("{message}");
-    2
+    crate::exit::print(crate::exit::USAGE, message);
+    crate::exit::USAGE
 }
 
 /// First word of `help <words>` that is not a real topic, if any.
 fn unknown_help_topic(words: &[String]) -> Option<String> {
     let first = words.first()?;
-    let known = |w: &str| known_command(w) || command_help(w).is_some();
+    let known = |w: &str| w == "agents" || known_command(w) || command_help(w).is_some();
     if !known(first) {
         return Some(first.clone());
     }
@@ -201,12 +243,15 @@ fn topic_help(words: &[String]) -> Option<String> {
 
 fn help_topic_fail(topic: &str) -> i32 {
     let bin = crate::help::invoked_bin();
-    eprintln!("{} unknown help topic \"{topic}\"", term::err("error:"));
-    match suggest_command(topic) {
-        Some(near) => eprintln!("{} did you mean `{bin} help {near}`?", term::dim("hint:")),
-        None => eprintln!("{} run `{bin} --help`", term::dim("hint:")),
-    }
-    2
+    let hint = match suggest_command(topic) {
+        Some(near) => format!("did you mean `{bin} help {near}`?"),
+        None => format!("run `{bin} --help`"),
+    };
+    usage_fail(&format!(
+        "{} unknown help topic \"{topic}\"\n{} {hint}",
+        term::err("error:"),
+        term::dim("hint:")
+    ))
 }
 
 fn dispatch(
@@ -255,7 +300,11 @@ fn dispatch(
         "transactions" => run_transactions(parsed, env),
         "menu" => run_menu(parsed, env),
         "commands" => {
-            print!("{}", commands_help());
+            if parsed.flag_true("json") {
+                println!("{}", crate::registry::tree_json());
+            } else {
+                print!("{}", commands_help());
+            }
             Ok(0)
         }
         "pool" if is_pool_subcommand(parsed) => run_pool(parsed, env),

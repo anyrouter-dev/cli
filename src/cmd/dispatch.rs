@@ -310,8 +310,14 @@ pub(crate) const COMMANDS: &[(&str, &str)] = &[
         "Wire the MCP gateway into an agent: url, add, connections",
     ),
     ("transactions", "Credit ledger: purchases, usage, refunds"),
+    (
+        "chat",
+        "Ask a model: prompt, stdin or a REPL; --json for scripts",
+    ),
     ("embed", "Embed text: args, --file or stdin"),
     ("eval", "Compare one prompt across models"),
+    ("task", "Plan with one model, implement with another"),
+    ("delegate", "Hand a task to another coding agent"),
     ("keys", "Manage API keys"),
     ("byok", "Provider keys: list, add, rm, test, providers"),
     ("artifact", "Publish a file or folder to a shareable URL"),
@@ -481,7 +487,16 @@ pub(crate) fn allowed_flags(command: &str) -> Option<&'static [&'static str]> {
             "base-url",
             "config",
         ],
-        "chat" => &["model", "system", "key", "profile", "base-url", "config"],
+        "chat" => &[
+            "model",
+            "system",
+            "key",
+            "profile",
+            "base-url",
+            "config",
+            "json",
+            "no-stream",
+        ],
         "skills" => &["profile", "config", "hub", "json", "dry-run", "source"],
         "relay" => &[
             "target",
@@ -546,7 +561,7 @@ pub(crate) fn allowed_flags(command: &str) -> Option<&'static [&'static str]> {
             "enable",
         ],
         "audit" => &["profile", "config", "json", "launches", "tool", "limit"],
-        "logout" => &["profile", "config"],
+        "logout" => &["profile", "config", "json"],
         "auth" => &[
             "key",
             "preset",
@@ -595,7 +610,9 @@ pub(crate) fn assert_known_flags(
     allowed: &[&str],
 ) -> Result<(), String> {
     for name in flags.keys() {
-        if name == "help" {
+        // Global on every command: --help, --json (errors as JSON even where
+        // the output has no JSON form) and --quiet.
+        if matches!(name.as_str(), "help" | "json" | "quiet") {
             continue;
         }
         if !allowed.contains(&name.as_str()) {
@@ -612,11 +629,8 @@ pub(crate) const USAGE: &str = "\u{0}usage\u{0}";
 pub(crate) fn usage_exit(result: Result<i32, String>) -> Result<i32, String> {
     match result {
         Err(e) if e.starts_with(USAGE) => {
-            let msg = &e[USAGE.len()..];
-            if !msg.is_empty() {
-                eprintln!("{msg}");
-            }
-            Ok(2)
+            crate::exit::print(crate::exit::USAGE, &e[USAGE.len()..]);
+            Ok(crate::exit::USAGE)
         }
         other => other,
     }

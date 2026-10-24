@@ -98,10 +98,13 @@ fn usage(msg: &str) -> String {
 fn mgmt_ctx(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<Ctx, String> {
     let ctx = context(parsed, env);
     let Some(mk) = ctx.management_key.clone() else {
-        return Err(format!(
+        return Err(crate::exit::tag(
+            crate::exit::AUTH,
+            format!(
             "{} byok needs a management key (ak_…); your API key cannot manage provider keys.\n{} create one at https://anyrouter.dev/settings/management-keys with read:byok and write:byok, then:\n      export ANYROUTER_MANAGEMENT_KEY=ak_…",
             term::err("error:"),
             term::dim("hint:")
+        ),
         ));
     };
     Ok(Ctx {
@@ -440,6 +443,11 @@ Pipe it on stdin, set {KEY_ENV}, or enter it at the prompt."
     }
     if donate {
         eprintln!("{}\n", POOL_CONSENT_TEXT);
+        if !yes && !term::is_interactive() {
+            return Err(usage(
+                "donating a key asks for consent; pass --yes when not at a terminal",
+            ));
+        }
         if !yes
             && !term::confirm(&format!(
                 "Donate this {provider} key to the community pool?"

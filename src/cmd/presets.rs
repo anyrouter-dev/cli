@@ -440,10 +440,13 @@ pub(crate) fn verify_for_launch(
     let bin = crate::help::invoked_bin();
     match status {
         200..=299 => Ok(()),
-        404 => Err(format!(
-            "{} preset \"{slug}\" not found. Nothing was launched.\n{} list yours with `{bin} presets`, or create it: `{bin} presets create {slug} --model <a,b>`",
-            term::err("error:"),
-            term::dim("hint:")
+        404 => Err(crate::exit::tag(
+            crate::exit::NOT_FOUND,
+            format!(
+                "{} preset \"{slug}\" not found. Nothing was launched.\n{} list yours with `{bin} presets`, or create it: `{bin} presets create {slug} --model <a,b>`",
+                term::err("error:"),
+                term::dim("hint:")
+            ),
         )),
         // An inference key cannot read /presets, but the gateway still resolves
         // `@preset/<slug>` for it, so launch and let a missing preset fail there.

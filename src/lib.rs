@@ -12,6 +12,7 @@ pub mod commands;
 pub mod completion;
 pub mod config;
 pub mod demo;
+pub mod exit;
 pub mod help;
 pub mod http;
 pub mod install;
@@ -19,6 +20,7 @@ pub mod key;
 pub mod onboard;
 pub mod parse;
 pub mod publish;
+pub mod registry;
 #[cfg(feature = "native")]
 pub mod relay;
 pub mod schema;

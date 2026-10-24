@@ -143,6 +143,13 @@ pub fn error_message(status: u16, body: &str) -> String {
     format!("HTTP {status}: {msg}")
 }
 
+/// `error_message` tagged with the exit code its status maps to (401/403 → 4,
+/// 404 → 3, 429 → 5). Use it for an error a command returns; keep
+/// `error_message` for text shown inside other output.
+pub fn status_error(status: u16, body: &str) -> String {
+    crate::exit::tag(crate::exit::for_status(status), error_message(status, body))
+}
+
 /// Status, lowercased response headers, body.
 pub type HttpReply = (u16, Vec<(String, String)>, String);
 
@@ -557,9 +564,12 @@ pub const SCOPE_ERROR: &str = "this key lacks scope";
 
 /// Clear message for a 401/403 on an endpoint the key is not allowed to call.
 pub fn scope_error(scope: &str) -> String {
-    format!(
-        "{SCOPE_ERROR} `{scope}` (restricted key). Run `{} login` for a full-access CLI key.",
-        crate::help::invoked_bin()
+    crate::exit::tag(
+        crate::exit::AUTH,
+        format!(
+            "{SCOPE_ERROR} `{scope}` (restricted key). Run `{} login` for a full-access CLI key.",
+            crate::help::invoked_bin()
+        ),
     )
 }
 

@@ -37,7 +37,8 @@ fn dry_run_argv_per_target_and_key_redacted() {
     let cases = [
         ("claude", r#"["-p","fix the bug"]"#),
         ("codex", r#""exec","fix the bug"]"#),
-        ("opencode", r#"["run","fix the bug"]"#),
+        // `--standalone` is added only when the machine has OpenCode 2.x (#181).
+        ("opencode", r#""run","#),
     ];
     for (to, argv) in cases {
         let h = home(to);
@@ -49,6 +50,7 @@ fn dry_run_argv_per_target_and_key_redacted() {
         let (code, stdout, stderr) = text(&out);
         assert_eq!(code, 0, "{to}: {stdout}{stderr}");
         assert!(stdout.contains(argv), "{to}: {stdout}");
+        assert!(stdout.contains(r#""fix the bug"]"#), "{to}: {stdout}");
         assert!(stdout.contains("ANYROUTER_DELEGATE_DEPTH=1"), "{stdout}");
         assert!(!stdout.contains(KEY), "{to} leaked the key: {stdout}");
     }
