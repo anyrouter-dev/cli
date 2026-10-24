@@ -6,6 +6,8 @@ pub(crate) mod byok;
 pub(crate) mod catalog;
 pub(crate) mod config_tui;
 pub(crate) mod decision;
+#[cfg(feature = "native")]
+pub(crate) mod delegate;
 pub(crate) mod dispatch;
 pub(crate) mod embed;
 pub(crate) mod eval;

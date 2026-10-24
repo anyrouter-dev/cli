@@ -242,6 +242,16 @@ fn dispatch(
                 stub("task")
             }
         }
+        "delegate" => {
+            #[cfg(feature = "native")]
+            {
+                crate::cmd::delegate::run_delegate(parsed, env)
+            }
+            #[cfg(not(feature = "native"))]
+            {
+                stub("delegate")
+            }
+        }
         "transactions" => run_transactions(parsed, env),
         "menu" => run_menu(parsed, env),
         "commands" => {

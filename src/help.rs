@@ -239,10 +239,7 @@ pub fn command_help(command: &str) -> Option<String> {
         "byok" => fill(&bin, BYOK),
         "artifact" => fill(&bin, ARTIFACT),
         "task" => fill(&bin, TASK),
-        "delegate" => fill(
-            &bin,
-            "{bin} delegate — not yet in the native CLI (coming later).\n",
-        ),
+        "delegate" => fill(&bin, DELEGATE),
         "keys" => fill(&bin, KEYS),
         "audit" => fill(
             &bin,
@@ -884,6 +881,29 @@ Options:
 
 Example:
   {bin} task \"summarize RFC 8628 in five bullets\" --yes --json | jq -r .result
+";
+
+const DELEGATE: &str = "{bin} delegate — hand a task to another coding agent
+
+Usage:
+  {bin} delegate --to <agent> \"<task>\"
+  {bin} delegate --to codex \"add unit tests for src/utils/slug.ts\"
+  {bin} delegate --to claude \"explain this stack trace\" --model deepseek/deepseek-v3
+  {bin} delegate --to opencode \"fix the lint errors in packages/ui\" --yes
+
+Runs the agent's non-interactive mode (claude -p, codex exec, opencode run)
+with the same gateway key, base URL and model as `{bin} <agent>`, streams its
+output and exits with its exit code. One hop only: a delegated agent cannot
+delegate again.
+
+Options:
+  --to <agent>        claude, codex or opencode (required)
+  --model <id>        Model for the run (default: profile default model)
+  --yes               Skip the confirm prompt (required without a terminal)
+  --dry-run           Print the command and environment (key redacted)
+  --from <agent>      Name the calling agent (passed to the child as a marker)
+  --key <key>         Use this API key (or $ANYROUTER_API_KEY, or the saved login)
+  --profile <name>    Use another account
 ";
 
 const BYOK: &str = "{bin} byok — bring your own provider keys

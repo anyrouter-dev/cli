@@ -262,6 +262,19 @@ models and catalog prices are shown first and you confirm; scripts and CI must
 pass `--yes`. `--json` skips streaming and prints `task`, `plan_model`,
 `do_model`, `plan`, `result`, `usage` and `cost`.
 
+### Hand a task to another agent: `anyr delegate`
+
+```bash
+anyr delegate --to codex "add unit tests for src/utils/slug.ts"
+anyr delegate --to claude "explain this stack trace" --model deepseek/deepseek-v3
+anyr delegate --to opencode "fix the lint errors in packages/ui" --yes
+```
+
+Runs the agent's non-interactive mode (`claude -p`, `codex exec`, `opencode run`)
+with your AnyRouter key, base URL and model, streams its output and exits with
+its exit code. You confirm first; scripts pass `--yes`. `--dry-run` prints the
+command with the key redacted. One hop only: a delegated agent cannot delegate.
+
 ### Compare models: `anyr eval`
 
 ```bash
