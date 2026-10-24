@@ -362,6 +362,7 @@ mod stream {
         }
     }
 
+    #[cfg(unix)]
     const ERASE_LINE: &str = "\x1b[M";
 
     #[cfg(unix)]

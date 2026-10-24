@@ -270,7 +270,8 @@ impl CancelOnCtrlC {
         let prev =
             unsafe { libc::signal(libc::SIGINT, on_sigint as *const () as libc::sighandler_t) };
         CancelOnCtrlC {
-            prev: (prev != libc::SIG_ERR).then_some(prev),
+            // SIG_ERR is all ones; its libc type differs between unix and windows.
+            prev: (prev != libc::sighandler_t::MAX).then_some(prev),
         }
     }
 }
