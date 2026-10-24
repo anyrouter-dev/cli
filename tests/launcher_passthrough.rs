@@ -675,11 +675,11 @@ fn portable_flags_map_in_place_among_other_agent_flags() {
     );
     assert!(
         codex.args.ends_with(&strs(&[
+            "--add-dir",
+            "/a",
             "resume",
             "--last",
             "--search",
-            "--add-dir",
-            "/a",
             "fix it"
         ])),
         "{:?}",
@@ -789,5 +789,149 @@ fn launch_failure_names_the_flag_the_agent_does_not_list() {
     assert!(
         !String::from_utf8_lossy(&ok.stderr).contains("does not list"),
         "no hint on success"
+    );
+}
+
+/// A stand-in `agent` that prints a `--help` listing only `--search` and then
+/// fails on every other call right away, like an auth or network error.
+#[cfg(unix)]
+fn failing_agent(agent: &str, extra: &[&str]) -> String {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = std::env::temp_dir().join(format!("anyr-fail-{agent}-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let bin = dir.join(agent);
+    std::fs::write(
+        &bin,
+        "#!/bin/sh\nfor a in \"$@\"; do [ \"$a\" = --help ] && { echo '  --search  Web search'; exit 0; }; done\nexit 1\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_anyr"))
+        .args([agent, "--yes", "--no-mcp", "--key", KEY, "--command-path"])
+        .arg(&bin)
+        .args(extra)
+        .env("ANYROUTER_HOME", &dir)
+        .env("ANYR_NO_UPDATE", "1")
+        .env("ANYR_NO_CATALOG", "1")
+        .env_remove("ANYROUTER_API_KEY")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    String::from_utf8_lossy(&out.stderr).into_owned()
+}
+
+#[cfg(unix)]
+#[test]
+fn launch_failure_never_blames_a_portable_flag_anyr_rewrote() {
+    for (agent, extra) in [
+        ("codex", vec!["--continue"]),
+        ("codex", vec!["--print", "fix it"]),
+        ("opencode", vec!["--print", "hi"]),
+        ("crush", vec!["--yolo", "--print", "hi"]),
+        // Dropped for this agent: never forwarded, so never the cause.
+        ("pi", vec!["--add-dir", "/a"]),
+    ] {
+        let stderr = failing_agent(agent, &extra);
+        assert!(
+            !stderr.contains("does not list"),
+            "{agent} {extra:?}: {stderr}"
+        );
+    }
+    let stderr = failing_agent("codex", &["--continue", "--", "--raw-flag"]);
+    assert!(
+        stderr.contains("codex does not list --raw-flag in its --help."),
+        "a flag after -- is the user's own: {stderr}"
+    );
+}
+
+#[test]
+fn crush_run_drops_yolo_with_a_note() {
+    let got = dry_run("crush", &["--yolo", "--print", "hi"]);
+    assert_eq!(got.code, 0, "{}", got.stderr);
+    assert!(got.args.ends_with(&strs(&["run", "hi"])), "{:?}", got.args);
+    assert!(!got.args.iter().any(|a| a == "-y"), "{:?}", got.args);
+    assert!(
+        got.stderr
+            .contains("crush run has no flag to skip permission prompts; ignoring --yolo."),
+        "{}",
+        got.stderr
+    );
+    let interactive = dry_run("crush", &["--yolo"]);
+    assert!(
+        interactive.args.iter().any(|a| a == "-y"),
+        "{:?}",
+        interactive.args
+    );
+}
+
+#[test]
+fn codex_global_flags_stay_before_resume() {
+    let after = dry_run(
+        "codex",
+        &[
+            "--print",
+            "--continue",
+            "--add-dir",
+            "/a",
+            "--cwd",
+            "/b",
+            "fix it",
+        ],
+    );
+    let before = dry_run(
+        "codex",
+        &[
+            "--add-dir",
+            "/a",
+            "--cwd",
+            "/b",
+            "--print",
+            "--continue",
+            "fix it",
+        ],
+    );
+    let want = strs(&[
+        "exec",
+        "--add-dir",
+        "/a",
+        "--cd",
+        "/b",
+        "resume",
+        "--last",
+        "fix it",
+    ]);
+    for got in [after, before] {
+        assert_eq!(got.code, 0, "{}", got.stderr);
+        assert!(got.args.ends_with(&want), "{:?}", got.args);
+    }
+}
+
+#[test]
+fn codex_print_resume_without_an_id_means_last() {
+    let got = dry_run("codex", &["--print", "--resume", "--search"]);
+    assert!(
+        got.args
+            .ends_with(&strs(&["exec", "resume", "--last", "--search"])),
+        "{:?}",
+        got.args
+    );
+    let with_id = dry_run("codex", &["--print", "--resume", "abc", "go"]);
+    assert!(
+        with_id
+            .args
+            .ends_with(&strs(&["exec", "resume", "abc", "go"])),
+        "{:?}",
+        with_id.args
+    );
+    let picker = dry_run("codex", &["--resume"]);
+    assert!(
+        picker.args.ends_with(&strs(&["resume"])),
+        "{:?}",
+        picker.args
+    );
+    assert!(
+        !picker.args.iter().any(|a| a == "--last"),
+        "{:?}",
+        picker.args
     );
 }

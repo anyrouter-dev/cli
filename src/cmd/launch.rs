@@ -79,13 +79,15 @@ fn run_agent(
     env_map: &BTreeMap<String, String>,
     unset: &[&str],
     forwarded: &[String],
+    raw_from: usize,
 ) -> i32 {
     let started = std::time::Instant::now();
     let code = spawn_child(resolved, args, env_map, unset);
     let forwarded_flags = forwarded.iter().any(|a| a.starts_with("--"));
     if code != 0 && forwarded_flags && started.elapsed() < LAUNCH_FAILURE_WINDOW {
-        let hint = crate::spawn::help_text(resolved)
-            .and_then(|help| crate::cmd::portable::unknown_flag_hint(tool_name, &help, forwarded));
+        let hint = crate::spawn::help_text(resolved).and_then(|help| {
+            crate::cmd::portable::unknown_flag_hint(tool_name, &help, forwarded, raw_from)
+        });
         if let Some(hint) = hint {
             eprintln!("{} {hint}", term::dim("anyr:"));
         }
@@ -338,6 +340,7 @@ pub(crate) fn launch(
             &env_map,
             unset,
             &parsed.passthrough,
+            parsed.raw_from.unwrap_or(parsed.passthrough.len()),
         ));
     }
     let resolved = ensure_tool_installed(tool_name, &command, install)?;
@@ -387,5 +390,6 @@ pub(crate) fn launch(
         &env_map,
         unset,
         &parsed.passthrough,
+        parsed.raw_from.unwrap_or(parsed.passthrough.len()),
     ))
 }

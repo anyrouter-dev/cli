@@ -55,11 +55,24 @@ pub(crate) struct Argv {
     pub(crate) sub: Option<&'static str>,
     /// When the user runs this subcommand, `argv` must follow it.
     pub(crate) after: Option<&'static str>,
+    /// Global flag: placed right before this subcommand, not after it.
+    pub(crate) before: Option<&'static str>,
+    /// With a value-less alias under this subcommand: use these tokens
+    /// instead (empty: drop, and say so when `note` is set).
+    pub(crate) under: Option<Under>,
     /// The agent's own spellings: any of them already present wins.
     pub(crate) same: &'static [&'static str],
     /// Values the agent accepts; others clamp to the nearest lower one.
     pub(crate) levels: Option<&'static [&'static str]>,
     pub(crate) check: Check,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Under {
+    pub(crate) sub: &'static str,
+    pub(crate) tokens: &'static [&'static str],
+    /// Completes "<agent> <sub> has ...": the reason for dropping.
+    pub(crate) note: Option<&'static str>,
 }
 
 #[derive(Debug)]
@@ -79,6 +92,8 @@ const fn argv(argv: &'static [&'static str], same: &'static [&'static str]) -> A
         bare: None,
         sub: None,
         after: None,
+        before: None,
+        under: None,
         same,
         levels: None,
         check: Check::Help,
@@ -101,6 +116,23 @@ impl Argv {
     const fn after(self, after: &'static str) -> Self {
         Self {
             after: Some(after),
+            ..self
+        }
+    }
+    const fn before(self, before: &'static str) -> Self {
+        Self {
+            before: Some(before),
+            ..self
+        }
+    }
+    const fn under(
+        self,
+        sub: &'static str,
+        tokens: &'static [&'static str],
+        note: Option<&'static str>,
+    ) -> Self {
+        Self {
+            under: Some(Under { sub, tokens, note }),
             ..self
         }
     }
@@ -196,7 +228,12 @@ pub(crate) const ALIASES: &[Alias] = &[
             ("goose", Native::EnvSet("GOOSE_MODE", "auto")),
             ("aider", argv(&["--yes-always"], &["--yes-always"]).native()),
             // `crush run` rejects `-y`; it is a root flag only.
-            ("crush", argv(&["-y"], &["-y"]).native()),
+            (
+                "crush",
+                argv(&["-y"], &["-y"])
+                    .under("run", &[], Some("no flag to skip permission prompts"))
+                    .native(),
+            ),
             ("kilo", argv(&["--auto"], &["--auto"]).after("run").native()),
         ],
     },
@@ -352,8 +389,10 @@ pub(crate) const ALIASES: &[Alias] = &[
             ),
             (
                 "codex",
+                // `exec resume` with no id or `--last` reads the prompt from stdin.
                 argv(&["{}"], &[])
                     .bare(&[])
+                    .under("exec", &["--last"], None)
                     .sub("resume")
                     .after("exec")
                     .native(),
@@ -501,7 +540,12 @@ pub(crate) const ALIASES: &[Alias] = &[
                 "claude",
                 argv(&["--add-dir", "{}"], &["--add-dir"]).native(),
             ),
-            ("codex", argv(&["--add-dir", "{}"], &["--add-dir"]).native()),
+            (
+                "codex",
+                argv(&["--add-dir", "{}"], &["--add-dir"])
+                    .before("resume")
+                    .native(),
+            ),
             ("grok", Native::Unsupported("no flag to add a directory")),
             (
                 "opencode",
@@ -528,7 +572,12 @@ pub(crate) const ALIASES: &[Alias] = &[
         about: "Working directory for the session",
         agents: [
             ("claude", Native::Unsupported("no working-directory flag")),
-            ("codex", argv(&["--cd", "{}"], &["-C", "--cd"]).native()),
+            (
+                "codex",
+                argv(&["--cd", "{}"], &["-C", "--cd"])
+                    .before("resume")
+                    .native(),
+            ),
             ("grok", argv(&["--cwd", "{}"], &["--cwd"]).native()),
             ("opencode", Native::Unsupported("no working-directory flag")),
             ("pi", Native::Unsupported("no working-directory flag")),
@@ -651,6 +700,8 @@ enum Piece {
     Mapped {
         tokens: Vec<String>,
         anchor: Option<Anchor>,
+        /// Replacement under a subcommand, and the flag as the user typed it.
+        under: Option<(Under, String)>,
     },
 }
 
@@ -660,6 +711,8 @@ enum Anchor {
     Sub(&'static str),
     /// After this subcommand when the alias came before it.
     After(&'static str),
+    /// Right before this subcommand, when it is there.
+    Before(&'static str),
 }
 
 /// Map portable aliases in an agent's args to the agent's own argv.
@@ -689,6 +742,7 @@ pub(crate) fn apply(
             pieces.push(Piece::Mapped {
                 tokens: Vec::new(),
                 anchor: None,
+                under: None,
             });
         }
     }
@@ -728,6 +782,7 @@ pub(crate) fn apply(
         pieces.push(Piece::Mapped {
             tokens: Vec::new(),
             anchor: None,
+            under: None,
         });
         i += 1;
     }
@@ -783,8 +838,17 @@ pub(crate) fn apply(
                 None => t.to_string(),
             })
             .collect();
-        let anchor = a.sub.map(Anchor::Sub).or(a.after.map(Anchor::After));
-        pieces[at] = Piece::Mapped { tokens, anchor };
+        let anchor = a
+            .sub
+            .map(Anchor::Sub)
+            .or(a.after.map(Anchor::After))
+            .or(a.before.map(Anchor::Before));
+        let under = a.under.filter(|_| value.is_none()).map(|u| (u, typed));
+        pieces[at] = Piece::Mapped {
+            tokens,
+            anchor,
+            under,
+        };
         if let Some(sub) = a.sub {
             let rank = ALIASES.iter().position(|x| x.name == alias.name);
             subs.push((rank, sub, a.after));
@@ -805,7 +869,34 @@ pub(crate) fn apply(
     }
 
     let chain = chain(&pieces, &known);
-    let target = |i: usize, p: &Piece| -> Option<usize> {
+    let words_in_chain: Vec<String> = chain
+        .iter()
+        .filter_map(|&k| match &pieces[k] {
+            Piece::User(t) => Some(t.clone()),
+            Piece::Mapped { .. } => None,
+        })
+        .collect();
+    for piece in &mut pieces {
+        let Piece::Mapped {
+            tokens,
+            under: Some((under, typed)),
+            ..
+        } = piece
+        else {
+            continue;
+        };
+        if !words_in_chain.iter().any(|w| w == under.sub) {
+            continue;
+        }
+        *tokens = under.tokens.iter().map(|t| t.to_string()).collect();
+        if let Some(reason) = under.note {
+            notices.push(format!(
+                "{agent} {} has {reason}; ignoring --{typed}.",
+                under.sub
+            ));
+        }
+    }
+    let target = |i: usize, p: &Piece| -> Option<(usize, bool)> {
         let Piece::Mapped {
             anchor: Some(anchor),
             ..
@@ -813,25 +904,31 @@ pub(crate) fn apply(
         else {
             return None;
         };
-        let (word, always) = match *anchor {
-            Anchor::Sub(s) => (s, true),
-            Anchor::After(s) => (s, false),
+        let (word, always, before) = match *anchor {
+            Anchor::Sub(s) => (s, true, false),
+            Anchor::After(s) => (s, false, false),
+            Anchor::Before(s) => (s, true, true),
         };
         let k = *chain.iter().find(|&&k| is_user(&pieces[k], word))?;
-        (always || i < k).then_some(k)
+        (always || i < k).then_some((k, before))
     };
-    let targets: Vec<Option<usize>> = pieces
+    let targets: Vec<Option<(usize, bool)>> = pieces
         .iter()
         .enumerate()
         .map(|(i, p)| target(i, p))
         .collect();
     let mut out = Vec::new();
     for (i, piece) in pieces.iter().enumerate() {
+        for (j, moved) in pieces.iter().enumerate() {
+            if targets[j] == Some((i, true)) {
+                push(&mut out, moved);
+            }
+        }
         if targets[i].is_none() {
             push(&mut out, piece);
         }
         for (j, moved) in pieces.iter().enumerate() {
-            if targets[j] == Some(i) {
+            if targets[j] == Some((i, false)) {
                 push(&mut out, moved);
             }
         }
@@ -901,8 +998,15 @@ fn push(out: &mut Vec<String>, piece: &Piece) {
 /// One hint line after the agent failed right at launch: the first flag the
 /// user forwarded that the agent's `--help` does not list, and the listed
 /// flag closest to it. Flags the registry maps for this agent count as known,
-/// since some are hidden from `--help`.
-pub(crate) fn unknown_flag_hint(agent: &str, help: &str, forwarded: &[String]) -> Option<String> {
+/// since some are hidden from `--help`. Portable aliases before `raw_from`
+/// (the `--` boundary) were rewritten or dropped by anyr, so they never count.
+pub(crate) fn unknown_flag_hint(
+    agent: &str,
+    help: &str,
+    forwarded: &[String],
+    raw_from: usize,
+) -> Option<String> {
+    let owned = launch_flags(agent).unwrap_or(&[]);
     let listed = long_flags(help);
     let mapped: Vec<&str> = ALIASES
         .iter()
@@ -915,7 +1019,9 @@ pub(crate) fn unknown_flag_hint(agent: &str, help: &str, forwarded: &[String]) -
         .collect();
     let unknown = forwarded
         .iter()
-        .filter_map(|t| t.strip_prefix("--"))
+        .enumerate()
+        .filter(|(i, t)| *i >= raw_from || alias_at(t, owned).is_none())
+        .filter_map(|(_, t)| t.strip_prefix("--"))
         .map(|t| t.split('=').next().unwrap_or(t))
         .find(|name| {
             !name.is_empty()
@@ -1192,19 +1298,20 @@ mod tests {
     #[test]
     fn unknown_flag_hint_names_the_listed_flag_with_the_same_words() {
         assert_eq!(
-            unknown_flag_hint("pi", PI_HELP, &s(&["--no-tools", "--skills-off", "x"])).as_deref(),
+            unknown_flag_hint("pi", PI_HELP, &s(&["--no-tools", "--skills-off", "x"]), 0)
+                .as_deref(),
             Some("pi does not list --skills-off in its --help. Did you mean --no-skills?")
         );
         assert_eq!(
-            unknown_flag_hint("pi", PI_HELP, &s(&["--tool=a"])).as_deref(),
+            unknown_flag_hint("pi", PI_HELP, &s(&["--tool=a"]), 0).as_deref(),
             Some("pi does not list --tool in its --help. Did you mean --tools?")
         );
         assert_eq!(
-            unknown_flag_hint("pi", PI_HELP, &s(&["--frobnicate"])).as_deref(),
+            unknown_flag_hint("pi", PI_HELP, &s(&["--frobnicate"]), 0).as_deref(),
             Some("pi does not list --frobnicate in its --help.")
         );
         assert_eq!(
-            unknown_flag_hint("pi", PI_HELP, &s(&["--no-tools", "-x", "a"])),
+            unknown_flag_hint("pi", PI_HELP, &s(&["--no-tools", "-x", "a"]), 0),
             None
         );
     }
@@ -1212,7 +1319,7 @@ mod tests {
     #[test]
     fn hidden_flags_the_registry_maps_are_not_unknown() {
         assert_eq!(
-            unknown_flag_hint("claude", "  --help\n", &s(&["--max-turns", "3"])),
+            unknown_flag_hint("claude", "  --help\n", &s(&["--max-turns", "3"]), 0),
             None
         );
     }
