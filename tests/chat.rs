@@ -96,3 +96,15 @@ fn empty_input_is_a_usage_error_and_sends_nothing() {
         .recv_timeout(std::time::Duration::from_millis(300))
         .is_err());
 }
+
+#[test]
+fn a_server_error_that_echoes_the_key_is_masked() {
+    // WHY: gateways echo the rejected Authorization value back; stderr lands in
+    // CI logs and screenshots, so the raw key must never reach it.
+    let key = "sk-ar-v1-abcdefghijklmnop1234567890";
+    let body = format!(r#"{{"error":{{"message":"Invalid key {key} for request"}}}}"#);
+    let (base, _rx) = serve(vec![(401, body)]);
+    let (_, out, err) = run(&base, &["chat", "hi", "--no-stream"], None);
+    assert!(!err.contains("abcdefghijklmnop1234567890"), "{err}");
+    assert!(!out.contains("abcdefghijklmnop1234567890"), "{out}");
+}
