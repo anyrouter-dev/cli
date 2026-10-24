@@ -70,6 +70,8 @@ pub struct Profile {
     pub relay_token: Option<String>,
     /// Cached paired-device id so `relay --pool` can PATCH without a lookup.
     pub relay_device_id: Option<String>,
+    /// Device name chosen once for `anyr relay`, so it stays stable.
+    pub relay_device_name: Option<String>,
     pub extra: BTreeMap<String, YamlValue>,
 }
 
@@ -583,6 +585,9 @@ fn profile_from_map(map: &BTreeMap<String, YamlValue>) -> Profile {
             "relay_device_id" => {
                 p.relay_device_id = Some(v.as_string_lossy()).filter(|s| !s.is_empty())
             }
+            "relay_device_name" => {
+                p.relay_device_name = Some(v.as_string_lossy()).filter(|s| !s.is_empty())
+            }
             _ => {
                 p.extra.insert(k.clone(), v.clone());
             }
@@ -768,6 +773,9 @@ pub fn serialize_config(config: &Config) -> String {
         }
         if let Some(id) = &profile.relay_device_id {
             lines.push(format!("    relay_device_id: {}", yaml_scalar(id)));
+        }
+        if let Some(n) = &profile.relay_device_name {
+            lines.push(format!("    relay_device_name: {}", yaml_scalar(n)));
         }
         // Unknown/forward-compat fields (e.g. written by other CLI builds)
         // round-trip instead of being silently dropped on rewrite.

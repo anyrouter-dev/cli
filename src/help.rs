@@ -587,6 +587,7 @@ Usage:
                                   ak_… via ANYROUTER_MANAGEMENT_KEY, or sign in)
   {bin} relay pool [on|off]       show or set pool sharing (saved, updates the device)
   {bin} relay pair [--name <device>]        pair this device (start pairs too)
+  {bin} relay rename <name>       rename this device (here and in the cloud)
   {bin} relay unpair [--yes]      remove this device from your account
   {bin} relay doctor [--json]     check macOS, fm serve, Decider, network and auth
 
@@ -609,7 +610,8 @@ Start options:
   --token <rk_…>         pairing token (else $ANYROUTER_RELAY_TOKEN or the
                          stored relay_token; an sk-ar key also works)
   --url <wss://…>        relay websocket URL
-  --name <device>        device name when pairing (default \"My Mac\")
+  --name <device>        device name (default: this Mac's name, else a random one;
+                         saved after the first start)
   --max-concurrency <n>  concurrent requests advertised to the pool
   --quiet                print errors only
   --verbose              show relay transport diagnostics
