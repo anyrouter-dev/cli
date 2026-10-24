@@ -276,7 +276,23 @@ fn print_published(ctx: &Ctx, done: &Value) -> Res<()> {
     if let Some(v) = done.get("version").and_then(Value::as_u64) {
         eprintln!("{} published version {v}", term::ok("✓"));
     }
+    if let Some(hint) = private_hint(done) {
+        eprintln!("{hint}");
+    }
     Ok(())
+}
+
+/// A private link opens a sign-in page for everyone but the owner, so say so
+/// and give the one command that makes it shareable.
+fn private_hint(done: &Value) -> Option<String> {
+    if done.get("visibility").and_then(Value::as_str) != Some("private") {
+        return None;
+    }
+    let id = done.get("id").and_then(Value::as_str)?;
+    let bin = crate::help::invoked_bin();
+    Some(format!(
+        "Private: only you can open this link. To share it, run: {bin} artifact visibility {id} unlisted\n(or publish with --visibility unlisted)"
+    ))
 }
 
 fn list(ctx: &Ctx, parsed: &ParsedArgs) -> Res<()> {
