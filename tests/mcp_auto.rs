@@ -5,6 +5,8 @@
 //! these tests assert what reaches the server, not what anyr prints.
 #![cfg(unix)]
 
+mod common;
+
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
@@ -148,14 +150,7 @@ fn route(req: &Req, body: &[u8], enabled: bool) -> (u16, String) {
 }
 
 fn temp_home(tag: &str) -> PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let dir =
-        std::env::temp_dir().join(format!("anyr-mcpauto-{tag}-{}-{nanos}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+    common::unique_temp_dir(&format!("anyr-mcpauto-{tag}"))
 }
 
 fn anyr(home: &Path) -> Command {

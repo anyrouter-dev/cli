@@ -3,6 +3,8 @@
 //! (sign in, chat, launch an agent, run the relay) through the real binary
 //! and asserts what reaches the server, not what the CLI prints about it.
 
+mod common;
+
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
@@ -140,13 +142,7 @@ fn gateway() -> Mock {
 }
 
 fn temp_home(tag: &str) -> PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!("anyr-e2e-{tag}-{}-{nanos}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+    common::unique_temp_dir(&format!("anyr-e2e-{tag}"))
 }
 
 /// `anyr` with a clean environment: no key, no management key, no update

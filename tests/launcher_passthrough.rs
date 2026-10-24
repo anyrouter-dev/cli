@@ -2,6 +2,8 @@
 //! (`--yolo`, `--continue`, `--add-dir`, ...) to the agent's native argv, and
 //! hands every other flag to the agent in order.
 
+mod common;
+
 use std::process::Command;
 
 const KEY: &str = "sk-ar-v1-fixture-key-0001";
@@ -32,15 +34,7 @@ struct DryRun {
 /// `anyr <agent> <anyr flags> <extra...>` in dry-run, with a nonexistent
 /// agent path so OpenCode's version probe cannot add `--standalone`.
 fn dry_run(agent: &str, extra: &[&str]) -> DryRun {
-    let home = std::env::temp_dir().join(format!(
-        "anyr-passthrough-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&home).unwrap();
+    let home = common::unique_temp_dir("anyr-passthrough");
     let out = Command::new(env!("CARGO_BIN_EXE_anyr"))
         .args([
             agent,

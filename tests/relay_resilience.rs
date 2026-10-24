@@ -9,6 +9,8 @@
 //! 2.5s and the 30s backoff cap into 3s.
 #![cfg(unix)]
 
+mod common;
+
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
@@ -23,16 +25,7 @@ const KEY: &str = "sk-ar-v1-e2etestkey0123456789abcdef";
 const SCALE: &str = "0.1";
 
 fn temp_home(tag: &str) -> PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!(
-        "anyr-relay-res-{tag}-{}-{nanos}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+    common::unique_temp_dir(&format!("anyr-relay-res-{tag}"))
 }
 
 /// A foreground relay, killed when dropped so a failed assertion leaves no
@@ -131,6 +124,23 @@ fn target(answer: Answer) -> Target {
         }
     });
     Target { url, hangups }
+}
+
+impl Target {
+    /// The hangups once every completion so far has one, or as they stand
+    /// when `within` runs out. The local server only notices a hangup on
+    /// its next write, so it can trail what the cloud already saw.
+    fn hangups_within(&self, within: Duration) -> Vec<Option<Duration>> {
+        let deadline = Instant::now() + within;
+        loop {
+            let seen = self.hangups.lock().unwrap().clone();
+            if (!seen.is_empty() && seen.iter().all(Option::is_some)) || Instant::now() >= deadline
+            {
+                return seen;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
 }
 
 fn serve_target(mut stream: TcpStream, a: Answer, hangups: &Mutex<Vec<Option<Duration>>>) {
@@ -432,7 +442,7 @@ fn b_half_open_socket_is_dropped_and_its_request_fails_on_the_next_socket() {
         ["error"],
         "the cloud must learn the request died: {frames:?}"
     );
-    let hangups = local.hangups.lock().unwrap().clone();
+    let hangups = local.hangups_within(Duration::from_secs(5));
     assert!(
         matches!(hangups.as_slice(), [Some(_)]),
         "the local model call kept running: {hangups:?}"
@@ -527,7 +537,7 @@ fn d_request_in_flight_on_a_dropped_socket_errors_once_and_never_leaks() {
     }
     let frames = next.lock().unwrap().clone().expect("second socket read");
     let types = types_for(&frames, "req-1");
-    let hangups = local.hangups.lock().unwrap().clone();
+    let hangups = local.hangups_within(Duration::from_secs(5));
     eprintln!("measure d: req-1 frames on the next socket = {types:?}, local hangup = {hangups:?}");
     assert_eq!(types, ["error"], "{frames:?}\n{}", relay.log());
     assert!(
