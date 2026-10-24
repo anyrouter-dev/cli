@@ -37,7 +37,7 @@ fn dry_run_argv_per_target_and_key_redacted() {
     let cases = [
         ("claude", r#"["-p","fix the bug"]"#),
         ("codex", r#""exec","fix the bug"]"#),
-        ("opencode", r#"["run","fix the bug"]"#),
+        ("opencode", r#"["run","--standalone","fix the bug"]"#),
     ];
     for (to, argv) in cases {
         let h = home(to);

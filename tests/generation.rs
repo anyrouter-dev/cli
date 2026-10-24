@@ -39,14 +39,15 @@ fn json_prints_the_raw_body() {
 }
 
 #[test]
-fn unknown_id_exits_1_with_the_server_message_on_stderr() {
+fn unknown_id_exits_3_not_found_with_the_server_message_on_stderr() {
     let (base, _rx) = serve(vec![(
         404,
         r#"{"error":{"message":"Generation not found: nope","code":"generation_not_found"}}"#
             .into(),
     )]);
     let (code, out, err) = run(&base, &["generation", "nope"], None);
-    assert_eq!(code, 1, "{err}");
+    // WHY: an agent polling for a generation retries on 3, not on 1.
+    assert_eq!(code, 3, "{err}");
     assert!(out.is_empty(), "{out}");
     assert!(err.starts_with("error:"), "{err}");
     assert!(err.contains("Generation not found"), "{err}");

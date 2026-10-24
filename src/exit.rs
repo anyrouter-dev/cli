@@ -1,0 +1,224 @@
+//! Exit codes and the one place errors are printed.
+//!
+//! Every command returns `Err(String)` on failure. A message may carry a
+//! leading tag (`tag(code, msg)`) naming its exit code; `commands::run` reads
+//! it, prints the message once (text, or one JSON line in JSON mode) and exits
+//! with that code. Untagged errors exit 1.
+
+use std::cell::Cell;
+
+pub const OK: i32 = 0;
+pub const ERROR: i32 = 1;
+pub const USAGE: i32 = 2;
+pub const NOT_FOUND: i32 = 3;
+pub const AUTH: i32 = 4;
+pub const RATE_LIMITED: i32 = 5;
+
+/// (code, name, meaning) — the table `anyr commands --json` and
+/// `anyr help agents` print.
+pub const CODES: &[(i32, &str, &str)] = &[
+    (OK, "ok", "success"),
+    (ERROR, "error", "the request or command failed"),
+    (
+        USAGE,
+        "usage",
+        "bad flag, argument or subcommand; nothing was sent",
+    ),
+    (
+        NOT_FOUND,
+        "not_found",
+        "the model, key, id or resource does not exist",
+    ),
+    (
+        AUTH,
+        "auth",
+        "no key, a rejected key, or a key without the scope",
+    ),
+    (RATE_LIMITED, "rate_limited", "HTTP 429; retry later"),
+];
+
+const TAG: char = '\u{1}';
+
+thread_local! {
+    static JSON_ERRORS: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Switch error output to one JSON object per error on stderr.
+pub fn set_json_errors(on: bool) {
+    JSON_ERRORS.with(|c| c.set(on));
+}
+
+pub fn json_errors() -> bool {
+    JSON_ERRORS.with(Cell::get)
+}
+
+/// Mark `message` with the exit code it should produce.
+pub fn tag(code: i32, message: impl AsRef<str>) -> String {
+    format!("{TAG}{code}{TAG}{}", message.as_ref())
+}
+
+/// Exit code for an HTTP status that is not 2xx.
+pub fn for_status(status: u16) -> i32 {
+    match status {
+        401 | 403 => AUTH,
+        404 => NOT_FOUND,
+        429 => RATE_LIMITED,
+        _ => ERROR,
+    }
+}
+
+/// Split a possibly tagged error into its exit code and message. The tag may
+/// sit anywhere (a caller can wrap a tagged error in more text); it is removed.
+pub fn classify(err: &str) -> (i32, String) {
+    if let Some(rest) = err.strip_prefix(crate::cmd::dispatch::USAGE) {
+        return (USAGE, rest.to_string());
+    }
+    if let Some(start) = err.find(TAG) {
+        let after = &err[start + 1..];
+        if let Some(end) = after.find(TAG) {
+            if let Ok(code) = after[..end].parse() {
+                let msg = format!("{}{}", &err[..start], &after[end + 1..]);
+                return (code, msg);
+            }
+        }
+    }
+    (ERROR, err.to_string())
+}
+
+fn name(code: i32) -> &'static str {
+    CODES
+        .iter()
+        .find(|(c, _, _)| *c == code)
+        .map(|(_, n, _)| *n)
+        .unwrap_or("error")
+}
+
+/// Print an error once, on stderr: `error: <message>` in text mode, or
+/// `{"error":{"code","exit","message","hint"}}` in JSON mode.
+pub fn print(code: i32, message: &str) {
+    let (_, message) = classify(message);
+    let message = message.as_str();
+    if message.trim().is_empty() {
+        return;
+    }
+    if json_errors() {
+        eprintln!("{}", json_line(code, message));
+    } else if code == USAGE || has_prefix(message) {
+        eprintln!("{message}");
+    } else {
+        eprintln!("{} {message}", crate::term::err("error:"));
+    }
+}
+
+fn has_prefix(message: &str) -> bool {
+    message.find("error:").is_some_and(|i| i < 12)
+}
+
+/// One-line JSON error object (ANSI and the `error:` prefix removed; `hint:`
+/// lines move to `hint`).
+pub fn json_line(code: i32, message: &str) -> String {
+    let plain = strip_ansi(message);
+    let mut text = Vec::new();
+    let mut hints = Vec::new();
+    for line in plain.lines() {
+        let t = line.trim();
+        if let Some(h) = t.strip_prefix("hint:") {
+            hints.push(h.trim().to_string());
+        } else {
+            text.push(line.trim_end());
+        }
+    }
+    let mut msg = text.join("\n").trim().to_string();
+    if let Some(rest) = msg.strip_prefix("error:") {
+        msg = rest.trim_start().to_string();
+    }
+    let mut err = serde_json::json!({ "code": name(code), "exit": code, "message": msg });
+    if !hints.is_empty() {
+        err["hint"] = serde_json::Value::String(hints.join("\n"));
+    }
+    serde_json::json!({ "error": err }).to_string()
+}
+
+pub fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\x1b' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            // CSI: ESC [ … final byte in @..~
+            Some('[') => {
+                for n in chars.by_ref() {
+                    if ('@'..='~').contains(&n) {
+                        break;
+                    }
+                }
+            }
+            // OSC (hyperlinks): ESC ] … BEL or ESC \
+            Some(']') => {
+                while let Some(n) = chars.next() {
+                    if n == '\x07' {
+                        break;
+                    }
+                    if n == '\x1b' {
+                        chars.next();
+                        break;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tagged_errors_keep_their_code_and_untagged_ones_exit_1() {
+        assert_eq!(classify(&tag(AUTH, "no key")), (AUTH, "no key".into()));
+        assert_eq!(classify("boom"), (ERROR, "boom".into()));
+        let usage = format!("{}Usage: anyr x", crate::cmd::dispatch::USAGE);
+        assert_eq!(classify(&usage), (USAGE, "Usage: anyr x".into()));
+        let wrapped = format!("Could not launch: {}", tag(NOT_FOUND, "no such model"));
+        assert_eq!(
+            classify(&wrapped),
+            (NOT_FOUND, "Could not launch: no such model".into())
+        );
+    }
+
+    #[test]
+    fn http_statuses_map_to_the_documented_codes() {
+        assert_eq!(for_status(401), AUTH);
+        assert_eq!(for_status(403), AUTH);
+        assert_eq!(for_status(404), NOT_FOUND);
+        assert_eq!(for_status(429), RATE_LIMITED);
+        assert_eq!(for_status(500), ERROR);
+    }
+
+    #[test]
+    fn json_line_is_one_parseable_object_without_ansi_or_prefix() {
+        let line = json_line(
+            AUTH,
+            "\x1b[31merror:\x1b[0m key rejected\n\x1b[2mhint:\x1b[0m sign in again: anyr login",
+        );
+        assert!(!line.contains('\n'));
+        let v: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(v["error"]["exit"], 4);
+        assert_eq!(v["error"]["code"], "auth");
+        assert_eq!(v["error"]["message"], "key rejected");
+        assert_eq!(v["error"]["hint"], "sign in again: anyr login");
+    }
+
+    #[test]
+    fn strip_ansi_removes_osc_hyperlinks() {
+        assert_eq!(
+            strip_ansi("\x1b]8;;https://x\x1b\\link\x1b]8;;\x1b\\"),
+            "link"
+        );
+    }
+}

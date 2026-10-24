@@ -7,7 +7,7 @@ use std::io::{self, BufRead, Read, Write};
 use serde_json::{json, Value};
 
 use crate::cmd::dispatch::config_path;
-use crate::http::{error_message, http_post_stream, join_api};
+use crate::http::{http_post_stream, join_api};
 use crate::key::{load_config_if_present, no_key_error, resolve_api_key, resolve_base_url};
 use crate::parse::{get_string_flag, ParsedArgs};
 use crate::spawn::catalog_model_id;
@@ -79,6 +79,59 @@ pub(crate) fn stream_reply_usage(
     Ok((reply, usage))
 }
 
+const CHAT_USAGE: &str =
+    "Usage: {bin} chat \"<prompt>\" [--json|--no-stream]   (prompt, `-` for stdin, or pipe it in)";
+
+/// The prompt from the words after `chat`. A lone `-` stands for stdin, so
+/// `git diff | anyr chat "review this" -` sends both. `None`: no words.
+fn read_prompt(words: &[String], stdin: &mut dyn BufRead) -> Result<Option<String>, String> {
+    if words.is_empty() {
+        return Ok(None);
+    }
+    let mut parts = Vec::with_capacity(words.len());
+    for w in words {
+        if w == "-" {
+            let mut piped = String::new();
+            stdin
+                .read_to_string(&mut piped)
+                .map_err(|e| format!("Could not read stdin: {e}"))?;
+            parts.push(piped.trim_end().to_string());
+        } else {
+            parts.push(w.clone());
+        }
+    }
+    Ok(Some(parts.join(" ")))
+}
+
+/// `--json` output for one non-streamed reply. `id` is the generation id
+/// `anyr generation <id>` takes.
+pub(crate) fn reply_json(
+    headers: &[(String, String)],
+    body: &Value,
+    fallback_model: &str,
+) -> Value {
+    let header = |name: &str| {
+        headers
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.clone())
+    };
+    let id = header("x-anyrouter-generation-id")
+        .or_else(|| {
+            body.pointer("/anyrouter_metadata/requestId")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .or_else(|| body.get("id").and_then(Value::as_str).map(str::to_string));
+    json!({
+        "id": id,
+        "model": body.get("model").and_then(Value::as_str).unwrap_or(fallback_model),
+        "content": body.pointer("/choices/0/message/content").and_then(Value::as_str).unwrap_or_default(),
+        "finish_reason": body.pointer("/choices/0/finish_reason").cloned().unwrap_or(Value::Null),
+        "usage": body.get("usage").cloned().unwrap_or(Value::Null),
+    })
+}
+
 struct Session {
     url: String,
     key: String,
@@ -87,6 +140,21 @@ struct Session {
 }
 
 impl Session {
+    /// One non-streamed turn; returns the `reply_json` shape.
+    fn ask(&mut self, user: &str) -> Result<Value, String> {
+        self.messages.push(json!({"role": "user", "content": user}));
+        let body = json!({"model": self.model, "messages": self.messages, "stream": false});
+        let (status, headers, text) =
+            crate::http::http_post_json_headers(&self.url, &self.key, &body.to_string())?;
+        if !(200..300).contains(&status) {
+            self.messages.pop();
+            return Err(crate::http::status_error(status, &text));
+        }
+        let value: Value =
+            serde_json::from_str(&text).map_err(|e| format!("Invalid chat response: {e}"))?;
+        Ok(reply_json(&headers, &value, &self.model))
+    }
+
     /// Send one user turn, stream the answer to stdout, remember both sides.
     fn turn(&mut self, user: &str) -> Result<(), String> {
         self.messages.push(json!({"role": "user", "content": user}));
@@ -96,7 +164,7 @@ impl Session {
             self.messages.pop();
             let mut text = String::new();
             let _ = reader.read_to_string(&mut text);
-            return Err(error_message(status, &text));
+            return Err(crate::http::status_error(status, &text));
         }
         let reply = stream_reply(io::BufReader::new(reader), &mut io::stdout().lock())?;
         println!();
@@ -128,23 +196,40 @@ pub(crate) fn run_chat(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> R
         messages,
     };
 
-    let prompt = parsed.passthrough.join(" ");
-    if !prompt.trim().is_empty() {
-        session.turn(prompt.trim())?;
+    let json_out = parsed.flag_true("json");
+    let buffered = json_out || parsed.flag_true("no-stream");
+    // Bind first: the stdin lock must drop before the arm below reads stdin.
+    let words = read_prompt(&parsed.passthrough, &mut io::stdin().lock())?;
+    let prompt = match words {
+        Some(p) => Some(p),
+        None if !term::is_interactive() => {
+            let mut piped = String::new();
+            io::stdin()
+                .read_to_string(&mut piped)
+                .map_err(|e| format!("Could not read stdin: {e}"))?;
+            Some(piped)
+        }
+        None => None,
+    };
+    if let Some(prompt) = prompt {
+        let prompt = prompt.trim();
+        if prompt.is_empty() {
+            return Err(crate::cmd::dispatch::hint(CHAT_USAGE));
+        }
+        if !buffered {
+            session.turn(prompt)?;
+            return Ok(0);
+        }
+        let reply = session.ask(prompt)?;
+        if json_out {
+            println!("{}", reply);
+        } else {
+            println!("{}", reply["content"].as_str().unwrap_or_default());
+        }
         return Ok(0);
     }
-    if !term::is_interactive() {
-        let mut piped = String::new();
-        io::stdin()
-            .read_to_string(&mut piped)
-            .map_err(|e| format!("Could not read stdin: {e}"))?;
-        if piped.trim().is_empty() {
-            return Err(crate::cmd::dispatch::hint(
-                "Usage: {bin} chat \"<prompt>\"   (or run it in a terminal for a REPL)",
-            ));
-        }
-        session.turn(piped.trim())?;
-        return Ok(0);
+    if buffered {
+        return Err(crate::cmd::dispatch::hint(CHAT_USAGE));
     }
     eprintln!(
         "{}",
@@ -178,6 +263,37 @@ pub(crate) fn run_chat(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_dash_word_reads_stdin_so_a_prompt_and_piped_text_combine() {
+        let mut stdin = "diff --git a b\n+x\n".as_bytes();
+        let words = vec!["review this".to_string(), "-".to_string()];
+        let got = read_prompt(&words, &mut stdin).unwrap();
+        assert_eq!(got.as_deref(), Some("review this diff --git a b\n+x"));
+        // No words: the caller decides (stdin or REPL); stdin is untouched.
+        let mut untouched = "keep".as_bytes();
+        assert_eq!(read_prompt(&[], &mut untouched).unwrap(), None);
+        assert_eq!(untouched, b"keep");
+    }
+
+    #[test]
+    fn reply_json_prefers_the_generation_header_then_request_id() {
+        let body = json!({
+            "id": "chatcmpl-1",
+            "model": "z-ai/glm",
+            "anyrouter_metadata": {"requestId": "req_9"},
+            "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 1}
+        });
+        let with_header = vec![("x-anyrouter-generation-id".to_string(), "gen_7".to_string())];
+        assert_eq!(reply_json(&with_header, &body, "auto")["id"], "gen_7");
+        let v = reply_json(&[], &body, "auto");
+        assert_eq!(v["id"], "req_9");
+        assert_eq!(v["content"], "ok");
+        assert_eq!(v["finish_reason"], "stop");
+        assert_eq!(v["model"], "z-ai/glm");
+        assert_eq!(v["usage"]["completion_tokens"], 1);
+    }
 
     #[test]
     fn sse_lines_decode_deltas_done_and_noise() {

@@ -11,7 +11,7 @@ use crate::api::{confirm, context, get, Ctx};
 use crate::chat::stream_reply_usage;
 use crate::cmd::dispatch::{config_path, hint};
 use crate::cmd::view::print_json;
-use crate::http::{error_message, format_usd, http_post_json_headers, http_post_stream, join_api};
+use crate::http::{format_usd, http_post_json_headers, http_post_stream, join_api};
 use crate::key::load_config_if_present;
 use crate::parse::{get_string_flag, ParsedArgs};
 use crate::spawn::catalog_model_id;
@@ -104,7 +104,7 @@ fn call_json(
     let body = json!({"model": model, "messages": messages, "stream": false});
     let (status, headers, text) = http_post_json_headers(url, key, &body.to_string())?;
     if !(200..300).contains(&status) {
-        return Err(error_message(status, &text));
+        return Err(crate::http::status_error(status, &text));
     }
     let v: Value = serde_json::from_str(&text).map_err(|_| "response was not JSON".to_string())?;
     let answer = v
@@ -150,7 +150,7 @@ fn call_stream(
     if !(200..300).contains(&status) {
         let mut text = String::new();
         let _ = reader.read_to_string(&mut text);
-        return Err(error_message(status, &text));
+        return Err(crate::http::status_error(status, &text));
     }
     let (text, usage) = stream_reply_usage(io::BufReader::new(reader), &mut io::stdout().lock())?;
     println!();

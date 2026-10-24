@@ -151,10 +151,9 @@ fn raw_patch_sends_typed_fields() {
 fn unauthorized_exits_4_with_login_hint() {
     let (base, _rx) = serve_once(401, r#"{"error":{"message":"invalid key"}}"#);
     let (code, _, err) = run(&["api", "credits", "--base-url", &base, "--key", "sk-ar-bad"]);
-    assert_eq!(
-        code, 1,
-        "curated verbs surface errors through the normal path"
-    );
+    // WHY: curated verbs and raw calls share one exit table, so a script
+    // branches on auth failure (4) the same way for both.
+    assert_eq!(code, 4, "{err}");
     assert!(
         err.contains("invalid key") && err.contains("login"),
         "{err}"
@@ -169,7 +168,8 @@ fn unauthorized_exits_4_with_login_hint() {
 #[test]
 fn presets_without_management_key_explains_how_to_get_one() {
     let (code, _, err) = run(&["api", "presets", "list", "--key", "sk-ar-test"]);
-    assert_eq!(code, 1);
+    // A missing management key is an auth failure (exit 4), not a generic one.
+    assert_eq!(code, 4, "{err}");
     assert!(err.contains("ANYROUTER_MANAGEMENT_KEY"), "{err}");
 }
 
@@ -334,7 +334,7 @@ fn html_error_body_is_summarised_not_dumped() {
         "--key",
         "sk-ar-test",
     ]);
-    assert_eq!(code, 1, "{err}");
+    assert_eq!(code, 3, "404 is not found: {err}");
     // WHY: a proxy/CDN HTML page must not flood the terminal or hide the status.
     assert!(
         err.contains("HTTP 404: Not Found: <!doctype html> <html>"),

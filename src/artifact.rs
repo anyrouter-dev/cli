@@ -128,7 +128,7 @@ fn run_inner(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32,
     match outcome {
         Ok(()) => Ok(0),
         Err(f) => {
-            eprintln!("{}", f.message);
+            crate::exit::print(f.code, &f.message);
             Ok(f.code)
         }
     }

@@ -269,14 +269,14 @@ fn connections_lists_rows_and_json_is_raw() {
 }
 
 #[test]
-fn connections_error_goes_to_stderr_with_exit_1() {
+fn connections_auth_error_goes_to_stderr_with_exit_4() {
     let (base, _rx) = serve(vec![(
         401,
         r#"{"error":{"message":"Unauthorized"}}"#.into(),
     )]);
     let home = temp_home("conn-err");
     let (code, out, err) = anyr(&home, &["mcp", "connections", "--base-url", &base]);
-    assert_eq!(code, 1);
+    assert_eq!(code, 4, "401 is an auth failure: {err}");
     assert!(out.is_empty());
     assert!(err.contains("Unauthorized"), "{err}");
 }

@@ -318,10 +318,9 @@ pub(crate) fn run_keys(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> R
             };
             if !parsed.skip_confirm() {
                 if !term::is_interactive() {
-                    return Err(
-                        "Revoking a key is destructive; pass --yes to run non-interactively."
-                            .into(),
-                    );
+                    return Err(crate::cmd::dispatch::hint(
+                        "Revoking a key is destructive; pass --yes to run non-interactively.",
+                    ));
                 }
                 if !term::confirm(&format!("Revoke \"{}\" ({})?", row.name, row.masked)) {
                     return Ok(1);
@@ -336,9 +335,9 @@ pub(crate) fn run_keys(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> R
             );
             Ok(0)
         }
-        other => Err(format!(
+        other => Err(crate::cmd::dispatch::hint(&format!(
             "Unknown keys subcommand \"{other}\". Try: list | create | show | update | use | revoke"
-        )),
+        ))),
     }
 }
 

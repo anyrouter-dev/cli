@@ -1213,7 +1213,11 @@ pub(crate) fn run_config(
     let sub = parsed.passthrough.first().map(String::as_str);
     match sub {
         Some("path") => {
-            println!("{}", path.display());
+            if parsed.flag_true("json") {
+                println!("{}", serde_json::json!({ "path": path.display().to_string() }));
+            } else {
+                println!("{}", path.display());
+            }
             Ok(0)
         }
         Some("use") => {

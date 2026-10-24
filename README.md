@@ -112,6 +112,21 @@ anyr decision --model typesafe/jev \
   --questions '{"is_urgent":{"type":"noul","instructions":"Does this convey urgency?"}}'
 ```
 
+### For agents and scripts
+
+`--json` (or `ANYR_OUTPUT=json`) works on every command: JSON on stdout where
+the command has a JSON form, and every error as one JSON object on stderr.
+Without a TTY there are no prompts, spinners or update notices.
+
+```bash
+anyr commands --json                     # the whole command tree
+anyr chat "Reply with ok" --json         # {"id","model","content","finish_reason","usage"}
+git diff | anyr chat "Review this" - --no-stream
+anyr help agents                         # the guide, from docs/agents.md
+```
+
+Exit codes: 0 ok, 1 error, 2 usage, 3 not found, 4 auth, 5 rate limited.
+
 ### Dashboard from the terminal: `anyr api`
 
 ```bash
