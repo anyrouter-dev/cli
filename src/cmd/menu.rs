@@ -101,10 +101,7 @@ pub(crate) fn launcher_palette(
     };
     let present = available_agents(env, command_for);
     let last = cfg
-        .last_tool
-        .clone()
-        .or_else(|| profile.and_then(|p| p.default_tool.clone()))
-        .or_else(|| get_string_flag(&parsed.flags, "tool"))
+        .preferred_agent(get_string_flag(&parsed.flags, "tool").as_deref())
         .or_else(|| present.first().map(|(id, _)| (*id).to_string()))
         .unwrap_or_else(|| "claude".into());
 

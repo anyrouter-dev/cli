@@ -176,17 +176,30 @@ fn a_scripted_launch_never_installs_and_names_the_install_command() {
     );
 }
 
+/// An agent that exits 0 at once (`/bin/true` is `/usr/bin/true` on macOS).
+fn ok_agent(home: &std::path::Path) -> String {
+    use std::os::unix::fs::PermissionsExt;
+    let path = home.join("ok-agent");
+    std::fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    path.to_string_lossy().into_owned()
+}
+
+fn pi(home: &PathBuf, base: &str, extra: &[&str]) -> std::process::Output {
+    anyr(home)
+        .args(["pi", "--model", "owner/m", "--key", KEY, "--base-url", base])
+        .args(extra)
+        .stdin(Stdio::null())
+        .output()
+        .unwrap()
+}
+
 #[test]
 fn pi_fetches_the_model_catalog_once() {
     let models = r#"{"data":[{"id":"owner/m","context_length":131072}]}"#;
     let (base, seen) = serve(vec![(200, models.into()), (200, models.into())]);
     let home = home("pi-once");
-    let out = anyr(&home)
-        .args(["pi", "--dry-run", "--model", "owner/m", "--key", KEY])
-        .args(["--base-url", &base])
-        .stdin(Stdio::null())
-        .output()
-        .unwrap();
+    let out = pi(&home, &base, &["--command-path", &ok_agent(&home)]);
     assert_eq!(
         out.status.code(),
         Some(0),
@@ -195,4 +208,36 @@ fn pi_fetches_the_model_catalog_once() {
     );
     let paths: Vec<String> = seen.try_iter().map(|s| s.path).collect();
     assert_eq!(paths, vec!["/api/v1/models?privacy=0&sort=usage"]);
+}
+
+#[test]
+fn a_warm_launch_and_any_dry_run_make_no_catalog_request() {
+    let models = r#"{"data":[{"id":"owner/m","context_length":131072}]}"#;
+    let (base, seen) = serve(vec![(200, models.into()), (200, models.into())]);
+    let home = home("warm");
+    let cold_dry = pi(&home, &base, &["--dry-run"]);
+    assert_eq!(cold_dry.status.code(), Some(0));
+    assert_eq!(seen.try_iter().count(), 0, "a dry run reads only the cache");
+    pi(&home, &base, &["--command-path", &ok_agent(&home)]);
+    assert_eq!(
+        seen.try_iter().count(),
+        1,
+        "the first real launch fills the cache"
+    );
+    let warm = pi(&home, &base, &["--command-path", &ok_agent(&home)]);
+    let warm_dry = pi(&home, &base, &["--dry-run"]);
+    assert_eq!(
+        (warm.status.code(), warm_dry.status.code()),
+        (Some(0), Some(0))
+    );
+    assert_eq!(
+        seen.try_iter().count(),
+        0,
+        "warm launches never wait on /v1/models"
+    );
+    let dry = String::from_utf8_lossy(&warm_dry.stdout);
+    assert!(
+        dry.contains("131072"),
+        "the cached context window still applies:\n{dry}"
+    );
 }

@@ -66,10 +66,7 @@ pub(crate) fn print_config_status(
             .map(|p| p.default_model())
             .unwrap_or(crate::config::DEFAULT_MODEL),
     );
-    let agent = profile
-        .and_then(|p| p.default_tool.clone())
-        .or_else(|| cfg.last_tool.clone())
-        .unwrap_or_else(|| "claude".into());
+    let agent = cfg.preferred_agent(None).unwrap_or_else(|| "claude".into());
     let credits_value = credits
         .as_ref()
         .and_then(|c| c.get("balance").and_then(|v| v.as_f64()))
@@ -115,7 +112,18 @@ pub(crate) fn print_config_status(
             "off".into()
         }
     );
+    if let Some(on) = cfg.mcp_auto {
+        row("mcp_auto", if on { "on" } else { "off" });
+    }
+    for (label, value) in crate::cmd::settings::launcher_rows(&cfg) {
+        row(&label, &value);
+    }
     println!();
+    println!(
+        "  {}  {}",
+        term::dim(&format!("$ {bin} config set launcher.claude.model <id>")),
+        term::dim("per-agent settings")
+    );
     println!(
         "  {}    {}",
         term::dim(&format!("$ {bin} config get --json")),
@@ -1231,6 +1239,10 @@ pub(crate) fn run_config(
                 .ok_or_else(|| hint("Usage: {bin} config use <account>"))?;
             run_account_use(parsed, env, &name)
         }
+        Some(verb @ ("set" | "unset")) => crate::cmd::settings::run(verb, parsed, env),
+        Some("get") if parsed.passthrough.len() > 1 => {
+            crate::cmd::settings::run("get", parsed, env)
+        }
         Some("get") => {
             if parsed.flag_true("json") {
                 let cfg = load_config_if_present(&path).unwrap_or_default();
@@ -1257,9 +1269,7 @@ pub(crate) fn run_config(
                     "api_key": api_key,
                     "api_key_source": api_key_source,
                     "default_model": profile.map(|p| display_model_id(p.default_model())),
-                    "claude_haiku": profile.map(|p| p.claude_haiku()),
-                    "claude_sonnet": profile.map(|p| p.claude_sonnet()),
-                    "claude_opus": profile.map(|p| p.claude_opus()),
+                    "launcher": crate::cmd::settings::launcher_json(&cfg),
                     "accounts": cfg.profiles.keys().cloned().collect::<Vec<_>>(),
                     "auto_update": cfg.auto_update(),
                     "channel": cfg.channel(),
@@ -1287,7 +1297,7 @@ pub(crate) fn run_config(
             Ok(0)
         }
         Some(other) => Err(hint(&format!(
-            "Unknown config command \"{other}\". Try: {{bin}} config · {{bin}} config path · {{bin}} config use <account>"
+            "Unknown config command \"{other}\". Try: {{bin}} config · {{bin}} config get|set|unset <key> · {{bin}} config path · {{bin}} config use <account>"
         ))),
     }
 }

@@ -205,7 +205,7 @@ fn fetch_enabled(base: &str, key: &str) -> Lookup {
 }
 
 /// Cache rows are keyed by a hash of the base URL and key, never the key.
-fn cache_key(base: &str, key: &str) -> String {
+pub(crate) fn cache_key(base: &str, key: &str) -> String {
     let digest = Sha256::digest(format!("{base}\n{key}").as_bytes());
     digest.iter().take(12).map(|b| format!("{b:02x}")).collect()
 }
