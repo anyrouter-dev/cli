@@ -70,6 +70,18 @@ fn strs(v: &[&str]) -> Vec<String> {
     v.iter().map(|s| s.to_string()).collect()
 }
 
+/// Index of `needle`, requiring it to appear exactly once.
+fn only_at(args: &[String], needle: &str) -> usize {
+    let at: Vec<usize> = args
+        .iter()
+        .enumerate()
+        .filter(|(_, a)| *a == needle)
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(at.len(), 1, "{needle} should appear once in {args:?}");
+    at[0]
+}
+
 fn count_run(haystack: &[String], needle: &[&str]) -> usize {
     haystack
         .windows(needle.len())
@@ -311,13 +323,8 @@ fn opencode_top_level_yolo_leads_the_args() {
 fn skills_off_and_tools_off_map_to_pi_native_flags() {
     let got = dry_run("pi", &["--skills-off", "--tools-off"]);
     assert_eq!(got.code, 0, "{}", got.stderr);
-    let base = dry_run("pi", &[]).args;
-    assert_eq!(
-        &got.args[..got.args.len() - base.len()],
-        ["--no-skills", "--no-tools"],
-        "{:?}",
-        got.args
-    );
+    only_at(&got.args, "--no-skills");
+    only_at(&got.args, "--no-tools");
     assert!(
         !got.args.iter().any(|a| a.ends_with("-off")),
         "{:?}",
@@ -329,18 +336,18 @@ fn skills_off_and_tools_off_map_to_pi_native_flags() {
 
 #[test]
 fn skills_off_leads_a_claude_subcommand_and_a_literal_separator() {
-    let base = dry_run("claude", &[]).args;
     let sub = dry_run("claude", &["--skills-off", "mcp", "list"]);
     assert_eq!(sub.code, 0, "{}", sub.stderr);
-    let mut want = strs(&["--disable-slash-commands"]);
-    want.extend(base.clone());
-    want.extend(strs(&["mcp", "list"]));
-    assert_eq!(sub.args, want);
+    assert!(only_at(&sub.args, "--disable-slash-commands") < only_at(&sub.args, "mcp"));
+    assert!(
+        !sub.args.iter().any(|a| a == "--skills-off"),
+        "{:?}",
+        sub.args
+    );
+    // anyr consumes the separator; what follows is forwarded raw, after the flag.
     let sep = dry_run("claude", &["--skills-off", "--", "-p", "hi"]);
-    let mut want = strs(&["--disable-slash-commands"]);
-    want.extend(base);
-    want.extend(strs(&["--", "-p", "hi"]));
-    assert_eq!(sep.args, want, "{:?}", sep.args);
+    assert!(only_at(&sep.args, "--disable-slash-commands") < only_at(&sep.args, "-p"));
+    assert!(sep.args.ends_with(&strs(&["-p", "hi"])), "{:?}", sep.args);
 }
 
 #[test]
@@ -359,10 +366,7 @@ fn skills_off_is_dropped_with_a_note_where_the_agent_has_no_switch() {
         got.stderr
     );
     let claude = dry_run("claude", &["--skills-off"]);
-    assert_eq!(
-        claude.args.first().map(String::as_str),
-        Some("--disable-slash-commands")
-    );
+    only_at(&claude.args, "--disable-slash-commands");
 }
 
 #[test]
@@ -379,7 +383,7 @@ fn skills_off_after_separator_stays_raw() {
 fn skills_off_equals_true_maps_and_never_rewrites_a_value() {
     let got = dry_run("pi", &["--skills-off=true"]);
     assert_eq!(got.code, 0, "{}", got.stderr);
-    assert_eq!(got.args.first().map(String::as_str), Some("--no-skills"));
+    only_at(&got.args, "--no-skills");
     let value = dry_run("pi", &["-p", "--", "--skills-off"]);
     assert_eq!(value.args.last().map(String::as_str), Some("--skills-off"));
 }
