@@ -76,6 +76,12 @@ pub(crate) const LAUNCHERS: &[(&str, Strategy)] = &[
     ),
     ("aider", Strategy::Unsupported("Aider has no MCP support")),
     (
+        "fx",
+        Strategy::Unsupported(
+            "fx reads MCP servers from ~/.fx/mcp.json; add one with `fx mcp add`",
+        ),
+    ),
+    (
         "pool",
         Strategy::Unsupported(
             "Poolside only reads MCP servers from its global settings.yaml; add one with `pool mcp add`",

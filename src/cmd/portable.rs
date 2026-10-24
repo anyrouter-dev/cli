@@ -12,7 +12,7 @@ pub(crate) const AGENTS: &[&str] = crate::registry::LAUNCHERS;
 /// Poolside is not installed where this was written; its cells cite
 /// docs.poolside.ai/cli/cli-reference (v1.0.16).
 #[cfg(test)]
-pub(crate) const CHECKED: [(&str, &str); 11] = [
+pub(crate) const CHECKED: [(&str, &str); 12] = [
     ("claude", "2.1.310"),
     ("codex", "0.133.0"),
     ("grok", "1.0.52"),
@@ -24,6 +24,7 @@ pub(crate) const CHECKED: [(&str, &str); 11] = [
     ("aider", "0.86.2"),
     ("crush", "0.98.2"),
     ("kilo", "7.8.17"),
+    ("fx", "0.0.14"),
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -158,7 +159,7 @@ pub(crate) struct Alias {
     /// Every use is forwarded, even next to the agent's own spelling.
     pub(crate) repeatable: bool,
     pub(crate) about: &'static str,
-    pub(crate) agents: [(&'static str, Native); 11],
+    pub(crate) agents: [(&'static str, Native); 12],
 }
 
 impl Alias {
@@ -235,6 +236,8 @@ pub(crate) const ALIASES: &[Alias] = &[
                     .native(),
             ),
             ("kilo", argv(&["--auto"], &["--auto"]).after("run").native()),
+            // `--yolo` is a flag of `ask` only; fx reads its mode from the environment.
+            ("fx", Native::EnvSet("FX_PERMISSION_MODE", "full-access")),
         ],
     },
     Alias {
@@ -284,6 +287,7 @@ pub(crate) const ALIASES: &[Alias] = &[
                 "kilo",
                 Native::Unsupported("a reasoning-effort flag only on `kilo run`"),
             ),
+            ("fx", argv(&["--effort", "{}"], &["--effort"]).native()),
         ],
     },
     Alias {
@@ -315,6 +319,7 @@ pub(crate) const ALIASES: &[Alias] = &[
             ),
             ("crush", argv(&[], &[]).sub("run").native()),
             ("kilo", argv(&[], &[]).sub("run").native()),
+            ("fx", argv(&[], &[]).sub("ask").native()),
         ],
     },
     Alias {
@@ -370,6 +375,12 @@ pub(crate) const ALIASES: &[Alias] = &[
                 "kilo",
                 argv(&["--continue"], &["-c", "--continue"])
                     .after("run")
+                    .native(),
+            ),
+            (
+                "fx",
+                argv(&["--continue"], &["-c", "--continue"])
+                    .under("ask", &["--resume", "last"], None)
                     .native(),
             ),
         ],
@@ -449,6 +460,13 @@ pub(crate) const ALIASES: &[Alias] = &[
                     .after("run")
                     .native(),
             ),
+            (
+                "fx",
+                argv(&["--resume", "{}"], &["--resume", "--resume-last"])
+                    .bare(&["--resume"])
+                    .under("ask", &["--resume", "last"], None)
+                    .native(),
+            ),
         ],
     },
     Alias {
@@ -486,6 +504,13 @@ pub(crate) const ALIASES: &[Alias] = &[
             ("aider", Native::Unsupported("no system-prompt flag")),
             ("crush", Native::Unsupported("no system-prompt flag")),
             ("kilo", Native::Unsupported("no system-prompt flag")),
+            // `fx ask --system` replaces the prompt; the interactive session has no flag.
+            (
+                "fx",
+                argv(&["--system", "{}"], &["--system"])
+                    .after("ask")
+                    .native(),
+            ),
         ],
     },
     Alias {
@@ -527,6 +552,10 @@ pub(crate) const ALIASES: &[Alias] = &[
             ("aider", Native::Unsupported("no system-prompt flag")),
             ("crush", Native::Unsupported("no system-prompt flag")),
             ("kilo", Native::Unsupported("no system-prompt flag")),
+            (
+                "fx",
+                Native::Unsupported("no flag to append to the system prompt"),
+            ),
         ],
     },
     Alias {
@@ -562,6 +591,7 @@ pub(crate) const ALIASES: &[Alias] = &[
             ("aider", Native::Unsupported("no flag to add a directory")),
             ("crush", Native::Unsupported("no flag to add a directory")),
             ("kilo", Native::Unsupported("no flag to add a directory")),
+            ("fx", argv(&["--add-dir", "{}"], &["--add-dir"]).native()),
         ],
     },
     Alias {
@@ -592,6 +622,7 @@ pub(crate) const ALIASES: &[Alias] = &[
             ("aider", Native::Unsupported("no working-directory flag")),
             ("crush", argv(&["--cwd", "{}"], &["-c", "--cwd"]).native()),
             ("kilo", Native::Unsupported("no working-directory flag")),
+            ("fx", Native::Unsupported("no working-directory flag")),
         ],
     },
     Alias {
@@ -627,6 +658,7 @@ pub(crate) const ALIASES: &[Alias] = &[
             ("aider", Native::Unsupported("no turn-limit flag")),
             ("crush", Native::Unsupported("no turn-limit flag")),
             ("kilo", Native::Unsupported("no turn-limit flag")),
+            ("fx", Native::Unsupported("no turn-limit flag")),
         ],
     },
     Alias {
@@ -648,6 +680,7 @@ pub(crate) const ALIASES: &[Alias] = &[
             ("aider", Native::Unsupported("no tools switch")),
             ("crush", Native::Unsupported("no tools switch")),
             ("kilo", Native::Unsupported("no tools switch")),
+            ("fx", Native::Unsupported("no tools switch")),
         ],
     },
     Alias {
@@ -675,6 +708,7 @@ pub(crate) const ALIASES: &[Alias] = &[
             ("aider", Native::Unsupported("no skills switch")),
             ("crush", Native::Unsupported("no skills switch")),
             ("kilo", Native::Unsupported("no skills switch")),
+            ("fx", Native::Unsupported("no skills switch")),
         ],
     },
 ];
@@ -1163,7 +1197,7 @@ agent's parser accepts it. * from docs.poolside.ai (v1.0.16), not run. \
 \"no\": the agent has no such flag, so anyr drops it with a one-line note. \
 Goose takes these flags only on `goose session` or `goose run`, and its `--system` adds to \
 the default prompt. Crush `-y` works on the interactive command only. Qwen's `-p` is \
-deprecated but listed.\n",
+deprecated but listed. fx takes `--add-dir` only on the interactive command and `--system` only on `fx ask`.\n",
         versions.join(", ")
     ));
     out

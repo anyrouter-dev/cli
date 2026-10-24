@@ -29,6 +29,7 @@ pub const EVERYDAY: &[&str] = &[
 /// Agents `anyr <agent>` launches.
 pub const LAUNCHERS: &[&str] = &[
     "claude", "codex", "grok", "opencode", "pi", "pool", "qwen", "goose", "aider", "crush", "kilo",
+    "fx",
 ];
 
 /// Flags every command accepts.

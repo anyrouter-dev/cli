@@ -258,6 +258,17 @@ fn builtin(id: &str) -> Option<ToolConfig> {
             base_suffix: "/v1".into(),
             ..ToolConfig::default()
         },
+        // fx only takes a custom endpoint as a named connection in
+        // ~/.fx/settings.json (`prepare_fx_settings`); FX_PROVIDER selects it
+        // for this process and the connection reads `$ANYROUTER_API_KEY`.
+        "fx" => ToolConfig {
+            command: "fx".into(),
+            base_url_env: "ANYROUTER_BASE_URL".into(),
+            auth_env: "ANYROUTER_API_KEY".into(),
+            model_env: Some("FX_MODEL".into()),
+            base_suffix: "/v1".into(),
+            ..ToolConfig::default()
+        },
         // Kilo is an OpenCode fork: same inline config, its own variable.
         "kilo" => ToolConfig {
             command: "kilo".into(),
@@ -470,6 +481,9 @@ pub fn build_tool_env(input: BuildToolEnvInput<'_>) -> BTreeMap<String, String> 
             path.trim_start_matches('/').into(),
         );
         env.insert("GOOSE_PROVIDER".into(), "openai".into());
+    }
+    if input.tool_name == "fx" {
+        env.insert("FX_PROVIDER".into(), FX_CONNECTION.into());
     }
     if input.tool_name == "aider" {
         // Aider routes through LiteLLM, which needs the `openai/` prefix to
@@ -1163,6 +1177,159 @@ fn write_crush_files(
     Ok(())
 }
 
+/// The fx connection name anyr manages in `~/.fx/settings.json`.
+pub const FX_CONNECTION: &str = "anyrouter";
+
+/// fx 0.0.11 added custom connections; an older fx ignores FX_PROVIDER and
+/// asks for a Vercel AI Gateway login instead.
+pub const FX_MIN_VERSION: (u32, u32, u32) = (0, 0, 11);
+
+/// `fx --version` prints `0.0.14`.
+pub fn parse_fx_version(output: &str) -> Option<(u32, u32, u32)> {
+    let mut parts = output.trim().trim_start_matches('v').splitn(3, '.');
+    let mut next = || parts.next()?.trim().parse::<u32>().ok();
+    Some((next()?, next()?, next()?))
+}
+
+#[cfg(feature = "native")]
+pub fn fx_version(command: &str) -> Option<String> {
+    let out = Command::new(command).arg("--version").output().ok()?;
+    Some(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+#[cfg(not(feature = "native"))]
+pub fn fx_version(_command: &str) -> Option<String> {
+    None
+}
+
+/// Refuse an fx too old for custom connections. An unreadable version passes.
+pub fn check_fx_version(output: Option<&str>) -> Result<(), String> {
+    match output.and_then(parse_fx_version) {
+        Some(found) if found < FX_MIN_VERSION => {
+            let (a, b, c) = FX_MIN_VERSION;
+            let (x, y, z) = found;
+            Err(format!(
+                "anyr fx needs fx {a}.{b}.{c} or newer for custom model connections; found {x}.{y}.{z}. Run `fx upgrade`."
+            ))
+        }
+        _ => Ok(()),
+    }
+}
+
+/// `~/.fx/settings.json`. fx has no variable to move it: it reads `$HOME`.
+pub fn fx_settings_path(env: &dyn Fn(&str) -> Option<String>) -> Option<PathBuf> {
+    env("HOME")
+        .filter(|h| !h.is_empty())
+        .map(|h| Path::new(&h).join(".fx").join("settings.json"))
+}
+
+/// The `providers.anyrouter` connection: Chat Completions at `base_url`, the
+/// key read from `key_env`, and the selected model's limits so fx can compact.
+pub fn fx_connection(
+    base_url: &str,
+    key_env: &str,
+    model: &str,
+    catalog: &[crate::http::CatalogModel],
+) -> serde_json::Value {
+    let selected = catalog_model_id(model);
+    let mut meta = serde_json::json!({ "supports_tool_use": true });
+    if let Some(row) = catalog.iter().find(|m| catalog_model_id(&m.id) == selected) {
+        if let Some(n) = row.context_length.filter(|n| *n > 0) {
+            meta["context_window"] = n.into();
+        }
+        if let Some(n) = row.max_completion_tokens.filter(|n| *n > 0) {
+            meta["max_output_tokens"] = n.into();
+        }
+    }
+    serde_json::json!({
+        "protocol": "openai-chat-completions",
+        "base_url": base_url,
+        "auth": { "type": "bearer", "env": key_env },
+        "model_metadata": { selected: meta },
+    })
+}
+
+/// `settings` with `providers.anyrouter` set to `connection`, or None when it
+/// already is. Every other key, including the user's selected `provider`, is
+/// kept: the launch selects the connection with FX_PROVIDER instead.
+pub fn fx_settings_with(
+    settings: Option<serde_json::Value>,
+    connection: &serde_json::Value,
+) -> Option<serde_json::Value> {
+    let mut settings = settings
+        .filter(serde_json::Value::is_object)
+        .unwrap_or_else(|| serde_json::json!({}));
+    if settings["providers"][FX_CONNECTION] == *connection {
+        return None;
+    }
+    if !settings["providers"].is_object() {
+        settings["providers"] = serde_json::json!({});
+    }
+    settings["providers"][FX_CONNECTION] = connection.clone();
+    Some(settings)
+}
+
+/// Make sure `~/.fx/settings.json` holds the AnyRouter connection.
+///
+/// This is the one launcher that writes into the agent's own config: fx reads
+/// custom connections only from that file and has no variable to move it.
+/// Only `providers.anyrouter` changes, the file never holds the key, and an
+/// unchanged entry is not rewritten. fx ignores the file unless the directory
+/// is 0700 and the file 0600. Returns the line `--dry-run` prints.
+pub fn prepare_fx_settings(
+    path: &Path,
+    connection: &serde_json::Value,
+    dry_run: bool,
+) -> Result<String, String> {
+    let current = match std::fs::read_to_string(path) {
+        Ok(s) => Some(serde_json::from_str::<serde_json::Value>(&s).map_err(|e| {
+            format!(
+                "{} is not valid JSON ({e}); fix it, then run again.",
+                path.display()
+            )
+        })?),
+        Err(_) => None,
+    };
+    let Some(next) = fx_settings_with(current, connection) else {
+        return Ok(format!(
+            "fx: providers.{FX_CONNECTION} in {} is current",
+            path.display()
+        ));
+    };
+    if dry_run {
+        return Ok(format!(
+            "fx: would set providers.{FX_CONNECTION} in {} (no key; reads ${})",
+            path.display(),
+            connection["auth"]["env"].as_str().unwrap_or_default()
+        ));
+    }
+    write_fx_settings(path, &next)?;
+    Ok(format!(
+        "fx: set providers.{FX_CONNECTION} in {}",
+        path.display()
+    ))
+}
+
+#[cfg(feature = "native")]
+fn write_fx_settings(path: &Path, settings: &serde_json::Value) -> Result<(), String> {
+    let dir = path.parent().unwrap_or(Path::new("."));
+    crate::config::ensure_private_dir(dir)
+        .map_err(|e| format!("Could not create {}: {e}", dir.display()))?;
+    // A dotfiles symlink stays a symlink: write the file it points at.
+    let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let tmp = target.with_extension("json.anyr-tmp");
+    let body = serde_json::to_vec_pretty(settings).unwrap_or_else(|_| b"{}".to_vec());
+    crate::config::write_private(&tmp, &body)
+        .map_err(|e| format!("Could not write {}: {e}", tmp.display()))?;
+    std::fs::rename(&tmp, &target).map_err(|e| format!("Could not write {}: {e}", target.display()))
+}
+
+#[cfg(not(feature = "native"))]
+fn write_fx_settings(path: &Path, settings: &serde_json::Value) -> Result<(), String> {
+    let _ = (path, settings);
+    Ok(())
+}
+
 /// Build Pi `models.json` for the AnyRouter provider.
 ///
 /// Pi's `/model` picker only lists ids present under `providers.anyrouter.models`.
@@ -1556,6 +1723,29 @@ pub fn spawn_child(
             eprintln!("Could not start \"{command}\": {err}");
             1
         }
+    }
+}
+
+#[cfg(test)]
+mod fx_tests {
+    use super::*;
+
+    #[test]
+    fn an_fx_without_custom_connections_is_refused_with_the_fix() {
+        assert_eq!(parse_fx_version("0.0.14\n"), Some((0, 0, 14)));
+        assert_eq!(parse_fx_version("v0.1.2"), Some((0, 1, 2)));
+        assert_eq!(parse_fx_version("garbage"), None);
+        let err = check_fx_version(Some("0.0.5")).unwrap_err();
+        assert!(
+            err.contains("found 0.0.5") && err.contains("fx upgrade"),
+            "{err}"
+        );
+        assert!(check_fx_version(Some("0.0.11")).is_ok());
+        assert!(check_fx_version(Some("0.0.14")).is_ok());
+        assert!(
+            check_fx_version(None).is_ok(),
+            "unknown version must not block"
+        );
     }
 }
 

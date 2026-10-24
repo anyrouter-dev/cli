@@ -388,6 +388,7 @@ fn documented_commands_are_known_not_unknown() {
         "aider",
         "crush",
         "kilo",
+        "fx",
         "upgrade",
         "update",
         "onboard",
@@ -3272,6 +3273,7 @@ fn launch_help_lists_claude_only_flags_for_claude_alone() {
         ("aider", "passes --yes-always"),
         ("crush", "passes -y"),
         ("kilo", "passes --auto"),
+        ("fx", "sets FX_PERMISSION_MODE=full-access"),
     ] {
         let (code, out, _) = run(&[agent, "--help"]);
         assert_eq!(code, 0);

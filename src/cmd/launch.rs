@@ -11,11 +11,12 @@ use crate::parse::{get_string_flag, ParsedArgs};
 use crate::spawn::{
     apply_model_id_routing, apply_routing_env, build_tool_env, catalog_context_window,
     catalog_model_id, crush_user_dir, default_profile_for_env, display_model_id, env_command_path,
-    grok_user_home, is_auto_model, is_user_preset, is_virtual_preset, model_args_for,
-    normalize_effort, opencode_standalone_args, prepare_crush_config, prepare_grok_home,
-    prepare_pi_wrapper, provider_args_for, render_dry_run, resolve_tool, spawn_child,
-    BuildToolEnvInput, GROK_UNSET_ENV,
+    fx_connection, fx_settings_path, grok_user_home, is_auto_model, is_user_preset,
+    is_virtual_preset, model_args_for, normalize_effort, opencode_standalone_args,
+    prepare_crush_config, prepare_grok_home, prepare_pi_wrapper, provider_args_for, render_dry_run,
+    resolve_tool, spawn_child, tool_base_url, BuildToolEnvInput, GROK_UNSET_ENV,
 };
+use crate::spawn::{check_fx_version, fx_version, prepare_fx_settings};
 use crate::term;
 
 use crate::cmd::decision::{chat_model_error, is_systemone_model};
@@ -313,6 +314,32 @@ pub(crate) fn launch(
     if let Some(binding) = existing.as_ref().and_then(|c| c.agent_binding(tool_name)) {
         agent_args.extend(binding.args.iter().cloned());
     }
+    // Written only once the binary is found, so a missing fx leaves ~/.fx alone.
+    let fx_settings = if tool_name == "fx" {
+        let settings = fx_settings_path(&|k| env.get(k).cloned())
+            .ok_or("fx keeps its settings in $HOME/.fx; set HOME.")?;
+        let catalog = if catalog_lookup_enabled(env) {
+            take_catalog(&mut resolved, &spot, &base, &key)
+        } else {
+            Vec::new()
+        };
+        let connection = fx_connection(
+            &tool_base_url(&profile, &tool),
+            &tool.auth_env,
+            &model,
+            &catalog,
+        );
+        Some((settings, connection))
+    } else {
+        None
+    };
+    let fx_ready = |resolved: &str| -> Result<(), String> {
+        let Some((settings, connection)) = &fx_settings else {
+            return Ok(());
+        };
+        check_fx_version(fx_version(resolved).as_deref())?;
+        prepare_fx_settings(settings, connection, false).map(|_| ())
+    };
     if let Some(h) = &headless {
         agent_args.extend(h.args.clone());
         env_map.extend(h.extra_env.iter().cloned());
@@ -363,6 +390,9 @@ pub(crate) fn launch(
         }
         println!("{}", render_dry_run(&command, &args, &env_map));
         println!("{}", mcp.summary);
+        if let Some((settings, connection)) = &fx_settings {
+            println!("{}", prepare_fx_settings(settings, connection, true)?);
+        }
         return Ok(0);
     }
     let install = if parsed.flag_true("install") {
@@ -380,6 +410,7 @@ pub(crate) fn launch(
             ),
         )?;
         let resolved = ensure_tool_installed(tool_name, &command, install)?;
+        fx_ready(&resolved)?;
         if tool_name == "opencode" {
             args = opencode_standalone_args(
                 &args,
@@ -397,6 +428,7 @@ pub(crate) fn launch(
         ));
     }
     let resolved = ensure_tool_installed(tool_name, &command, install)?;
+    fx_ready(&resolved)?;
     // Persist on top of the existing config when there is one; a fresh setup
     // (no config yet) gets one so last_tool and the model are remembered.
     let mut cfg = existing.clone().unwrap_or_else(|| crate::config::Config {

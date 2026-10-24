@@ -17,6 +17,9 @@ const FAKE_AGENT: &str = r#"#!/usr/bin/env python3
 import json, os, sys, urllib.request, urllib.error
 agent = os.path.basename(sys.argv[0]).removeprefix("fake-")
 env = os.environ
+if sys.argv[1:] == ["--version"]:
+    print("0.0.14")
+    raise SystemExit(0)
 if any(env.get("ANYR_TEST_KEY", "-") in a for a in sys.argv):
     raise SystemExit("key in argv")
 def arg(flag):
@@ -36,6 +39,10 @@ elif agent == "crush":
     url, key = p["base_url"] + "/chat/completions", env[p["api_key"].removeprefix("$")]
     model = cfg["models"]["large"]["model"]
     assert env["CRUSH_GLOBAL_DATA"] != os.path.expanduser("~/.local/share/crush")
+elif agent == "fx":
+    cfg = json.load(open(os.path.join(env["HOME"], ".fx", "settings.json")))
+    c = cfg["providers"][env["FX_PROVIDER"]]
+    url, key, model = c["base_url"] + "/chat/completions", env[c["auth"]["env"]], env["FX_MODEL"]
 elif agent == "kilo":
     cfg = json.loads(env["KILO_CONFIG_CONTENT"])
     o = cfg["provider"]["anyrouter"]["options"]
@@ -280,6 +287,7 @@ fn missing_binary_names_the_install_command() {
         ("aider", "aider.chat/install.sh"),
         ("crush", "@charmland/crush"),
         ("kilo", "@kilocode/cli"),
+        ("fx", "fx.sh/setup.sh"),
     ] {
         let dir = temp_dir(&format!("missing-{agent}"));
         let home = dir.join("home");
@@ -296,6 +304,10 @@ fn missing_binary_names_the_install_command() {
         let err = String::from_utf8_lossy(&out.stderr);
         assert!(!out.status.success(), "{agent}");
         assert!(err.contains(install), "{agent}: {err}");
+        assert!(
+            !home.join(".fx").exists(),
+            "{agent}: a failed launch created ~/.fx"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
@@ -337,5 +349,123 @@ fn crush_data_dir_is_private_and_the_users_data_file_is_untouched() {
     );
     assert!(private.is_dir());
     assert_eq!(std::fs::read_to_string(&user_data).unwrap(), planted);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn fx_gets_only_the_anyrouter_connection_in_its_settings() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = temp_dir("fx");
+    let home = dir.join("home");
+    let settings = home.join(".fx").join("settings.json");
+    std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    std::fs::write(
+        &settings,
+        r#"{"provider":"gateway","theme":"dark","providers":{"local":{"protocol":"openai-chat-completions","base_url":"http://127.0.0.1:11434/v1","auth":{"type":"none"}}}}"#,
+    )
+    .unwrap();
+    let before = std::fs::read_to_string(&settings).unwrap();
+    let dry = anyr(
+        &dir,
+        &home,
+        "fx",
+        &["--dry-run", "--command-path", "/nonexistent/fx"],
+    )
+    .output()
+    .unwrap();
+    assert!(
+        dry.status.success(),
+        "{}",
+        String::from_utf8_lossy(&dry.stderr)
+    );
+    assert!(String::from_utf8_lossy(&dry.stdout).contains("would set providers.anyrouter"));
+    assert_eq!(
+        std::fs::read_to_string(&settings).unwrap(),
+        before,
+        "--dry-run wrote"
+    );
+
+    let fake = dir.join("fake-fx");
+    std::fs::write(&fake, FAKE_AGENT).unwrap();
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let launch = |what: &str| {
+        let (base, rx) = serve(vec![(401, r#"{"error":{"message":"x"}}"#.into())]);
+        let out = anyr(&dir, &home, "fx", &["--base-url", &base, "--command-path"])
+            .arg(&fake)
+            .output()
+            .unwrap();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success(), "{what}: {err}");
+        let seen = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(seen.auth, format!("Bearer {KEY}"), "{what}");
+        assert!(seen.body.contains(MODEL), "{what}: {}", seen.body);
+        (base, std::fs::read_to_string(&settings).unwrap())
+    };
+    let (base, first) = launch("first launch");
+    assert!(!first.contains(KEY), "settings.json must not hold the key");
+    let cfg: serde_json::Value = serde_json::from_str(&first).unwrap();
+    assert_eq!(
+        cfg["provider"], "gateway",
+        "the user's own provider choice changed"
+    );
+    assert_eq!(cfg["theme"], "dark");
+    assert!(
+        cfg["providers"]["local"].is_object(),
+        "user connection dropped"
+    );
+    let conn = &cfg["providers"]["anyrouter"];
+    assert_eq!(conn["base_url"], format!("{base}/v1"));
+    assert_eq!(conn["auth"]["env"], "ANYROUTER_API_KEY");
+    let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+    assert_eq!(
+        mode(&settings),
+        0o600,
+        "fx ignores a settings.json others can read"
+    );
+    assert_eq!(mode(settings.parent().unwrap()), 0o700);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn fx_connection_is_left_alone_when_already_current() {
+    let conn = serde_json::json!({ "base_url": "https://gw.example/api/v1" });
+    let once = anyr_cli::spawn::fx_settings_with(None, &conn).expect("first write");
+    assert_eq!(anyr_cli::spawn::fx_settings_with(Some(once), &conn), None);
+}
+
+#[cfg(unix)]
+#[test]
+fn fx_settings_symlink_is_written_through_not_replaced() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = temp_dir("fx-link");
+    let home = dir.join("home");
+    let dotfiles = dir.join("dotfiles").join("fx-settings.json");
+    std::fs::create_dir_all(dotfiles.parent().unwrap()).unwrap();
+    std::fs::write(&dotfiles, r#"{"theme":"dark"}"#).unwrap();
+    std::fs::create_dir_all(home.join(".fx")).unwrap();
+    let link = home.join(".fx").join("settings.json");
+    std::os::unix::fs::symlink(&dotfiles, &link).unwrap();
+    let fake = dir.join("fake-fx");
+    std::fs::write(&fake, FAKE_AGENT).unwrap();
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let (base, _rx) = serve(vec![(401, r#"{"error":{"message":"x"}}"#.into())]);
+    let out = anyr(&dir, &home, "fx", &["--base-url", &base, "--command-path"])
+        .arg(&fake)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(std::fs::symlink_metadata(&link)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    let cfg: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&dotfiles).unwrap()).unwrap();
+    assert_eq!(cfg["theme"], "dark");
+    assert!(cfg["providers"]["anyrouter"].is_object());
     let _ = std::fs::remove_dir_all(&dir);
 }
