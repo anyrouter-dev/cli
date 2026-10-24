@@ -12,9 +12,10 @@ use crate::parse::{get_string_flag, ParsedArgs};
 use crate::spawn::{
     apply_model_id_routing, apply_routing_env, build_tool_env, catalog_context_window,
     catalog_model_id, default_profile_for_env, display_model_id, effort_args_for, env_command_path,
-    is_auto_model, is_user_preset, is_virtual_preset, model_args_for, normalize_effort,
-    opencode_major_version, opencode_standalone_args, prepare_pi_wrapper, provider_args_for,
-    render_dry_run, resolve_tool, spawn_child, BuildToolEnvInput,
+    grok_user_home, is_auto_model, is_user_preset, is_virtual_preset, model_args_for,
+    normalize_effort, opencode_major_version, opencode_standalone_args, prepare_grok_home,
+    prepare_pi_wrapper, provider_args_for, render_dry_run, resolve_tool, spawn_child,
+    BuildToolEnvInput, GROK_UNSET_ENV,
 };
 use crate::term;
 
@@ -160,6 +161,10 @@ pub(crate) fn launch(
         let catalog = fetch_models(&base, Some(&key)).unwrap_or_default();
         prepare_pi_wrapper(&mut env_map, &path, &profile, &tool, &model, &catalog)?;
     }
+    if tool_name == "grok" {
+        let user_home = grok_user_home(&|k| env.get(k).cloned());
+        prepare_grok_home(&mut env_map, &path, &key, user_home.as_deref())?;
+    }
     let mut args = Vec::new();
     args.extend(effort_args_for(tool_name, effort.as_deref()));
     args.extend(provider_args_for(tool_name, &profile));
@@ -179,6 +184,11 @@ pub(crate) fn launch(
         env_map.extend(h.extra_env.iter().cloned());
     }
     args.extend(parsed.passthrough.clone());
+    let unset: &[&str] = if tool_name == "grok" {
+        GROK_UNSET_ENV
+    } else {
+        &[]
+    };
     let command = get_string_flag(&parsed.flags, "command-path")
         .or_else(|| env_command_path(tool_name, env))
         .unwrap_or_else(|| tool.command.clone());
@@ -202,7 +212,7 @@ pub(crate) fn launch(
         if tool_name == "opencode" {
             args = opencode_standalone_args(&args, opencode_major_version(&resolved));
         }
-        return Ok(spawn_child(&resolved, &args, &env_map));
+        return Ok(spawn_child(&resolved, &args, &env_map, unset));
     }
     let resolved = ensure_tool_installed(
         tool_name,
@@ -249,5 +259,5 @@ pub(crate) fn launch(
     if tool_name == "opencode" {
         args = opencode_standalone_args(&args, opencode_major_version(&resolved));
     }
-    Ok(spawn_child(&resolved, &args, &env_map))
+    Ok(spawn_child(&resolved, &args, &env_map, unset))
 }
