@@ -194,6 +194,16 @@ Columns: time (local), model, provider, status (error code inline), tokens in
 and out, cost, latency. `--json` prints the raw API body. A key without the
 needed scope exits 4 and names the scope.
 
+### One call: `anyr generation <id>`
+
+```bash
+anyr generation gen_abc123           # alias: anyr gen
+anyr gen gen_abc123 --json | jq .total_cost
+```
+
+Shows model, provider, status, tokens, cost, latency, cache hit and time for
+the response `id` (or `x-anyrouter-generation-id`). An unknown id prints the server message and exits 1.
+
 ### Credit ledger: `anyr transactions`
 
 ```bash

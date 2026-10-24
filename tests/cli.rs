@@ -374,6 +374,8 @@ fn documented_commands_are_known_not_unknown() {
         "delegate",
         "keys",
         "logs",
+        "generation",
+        "gen",
         "audit",
         "logout",
         "transactions",
