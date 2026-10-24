@@ -133,6 +133,8 @@ pub(super) static SERVERS: [ServerSpec; 2] = [
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Absent {
     NeedsMac,
+    /// A Mac, but on a macOS older than the server's minimum.
+    NeedsNewerMacos,
     NotInstalled,
     /// Installed, but not running (start launches it unless `--no-launch`).
     Stopped,
@@ -143,6 +145,7 @@ impl Absent {
     pub(super) fn name(self) -> &'static str {
         match self {
             Absent::NeedsMac => "needs_mac",
+            Absent::NeedsNewerMacos => "needs_newer_macos",
             Absent::NotInstalled => "not_installed",
             Absent::Stopped => "stopped",
         }
@@ -154,6 +157,9 @@ impl ServerSpec {
     pub(super) fn next_step(&self, why: Absent) -> String {
         match why {
             Absent::NeedsMac => "needs a Mac".into(),
+            Absent::NeedsNewerMacos => {
+                format!("update to macOS {} or later", self.min_macos.unwrap_or(26))
+            }
             Absent::NotInstalled => format!("not installed: {}", self.install_hint),
             Absent::Stopped => self.enable_hint.into(),
         }

@@ -96,6 +96,13 @@ fn absent_check(
     let spec = servers::spec(model);
     let (detail, fix) = match why {
         Absent::NeedsMac => (spec.next_step(why), fix_off_mac.to_string()),
+        Absent::NeedsNewerMacos => (
+            format!("needs macOS {} or later", spec.min_macos.unwrap_or(26)),
+            format!(
+                "{} (System Settings > General > Software Update)",
+                spec.next_step(why)
+            ),
+        ),
         Absent::NotInstalled => ("not installed".to_string(), spec.install_hint.to_string()),
         Absent::Stopped => (
             "installed, not running".to_string(),
@@ -146,14 +153,12 @@ pub(super) fn run_checks(p: &dyn Probe, bin: &str) -> Vec<Check> {
     let off_mac_fix = "serve Ollama or LM Studio, or pass --target <url>";
     let apple = OnDeviceModel::AppleFoundation;
     if !apple_ok {
-        let mut c = absent_check("fm serve", apple, Absent::NeedsMac, bin, off_mac_fix);
-        if mac {
-            c.detail = format!(
-                "needs macOS {} or later",
-                servers::spec(apple).min_macos.unwrap_or(26)
-            );
-            c.fix = "update in System Settings > General > Software Update".into();
-        }
+        let why = if mac {
+            Absent::NeedsNewerMacos
+        } else {
+            Absent::NeedsMac
+        };
+        let c = absent_check("fm serve", apple, why, bin, off_mac_fix);
         out.push(c);
     } else {
         out.push(match &fm_ids {
@@ -388,10 +393,26 @@ mod tests {
             "anyr",
         );
         assert!(get(&c, "macOS").fix.contains("Software Update"));
-        assert_eq!(get(&c, "fm serve").model.unwrap().1, "needs_mac");
+        assert_eq!(get(&c, "fm serve").model.unwrap().1, "needs_newer_macos");
         assert!(get(&c, "fm serve").detail.contains("macOS 26"));
+        assert!(get(&c, "fm serve")
+            .fix
+            .contains("update to macOS 26 or later"));
         // Decider still serves, so this is not a failure.
         assert!(!failed(&c));
+    }
+
+    #[test]
+    fn non_mac_is_needs_mac_not_needs_newer_macos() {
+        let c = run_checks(
+            &Fake {
+                mac: false,
+                major: None,
+                ..Fake::default()
+            },
+            "anyr",
+        );
+        assert_eq!(get(&c, "fm serve").model.unwrap().1, "needs_mac");
     }
 
     #[test]
