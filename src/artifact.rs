@@ -2,7 +2,7 @@
 //!
 //!   anyr artifact publish <file|dir> [--title T] [--visibility V] [--id ID] [--label L]
 //!                         [--show-author|--no-show-author]
-//!   anyr artifact ls | rm <id> | visibility <id> [<v>] [--show-author|--no-show-author]
+//!   anyr artifact ls [--limit N] [--cursor C | --all] | rm <id> | visibility <id> [<v>] [--show-author|--no-show-author]
 //!
 //! stdout carries the URL (or the server JSON with `--json`); progress and
 //! errors go to stderr. Exit codes: 0 ok, 1 error, 2 usage or version
@@ -34,6 +34,8 @@ pub const FLAGS: &[&str] = &[
     "id",
     "label",
     "limit",
+    "cursor",
+    "all",
     "show-author",
     "no-show-author",
 ];
@@ -261,13 +263,38 @@ fn upload_missing(ctx: &Ctx, upload: &str, started: &Value, entries: &[Entry]) -
                 entry.rel
             ))
         );
+        // The manifest already promised this hash and size; a file edited
+        // since would be rejected by the server, so stop before sending it.
+        verify_unchanged(entry)?;
         let path = format!("/v1/artifacts/uploads/{upload}/files/{}", entry.sha256);
         let url = crate::http::join_api(&ctx.base, &path);
         let (status, text) =
             crate::http::http_put_file(&url, Some(key), &entry.abs).map_err(|e| Fail::new(1, e))?;
-        check(ctx.key.as_deref(), status, &text)?;
+        if let Err(f) = check(ctx.key.as_deref(), status, &text) {
+            // A rejected blob may mean the file changed mid-upload; say so.
+            verify_unchanged(entry)?;
+            return Err(f);
+        }
     }
     Ok(())
+}
+
+/// Re-hash a file against its manifest entry. A mismatch means it changed
+/// after the manifest was built, so the publish fails and nothing is
+/// committed.
+fn verify_unchanged(entry: &Entry) -> Res<()> {
+    let size = fs::metadata(&entry.abs).map(|m| m.len()).ok();
+    if size == Some(entry.size) && hash_file(&entry.abs)? == entry.sha256 {
+        return Ok(());
+    }
+    Err(Fail::new(
+        1,
+        format!(
+            "{} {} changed while publishing; nothing was committed. Run the command again.",
+            term::err("error:"),
+            entry.rel
+        ),
+    ))
 }
 
 fn print_published(ctx: &Ctx, done: &Value) -> Res<()> {
@@ -302,24 +329,68 @@ fn private_hint(done: &Value) -> Option<String> {
     ))
 }
 
+/// Hard stop for `ls --all`, so a server that keeps handing back cursors
+/// cannot loop the CLI forever.
+const MAX_PAGES: usize = 1000;
+
 fn list(ctx: &Ctx, parsed: &ParsedArgs) -> Res<()> {
-    let q = match get_string_flag(&parsed.flags, "limit") {
-        Some(n) => {
-            let n: u32 = n
-                .trim()
-                .parse()
+    let limit = match get_string_flag(&parsed.flags, "limit") {
+        Some(n) => Some(
+            n.trim()
+                .parse::<u32>()
                 .ok()
-                .filter(|n| *n > 0)
-                .ok_or_else(|| usage("--limit must be a positive whole number."))?;
-            format!("?limit={n}")
-        }
-        None => String::new(),
+                .filter(|n| (1..=100).contains(n))
+                .ok_or_else(|| usage("--limit must be a whole number from 1 to 100."))?,
+        ),
+        None => None,
     };
-    let (_, v) = call(ctx, "GET", &format!("/v1/artifacts{q}"), None)?;
-    if v.get("next_cursor").is_some_and(|c| !c.is_null()) {
+    let cursor = get_string_flag(&parsed.flags, "cursor");
+    let all = parsed.flag_true("all");
+    if all && cursor.is_some() {
+        return Err(usage("--all and --cursor cannot be used together."));
+    }
+    let page_path = |cursor: Option<&str>| {
+        let mut q = Vec::new();
+        if let Some(n) = limit {
+            q.push(format!("limit={n}"));
+        }
+        if let Some(c) = cursor {
+            q.push(format!("cursor={}", crate::api::encode(c)));
+        }
+        if q.is_empty() {
+            "/v1/artifacts".to_string()
+        } else {
+            format!("/v1/artifacts?{}", q.join("&"))
+        }
+    };
+    let (_, mut v) = call(ctx, "GET", &page_path(cursor.as_deref()), None)?;
+    if all {
+        let mut rows = crate::api::rows(&v);
+        let mut seen: Vec<String> = Vec::new();
+        let mut pages = 1;
+        while let Some(next) = next_cursor(&v) {
+            if seen.contains(&next) || pages >= MAX_PAGES {
+                return Err(Fail::new(
+                    1,
+                    format!(
+                        "{} the server kept returning cursors (stopped after {pages} pages); use --cursor to continue by hand.",
+                        term::err("error:")
+                    ),
+                ));
+            }
+            seen.push(next.clone());
+            let (_, page) = call(ctx, "GET", &page_path(Some(&next)), None)?;
+            rows.extend(crate::api::rows(&page));
+            v = page;
+            pages += 1;
+        }
+        v = json!({ "data": rows, "next_cursor": null });
+    } else if let Some(next) = next_cursor(&v) {
         eprintln!(
             "{}",
-            term::dim("more artifacts exist; raise --limit to see them.")
+            term::dim(&format!(
+                "more artifacts exist; run with --cursor {next}, or use --all."
+            ))
         );
     }
     crate::api::list(
@@ -329,6 +400,13 @@ fn list(ctx: &Ctx, parsed: &ParsedArgs) -> Res<()> {
     )
     .map(|_| ())
     .map_err(|e| Fail::new(1, e))
+}
+
+fn next_cursor(page: &Value) -> Option<String> {
+    page.get("next_cursor")
+        .and_then(Value::as_str)
+        .filter(|c| !c.is_empty())
+        .map(str::to_string)
 }
 
 fn remove(ctx: &Ctx, parsed: &ParsedArgs, id: &str) -> Res<()> {

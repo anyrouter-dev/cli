@@ -154,7 +154,9 @@ stable `Idempotency-Key`, so the server returns the original instead of a copy.
 anyr artifact publish report.html --title "Q3 report"   # prints the URL
 anyr artifact publish ./site --visibility link          # folder upload
 anyr artifact publish report.html --id <id> --label v2  # new version
-anyr artifact ls
+anyr artifact ls                     # first page
+anyr artifact ls --cursor <c>        # next page (cursor printed to stderr)
+anyr artifact ls --all --json        # every page, one merged result
 anyr artifact visibility <id> public --yes
 anyr artifact rm <id> --yes
 ```

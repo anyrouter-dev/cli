@@ -12,12 +12,21 @@ type Seen = Arc<Mutex<Vec<String>>>;
 /// Answer requests in order with `(status, body)`; `seen` collects
 /// "METHOD PATH AUTH BODY" per request.
 fn serve(script: Vec<(u16, String)>) -> (String, Seen) {
+    serve_hook(script, |_| {})
+}
+
+/// Like `serve`, but runs `before(i)` once request `i` has arrived and
+/// before its response is sent, so a test can change the world mid-publish.
+fn serve_hook(
+    script: Vec<(u16, String)>,
+    before: impl Fn(usize) + Send + 'static,
+) -> (String, Seen) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let base = format!("http://{}/api", listener.local_addr().unwrap());
     let seen: Seen = Arc::default();
     let log = seen.clone();
     std::thread::spawn(move || {
-        for (status, body) in script {
+        for (i, (status, body)) in script.into_iter().enumerate() {
             let Ok((mut stream, _)) = listener.accept() else {
                 return;
             };
@@ -49,6 +58,7 @@ fn serve(script: Vec<(u16, String)>) -> (String, Seen) {
                 auth,
                 String::from_utf8_lossy(&req)
             ));
+            before(i);
             let resp = format!(
                 "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                 body.len()
@@ -742,4 +752,209 @@ fn both_author_flags_or_neither_value_are_usage_errors() {
         &["artifact", "visibility", "abc123", "--key", "sk-ar-test"],
     );
     assert_eq!(code, 2, "{err}");
+}
+
+const PAGE_ROW: &str =
+    r#"{"id":"ID","title":"T","visibility":"private","current_version":1,"url":"u"}"#;
+
+fn page(ids: &[&str], next: Option<&str>) -> String {
+    let rows: Vec<String> = ids.iter().map(|i| PAGE_ROW.replace("ID", i)).collect();
+    let next = next.map_or("null".to_string(), |n| format!("\"{n}\""));
+    format!(r#"{{"data":[{}],"next_cursor":{next}}}"#, rows.join(","))
+}
+
+#[test]
+fn ls_all_follows_next_cursor_and_merges_pages() {
+    let dir = tmp("lsall");
+    let (base, seen) = serve(vec![
+        (200, page(&["a1", "a2"], Some("c 1"))),
+        (200, page(&["b1"], Some("c2"))),
+        (200, page(&["c1"], None)),
+    ]);
+    let (code, out, err) = anyr(
+        &dir,
+        &[
+            "artifact",
+            "ls",
+            "--all",
+            "--limit",
+            "2",
+            "--json",
+            "--base-url",
+            &base,
+            "--key",
+            "sk-ar-test",
+        ],
+    );
+    assert_eq!(code, 0, "{err}");
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let ids: Vec<&str> = v["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["id"].as_str().unwrap())
+        .collect();
+    // WHY: --all must not silently stop at the first page.
+    assert_eq!(ids, ["a1", "a2", "b1", "c1"]);
+    assert!(v["next_cursor"].is_null());
+    let seen = seen.lock().unwrap();
+    assert!(
+        seen[0].starts_with("GET /api/v1/artifacts?limit=2 "),
+        "{}",
+        seen[0]
+    );
+    assert!(
+        seen[1].starts_with("GET /api/v1/artifacts?limit=2&cursor=c%201 "),
+        "{}",
+        seen[1]
+    );
+    assert!(
+        seen[2].starts_with("GET /api/v1/artifacts?limit=2&cursor=c2 "),
+        "{}",
+        seen[2]
+    );
+}
+
+#[test]
+fn ls_cursor_fetches_one_page_and_a_single_page_hints_the_next_cursor() {
+    let dir = tmp("lscursor");
+    let (base, seen) = serve(vec![(200, page(&["b1"], Some("c3")))]);
+    let (code, out, err) = anyr(
+        &dir,
+        &[
+            "artifact",
+            "ls",
+            "--cursor",
+            "c2",
+            "--base-url",
+            &base,
+            "--key",
+            "sk-ar-test",
+        ],
+    );
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out.trim(), "b1\tT\tprivate\t1\tu");
+    assert!(err.contains("--cursor c3"), "{err}");
+    assert!(seen.lock().unwrap()[0].starts_with("GET /api/v1/artifacts?cursor=c2 "));
+}
+
+#[test]
+fn ls_all_stops_on_a_repeated_cursor() {
+    let dir = tmp("lsloop");
+    let (base, seen) = serve(vec![
+        (200, page(&["a1"], Some("same"))),
+        (200, page(&["a2"], Some("same"))),
+        (200, page(&["a3"], Some("same"))),
+    ]);
+    let (code, out, err) = anyr(
+        &dir,
+        &[
+            "artifact",
+            "ls",
+            "--all",
+            "--base-url",
+            &base,
+            "--key",
+            "sk-ar-test",
+        ],
+    );
+    assert_eq!(code, 1, "{err}");
+    assert!(out.is_empty(), "{out}");
+    assert!(err.contains("kept returning cursors"), "{err}");
+    assert_eq!(seen.lock().unwrap().len(), 2);
+}
+
+#[test]
+fn ls_rejects_bad_paging_flags_before_any_request() {
+    let dir = tmp("lsbad");
+    let (base, seen) = serve(vec![]);
+    for extra in [
+        &["--limit", "101"][..],
+        &["--limit", "0"],
+        &["--all", "--cursor", "x"],
+    ] {
+        let mut args = vec!["artifact", "ls", "--base-url", &base, "--key", "sk-ar-test"];
+        args.extend_from_slice(extra);
+        let (code, _, err) = anyr(&dir, &args);
+        assert_eq!(code, 2, "{extra:?}: {err}");
+    }
+    assert!(seen.lock().unwrap().is_empty());
+}
+
+#[test]
+fn file_changed_after_hashing_fails_clearly_and_commits_nothing() {
+    let dir = tmp("changed");
+    let site = dir.join("site");
+    std::fs::create_dir_all(&site).unwrap();
+    let file = site.join("a.css");
+    std::fs::write(&file, "body{}").unwrap();
+    let started = format!(
+        r#"{{"upload_id":"up1","missing":[{{"path":"a.css","sha256":"{}","put_url":"x"}}]}}"#,
+        sha("body{}")
+    );
+    // The file is edited while the server answers the manifest request.
+    let edited = file.clone();
+    let (base, seen) = serve_hook(vec![(200, started)], move |i| {
+        if i == 0 {
+            std::fs::write(&edited, "body{color:red}").unwrap();
+        }
+    });
+    let (code, out, err) = anyr(
+        &dir,
+        &[
+            "artifact",
+            "publish",
+            site.to_str().unwrap(),
+            "--base-url",
+            &base,
+            "--key",
+            "sk-ar-test",
+        ],
+    );
+    // WHY: uploading changed bytes under the old hash corrupts the artifact.
+    assert_eq!(code, 1, "{err}");
+    assert!(out.is_empty(), "{out}");
+    assert!(err.contains("a.css changed while publishing"), "{err}");
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 1, "no PUT and no commit: {seen:?}");
+}
+
+#[test]
+fn rejected_blob_after_a_mid_upload_edit_reports_the_change() {
+    let dir = tmp("rejected");
+    let site = dir.join("site");
+    std::fs::create_dir_all(&site).unwrap();
+    let file = site.join("a.css");
+    std::fs::write(&file, "body{}").unwrap();
+    let started = format!(
+        r#"{{"upload_id":"up1","missing":[{{"path":"a.css","sha256":"{}","put_url":"x"}}]}}"#,
+        sha("body{}")
+    );
+    // The edit lands while the server handles the PUT, then it rejects the blob.
+    let edited = file.clone();
+    let (base, _) = serve_hook(
+        vec![
+            (200, started),
+            (400, r#"{"error":{"message":"sha256 mismatch"}}"#.into()),
+        ],
+        move |i| {
+            if i == 1 {
+                std::fs::write(&edited, "body{color:red}").unwrap();
+            }
+        },
+    );
+    let (code, _, err) = anyr(
+        &dir,
+        &[
+            "artifact",
+            "publish",
+            site.to_str().unwrap(),
+            "--base-url",
+            &base,
+            "--key",
+            "sk-ar-test",
+        ],
+    );
+    assert_eq!(code, 1, "{err}");
+    assert!(err.contains("a.css changed while publishing"), "{err}");
 }
