@@ -10,6 +10,22 @@ GitHub Releases use this file as the release notes (full history through that ta
 
 * **cli:** add `anyr decision` for typed `POST /api/v1/decisions` requests with flag or stdin JSON input. Known Decisions models are refused by chat-agent launchers. ([duyet/anyrouter#3550](https://github.com/duyet/anyrouter/issues/3550))
 
+## [0.1.30](https://github.com/anyrouter-dev/cli/compare/v0.1.29...v0.1.30) (2026-10-24)
+
+
+### Features
+
+* **relay:** name the device after this Mac, keep it, add relay rename ([#183](https://github.com/anyrouter-dev/cli/issues/183)) ([6c179a6](https://github.com/anyrouter-dev/cli/commit/6c179a6c548df5f0cf32729d563bee5d1a6b0f0d))
+* **relay:** start fm serve and the Decider app from relay start ([#185](https://github.com/anyrouter-dev/cli/issues/185)) ([85e4441](https://github.com/anyrouter-dev/cli/commit/85e4441d04bf27563bb81dff8ce9e795d11ea6ed))
+
+
+### Bug Fixes
+
+* **grok:** send the AnyRouter key even when a grok login session exists ([#186](https://github.com/anyrouter-dev/cli/issues/186)) ([63d4aae](https://github.com/anyrouter-dev/cli/commit/63d4aae391ba10f109ef4c6203f890ea4e4d0b7e))
+* **opencode:** run OpenCode 2.x standalone so the AnyRouter provider applies ([#181](https://github.com/anyrouter-dev/cli/issues/181)) ([2f9939c](https://github.com/anyrouter-dev/cli/commit/2f9939ceda69b67f14c04268c58e45ea16009f33))
+* **pi:** read the AnyRouter key through a command so current Pi stops sending the env name ([#173](https://github.com/anyrouter-dev/cli/issues/173)) ([97e8cf7](https://github.com/anyrouter-dev/cli/commit/97e8cf764aaa8794ac9532ecb2c61863da5c76fb))
+* **presets:** launch with --preset on an inference key instead of demanding a management key ([#178](https://github.com/anyrouter-dev/cli/issues/178)) ([5d3479d](https://github.com/anyrouter-dev/cli/commit/5d3479d7925665c3eee85aeaf0eac48fd944d11c))
+
 ## [0.1.29](https://github.com/anyrouter-dev/cli/compare/v0.1.28...v0.1.29) (2026-10-24)
 
 
