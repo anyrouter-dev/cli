@@ -119,8 +119,8 @@ pub fn tool_hint(tool: &str) -> Option<ToolHint> {
         },
         "pi" => ToolHint {
             label: "Pi",
-            install: "npm install -g @mariozechner/pi-coding-agent",
-            docs: "https://github.com/mariozechner/pi-mono",
+            install: "npm install -g @earendil-works/pi-coding-agent",
+            docs: "https://github.com/earendil-works/pi",
             env: "ANYROUTER_PI_PATH",
         },
         _ => return None,

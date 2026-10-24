@@ -371,11 +371,13 @@ pub fn build_tool_env(input: BuildToolEnvInput<'_>) -> BTreeMap<String, String> 
         let base = tool_base_url(input.profile, input.tool);
         let model_id = pi_resolved_model(input.model);
         let entries = pi_catalog_models(&model_id, &[]);
-        env.insert(
-            "PI_MODELS_JSON".into(),
-            serde_json::to_string(&pi_models_config(&base, &entries))
-                .unwrap_or_else(|_| "{}".into()),
-        );
+        if let Ok(api_key) = pi_api_key_ref(&input.tool.auth_env) {
+            env.insert(
+                "PI_MODELS_JSON".into(),
+                serde_json::to_string(&pi_models_config(&base, &api_key, &entries))
+                    .unwrap_or_else(|_| "{}".into()),
+            );
+        }
     }
     if input.tool_name == "opencode" {
         env.remove(&input.tool.base_url_env);
@@ -760,6 +762,31 @@ pub fn pi_resolved_model(model: &str) -> String {
     }
 }
 
+/// Pi `models.json` `apiKey` that reads the key from `auth_env` when Pi sends a request.
+///
+/// Pi changed how it reads a plain `apiKey` string. The frozen
+/// `@mariozechner/pi-coding-agent` (0.73) looks it up as an env var name.
+/// Current Pi (`@earendil-works/pi-coding-agent`, 0.79.4 and newer) sends it as
+/// the key itself, so `"ANYROUTER_API_KEY"` went out as
+/// `Bearer ANYROUTER_API_KEY` and got a 401.
+/// `$VAR` only works on the new versions. A `!` command runs on both, and the
+/// key stays out of the file and argv.
+pub fn pi_api_key_ref(auth_env: &str) -> Result<String, String> {
+    let valid = auth_env
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && auth_env
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_');
+    if !valid {
+        return Err(format!(
+            "Pi's auth_env \"{auth_env}\" is not a valid environment variable name. Fix tools.pi.auth_env in your AnyRouter config."
+        ));
+    }
+    Ok(format!("!printf %s \"${auth_env}\""))
+}
+
 /// Build Pi `models.json` for the AnyRouter provider.
 ///
 /// Pi's `/model` picker only lists ids present under `providers.anyrouter.models`.
@@ -770,7 +797,11 @@ pub fn pi_resolved_model(model: &str) -> String {
 /// Pi assumes a 128k context window unless an entry sets `contextWindow`, so
 /// each entry carries the catalog `context_length` (and `maxTokens` from the
 /// catalog `top_provider.max_completion_tokens`) when known.
-pub fn pi_models_config(base_url: &str, models: &[crate::http::CatalogModel]) -> serde_json::Value {
+pub fn pi_models_config(
+    base_url: &str,
+    api_key: &str,
+    models: &[crate::http::CatalogModel],
+) -> serde_json::Value {
     let models: Vec<serde_json::Value> = models
         .iter()
         .filter(|m| !m.id.is_empty())
@@ -790,7 +821,7 @@ pub fn pi_models_config(base_url: &str, models: &[crate::http::CatalogModel]) ->
             "anyrouter": {
                 "baseUrl": base_url,
                 "api": "openai-completions",
-                "apiKey": "ANYROUTER_API_KEY",
+                "apiKey": api_key,
                 "authHeader": true,
                 "headers": { "X-AnyRouter-App": "pi" },
                 "models": models
@@ -855,7 +886,7 @@ pub fn prepare_pi_wrapper(
     let model_id = pi_resolved_model(model);
     let base = tool_base_url(profile, tool);
     let entries = pi_catalog_models(model, catalog);
-    let models = pi_models_config(&base, &entries);
+    let models = pi_models_config(&base, &pi_api_key_ref(&tool.auth_env)?, &entries);
     write_pi_wrapper_files(&dir, &models, &model_id)?;
     env.insert(
         "PI_CODING_AGENT_DIR".into(),
@@ -1461,8 +1492,11 @@ mod tests {
         let json = env.get("PI_MODELS_JSON").expect("PI_MODELS_JSON");
         assert!(json.contains("anyrouter.dev/api/v1"), "{json}");
         assert!(json.contains("z-ai/glm-4.7-flash"), "{json}");
-        assert!(json.contains("\"apiKey\":\"ANYROUTER_API_KEY\""), "{json}");
-        assert!(!json.contains("$ANYROUTER_API_KEY"), "{json}");
+        let parsed: serde_json::Value = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            parsed["providers"]["anyrouter"]["apiKey"],
+            "!printf %s \"$ANYROUTER_API_KEY\""
+        );
         assert!(!json.contains("sk-ar-v1-secret"), "{json}");
         assert_eq!(
             provider_args_for("pi", &profile()),
@@ -1528,14 +1562,16 @@ mod tests {
             Some(agent_s.as_str())
         );
         let models = std::fs::read_to_string(agent.join("models.json")).unwrap();
-        assert!(models.contains("ANYROUTER_API_KEY"), "{models}");
-        assert!(!models.contains("$ANYROUTER_API_KEY"), "{models}");
         assert!(models.contains("anyrouter/free"), "{models}");
         assert!(models.contains("anthropic/claude-sonnet-4.6"), "{models}");
         assert!(models.contains("z-ai/glm-5.2"), "{models}");
         assert!(models.contains("anyrouter.dev/api/v1"), "{models}");
         // Pi assumes 128k unless the entry declares the catalog window.
         let json: serde_json::Value = serde_json::from_str(&models).unwrap();
+        assert_eq!(
+            json["providers"]["anyrouter"]["apiKey"],
+            "!printf %s \"$ANYROUTER_API_KEY\""
+        );
         let list = json["providers"]["anyrouter"]["models"].as_array().unwrap();
         let m3 = list
             .iter()
@@ -1551,6 +1587,45 @@ mod tests {
             "{settings}"
         );
         assert!(settings.contains("anyrouter/free"), "{settings}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Current Pi sends a plain `apiKey` string as the key itself. The old bare
+    // `ANYROUTER_API_KEY` went out as `Bearer ANYROUTER_API_KEY` (401), and a
+    // stale models.json from an older anyr must be replaced on the next launch.
+    #[test]
+    fn prepare_pi_wrapper_reads_the_key_from_auth_env_on_every_pi_version() {
+        let dir = std::env::temp_dir().join(format!("anyr-pi-key-{}", std::process::id()));
+        let cfg = dir.join("config.yaml");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("pi")).unwrap();
+        std::fs::write(
+            dir.join("pi").join("models.json"),
+            r#"{"providers":{"anyrouter":{"apiKey":"ANYROUTER_API_KEY"}}}"#,
+        )
+        .unwrap();
+        let mut tool = builtin("pi").unwrap();
+        tool.auth_env = "MY_ANYR_KEY".into();
+        let mut env = BTreeMap::new();
+        prepare_pi_wrapper(&mut env, &cfg, &profile(), &tool, "z-ai/glm-5.2", &[]).unwrap();
+        let models = std::fs::read_to_string(dir.join("pi").join("models.json")).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&models).unwrap();
+        let api_key = json["providers"]["anyrouter"]["apiKey"].as_str().unwrap();
+        assert_eq!(api_key, "!printf %s \"$MY_ANYR_KEY\"");
+        #[cfg(unix)]
+        {
+            let out = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(&api_key[1..])
+                .env("MY_ANYR_KEY", "sk-ar-v1-from-env")
+                .output()
+                .unwrap();
+            assert_eq!(String::from_utf8_lossy(&out.stdout), "sk-ar-v1-from-env");
+        }
+        tool.auth_env = "BAD;rm -rf ~".into();
+        let err =
+            prepare_pi_wrapper(&mut env, &cfg, &profile(), &tool, "z-ai/glm-5.2", &[]).unwrap_err();
+        assert!(err.contains("tools.pi.auth_env"), "{err}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1585,6 +1660,7 @@ mod tests {
     fn pi_models_config_declares_each_models_context_window() {
         let json = pi_models_config(
             "https://anyrouter.dev/api/v1",
+            "!printf %s \"$ANYROUTER_API_KEY\"",
             &[
                 pi_row("a/b", Some(1_000_000), Some(524_288)),
                 pi_row("c/d", None, None),
