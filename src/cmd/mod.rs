@@ -14,6 +14,7 @@ pub(crate) mod keys;
 pub(crate) mod launch;
 pub(crate) mod login;
 pub(crate) mod logs;
+pub(crate) mod mcp;
 pub(crate) mod menu;
 pub(crate) mod models;
 pub(crate) mod pool;
