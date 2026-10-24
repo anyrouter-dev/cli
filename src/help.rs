@@ -147,6 +147,7 @@ CORE COMMANDS
   presets:    Saved routing presets (list, show, create, edit, rm)
   mcp:        Wire the MCP gateway into an agent (url, add, connections)
   embed:      Embed text (args, --file or stdin)
+  eval:       One prompt across several models, compared
   transactions: Credit ledger (purchases, usage, refunds)
   artifact:   Publish a file or folder to a shareable URL
   publish:    Send a JSON document or HTML/SVG page to an app
@@ -254,6 +255,7 @@ pub fn command_help(command: &str) -> Option<String> {
         "upgrade" => fill(&bin, UPGRADE),
         "transactions" => fill(&bin, TRANSACTIONS),
         "embed" => fill(&bin, EMBED),
+        "eval" => fill(&bin, EVAL),
         "menu" => fill(
             &bin,
             "{bin} menu — fullscreen launcher (default on a TTY)\n\nUsage:\n  {bin}                 Same as `{bin} menu` on a TTY\n  {bin} menu [--dump-tui]\n\nAccount, model, credits in a header. Launch agents, configure, quit.\n↑↓ / j k move, ↵ select (signs in and installs if needed), q/esc quit.\nSet ANYR_TUI=0 for inline HUD.\n\n`--dump-tui` / ANYR_TUI_DUMP=1 prints one plain frame and exits.\n",
@@ -829,6 +831,35 @@ Options:
 
 Example:
   {bin} embed --json hi | jq '.data[0].embedding | length'
+";
+
+const EVAL: &str = "{bin} eval — one prompt across several models, compared
+
+Usage:
+  {bin} eval \"<prompt>\" --model a,b,c
+  {bin} eval --file prompt.md --model a,b,c --max-tokens 400
+  {bin} eval --prompts cases.jsonl --model a,b --json > results.jsonl
+
+Per model: the answer (cut at 600 characters), then a summary table with the
+provider that answered, latency, tokens in/out, cost and status. Output order
+follows --model, whatever finishes first.
+
+Options:
+  --model <a,b,c>     Models to compare (comma separated, required)
+  --file <path>       Read the prompt from a file
+  --prompts <path>    JSONL file, one {\"prompt\": \"...\"} per line
+  --max-tokens <n>    Cap each answer
+  --concurrency <n>   Parallel requests, 1 to 32 (default 4)
+  --full              Show whole answers
+  --json              One JSON line per (prompt, model)
+  --key <key>         Use this API key (or $ANYROUTER_API_KEY, or the saved login)
+  --profile <name>    Use another account
+
+A failing model is shown with status error, the others still print, and the
+exit code is 1. Exit codes: 0 all ok, 1 any request failed, 2 usage.
+
+Example:
+  {bin} eval \"Summarize RFC 8628 in 3 bullets\" --model openai/gpt-5-mini,z-ai/glm-4.7
 ";
 
 const BYOK: &str = "{bin} byok — bring your own provider keys

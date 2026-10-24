@@ -245,7 +245,7 @@ pub(crate) fn cmd_kind(command: &str) -> Option<CmdKind> {
         | "pool" | "pi" | "upgrade" | "onboard" | "impl" | "plan" | "fix" | "deploy" | "cp"
         | "relay" | "decision" | "commands" | "api" | "completion" | "byok" | "publish"
         | "apps" | "artifact" | "chat" | "logs" | "transactions" | "embed" | "generation"
-        | "presets" | "mcp" => CmdKind::Implemented,
+        | "presets" | "mcp" | "eval" => CmdKind::Implemented,
         "cursor" | "cline" | "windsurf" => CmdKind::HelpOnly,
         "task" | "delegate" | "audit" | "skills" | "prompt" => CmdKind::Stub,
         _ => return None,
@@ -311,6 +311,7 @@ pub(crate) const COMMANDS: &[(&str, &str)] = &[
     ),
     ("transactions", "Credit ledger: purchases, usage, refunds"),
     ("embed", "Embed text: args, --file or stdin"),
+    ("eval", "Compare one prompt across models"),
     ("keys", "Manage API keys"),
     ("byok", "Provider keys: list, add, rm, test, providers"),
     ("artifact", "Publish a file or folder to a shareable URL"),
@@ -461,6 +462,19 @@ pub(crate) fn allowed_flags(command: &str) -> Option<&'static [&'static str]> {
             "model",
             "dimensions",
             "file",
+            "json",
+            "key",
+            "profile",
+            "base-url",
+            "config",
+        ],
+        "eval" => &[
+            "model",
+            "file",
+            "prompts",
+            "max-tokens",
+            "concurrency",
+            "full",
             "json",
             "key",
             "profile",

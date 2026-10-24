@@ -15,6 +15,7 @@ use crate::cmd::dispatch::{
     should_open_launcher, stub, suggest_command, tui_wants_dump, usage_exit, wants_help, USAGE,
 };
 use crate::cmd::embed::run_embed;
+use crate::cmd::eval::run_eval;
 use crate::cmd::generation::run_generation;
 use crate::cmd::keys::run_keys;
 use crate::cmd::launch::run_launch;
@@ -230,6 +231,7 @@ fn dispatch(
         "presets" => run_presets(parsed, env),
         "mcp" => run_mcp(parsed, env),
         "embed" => run_embed(parsed, env),
+        "eval" => run_eval(parsed, env),
         "transactions" => run_transactions(parsed, env),
         "menu" => run_menu(parsed, env),
         "commands" => {

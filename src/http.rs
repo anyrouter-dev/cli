@@ -126,6 +126,56 @@ pub fn http_post_stream(
     }
 }
 
+/// `HTTP <status>: <server message>` for a failed API call.
+pub fn error_message(status: u16, body: &str) -> String {
+    let v: serde_json::Value = serde_json::from_str(body).unwrap_or(serde_json::Value::Null);
+    let msg = v
+        .pointer("/error/message")
+        .or_else(|| v.get("error"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            body.split_whitespace()
+                .take(30)
+                .collect::<Vec<_>>()
+                .join(" ")
+        });
+    format!("HTTP {status}: {msg}")
+}
+
+/// Status, lowercased response headers, body.
+pub type HttpReply = (u16, Vec<(String, String)>, String);
+
+/// Non-streaming JSON POST that also returns the response headers (names
+/// lowercased), for callers that read `x-anyrouter-*`. 120s total timeout.
+#[cfg(feature = "native")]
+pub fn http_post_json_headers(
+    url: &str,
+    api_key: &str,
+    json_body: &str,
+) -> Result<HttpReply, String> {
+    let agent = ureq::AgentBuilder::new()
+        .timeout(std::time::Duration::from_secs(120))
+        .user_agent(&format!("anyr-cli/{VERSION}"))
+        .build();
+    let req = with_auth(agent.post(url), Some(api_key)).set("Content-Type", "application/json");
+    let resp = match req.send_string(json_body) {
+        Ok(r) => r,
+        Err(ureq::Error::Status(_, r)) => r,
+        Err(err) => return Err(format!("Could not reach AnyRouter: {err}")),
+    };
+    let status = resp.status();
+    let headers = resp
+        .headers_names()
+        .into_iter()
+        .filter_map(|n| {
+            resp.header(&n)
+                .map(|v| (n.to_ascii_lowercase(), v.to_string()))
+        })
+        .collect();
+    Ok((status, headers, resp.into_string().unwrap_or_default()))
+}
+
 /// Any method with extra request headers (`anyr api -H k:v`, Idempotency-Key).
 #[cfg(feature = "native")]
 pub fn http_send(
@@ -236,6 +286,15 @@ pub fn http_post(
     _json_body: Option<&str>,
 ) -> Result<(u16, String), String> {
     no_network()
+}
+
+#[cfg(not(feature = "native"))]
+pub fn http_post_json_headers(
+    _url: &str,
+    _api_key: &str,
+    _json_body: &str,
+) -> Result<HttpReply, String> {
+    Err("network is not available in the browser demo".into())
 }
 
 #[cfg(not(feature = "native"))]
@@ -764,6 +823,14 @@ pub fn keys_newest_first(mut keys: Vec<RemoteKey>) -> Vec<RemoteKey> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn error_message_prefers_the_server_message() {
+        assert_eq!(
+            error_message(402, r#"{"error":{"message":"no credits"}}"#),
+            "HTTP 402: no credits"
+        );
+    }
+
     #[test]
     fn models_tsv_has_type_column_chat_embedding_decisions() {
         let body = r#"{"data":[
