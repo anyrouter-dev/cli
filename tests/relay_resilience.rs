@@ -52,6 +52,8 @@ impl Relay {
                 "start",
                 "--no-pool",
                 "--no-launch",
+                "--base-url",
+                "http://127.0.0.1:1/api",
                 "--url",
                 ws_url,
                 "--target",

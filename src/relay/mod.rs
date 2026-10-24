@@ -64,7 +64,6 @@ pub const RELAY_TOKEN_ENV_VAR: &str = "ANYROUTER_RELAY_TOKEN";
 pub const RELAY_DEVICE_ID_FIELD: &str = "relay_device_id";
 
 const DEFAULT_TARGET: &str = "http://localhost:8000/v1";
-const DEFAULT_WS_URL: &str = "wss://anyrouter.dev/api/v1/relay/connect";
 const DEFAULT_API_BASE: &str = "https://anyrouter.dev/api/v1";
 const RELAY_DEVICE_NAME_FIELD: &str = "relay_device_name";
 /// How long one non-blocking poll of the socket waits before we check the
@@ -1298,7 +1297,7 @@ fn resolve_relay_device_id(
             &format!("`{bin} login`"),
         )
     })?;
-    let url = format!("{DEFAULT_API_BASE}/relay/devices");
+    let url = format!("{}/relay/devices", relay_api_base(parsed, env));
     let (status, body) = crate::http::http_get(&url, Some(&api_key))?;
     let value: serde_json::Value = serde_json::from_str(&body).unwrap_or(serde_json::Value::Null);
     let active_ids: Vec<&str> = value
@@ -1358,7 +1357,7 @@ fn set_relay_pool(
     let api_key = resolve_sk_ar_key(parsed, env).ok_or_else(|| {
         "Could not resolve an AnyRouter API key to change pool sharing.".to_string()
     })?;
-    let url = format!("{DEFAULT_API_BASE}/relay/devices/{device_id}");
+    let url = format!("{}/relay/devices/{device_id}", relay_api_base(parsed, env));
     let body = json!({ "pool_enabled": enabled }).to_string();
     let (status, resp) = crate::http::http_patch(&url, Some(&api_key), Some(&body))?;
     if !(200..300).contains(&status) {
@@ -1371,6 +1370,28 @@ fn set_relay_pool(
         return Err(format!("Could not change pool sharing ({status}): {msg}"));
     }
     Ok(())
+}
+
+/// `…/api/v1` of the resolved base (`--base-url`, else the active profile,
+/// else prod), so staging and mock clouds get the relay's calls, not prod.
+fn relay_api_base(parsed: &crate::parse::ParsedArgs, env: &BTreeMap<String, String>) -> String {
+    let path = crate::config::resolve_config_path(None, env);
+    let cfg = crate::key::load_config_if_present(&path);
+    let base = crate::key::resolve_base_url(
+        &parsed.flags,
+        cfg.as_ref().and_then(|c| c.profiles.get(&c.active_profile)),
+    );
+    format!("{}/v1", base.trim_end_matches('/'))
+}
+
+/// The relay websocket for an API base: `https`→`wss`, `http`→`ws`.
+fn relay_ws_url(api_base: &str) -> String {
+    let ws = match api_base.split_once("://") {
+        Some(("http", rest)) => format!("ws://{rest}"),
+        Some(("https", rest)) => format!("wss://{rest}"),
+        _ => api_base.to_string(),
+    };
+    format!("{ws}/relay/connect")
 }
 
 fn resolve_sk_ar_key(
@@ -2157,12 +2178,13 @@ fn run_foreground(f: Foreground<'_>) -> Result<i32, String> {
     let live_screen =
         live::wants_live_screen(f.quiet, f.detached, f.env.get("TERM").map(String::as_str));
 
+    let default_ws = relay_ws_url(&relay_api_base(f.parsed, f.env));
     let ws_base = f
         .args
         .url
         .as_deref()
         .filter(|s| !s.trim().is_empty())
-        .unwrap_or(DEFAULT_WS_URL);
+        .unwrap_or(&default_ws);
 
     // Find or start the on-device servers before the first discovery, so it
     // sees them. Explicit --target URLs are the user's own servers.
