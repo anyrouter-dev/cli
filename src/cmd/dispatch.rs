@@ -464,6 +464,10 @@ pub(crate) fn allowed_flags(command: &str) -> Option<&'static [&'static str]> {
             "lines",
             "yes",
             "devices",
+            "profile",
+            "config",
+            "key",
+            "base-url",
         ],
         "task" => &[
             "plan-model",
