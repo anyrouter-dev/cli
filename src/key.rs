@@ -268,6 +268,42 @@ pub fn mask_api_key(key: Option<&str>) -> String {
     format!("{prefix}…{suffix}")
 }
 
+/// Mask every `sk-ar-v1-…` and `ak_…` token in free text (error messages and
+/// echoed server bodies). A token runs from its marker to the first character
+/// outside `[A-Za-z0-9_-]`; a marker glued to a preceding word character is not
+/// a token start. Tokens too short to hide behind a prefix keep only the prefix.
+pub fn mask_secrets(text: &str) -> String {
+    const MARKERS: [&str; 2] = ["sk-ar-v1-", "ak_"];
+    let is_token_char = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '-';
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    let mut prev_word = false;
+    while let Some(c) = rest.chars().next() {
+        if !prev_word && MARKERS.iter().any(|m| rest.starts_with(m)) {
+            let end = rest.find(|c: char| !is_token_char(c)).unwrap_or(rest.len());
+            let token = &rest[..end];
+            let prefix_len = if token.starts_with("sk-ar-v1-") {
+                14
+            } else {
+                8
+            };
+            if token.chars().count() > prefix_len + 4 {
+                out.push_str(&mask_api_key(Some(token)));
+            } else {
+                out.extend(token.chars().take(prefix_len));
+                out.push('…');
+            }
+            rest = &rest[end..];
+            prev_word = true;
+            continue;
+        }
+        prev_word = is_token_char(c);
+        out.push(c);
+        rest = &rest[c.len_utf8()..];
+    }
+    out
+}
+
 /// Exits 4 (auth) through `commands::run`.
 pub fn no_key_error() -> String {
     crate::exit::tag(

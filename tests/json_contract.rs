@@ -11,6 +11,8 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
+mod common;
+
 const KEY: &str = "sk-ar-v1-testkey0123456789";
 
 /// Runs that would start a long-lived process, open a browser or replace the
@@ -249,5 +251,31 @@ fn missing_key_is_exit_4_auth_on_every_account_command() {
         assert_eq!(out.status.code(), Some(4), "{args:?}: {err}");
         let v: Value = serde_json::from_str(err.trim()).unwrap();
         assert_eq!(v["error"]["code"], "auth");
+    }
+}
+
+#[test]
+fn error_output_masks_a_key_echoed_by_the_server() {
+    // WHY: a server error body can echo the caller's key; logs and agent
+    // transcripts must never capture the full secret, in text or JSON mode.
+    for json in [false, true] {
+        let body = format!(r#"{{"error":{{"message":"bad key {}"}}}}"#, common::KEY);
+        let (base, _rx) = common::serve(vec![(401, body)]);
+        let mut args = vec!["api", "credits"];
+        if json {
+            args.push("--json");
+        }
+        let (code, out, err) = common::run(&base, &args, None);
+        assert_eq!(code, 4, "json={json}: {err}");
+        for stream in [&out, &err] {
+            assert!(
+                !stream.contains(common::KEY),
+                "json={json}: full key leaked: {stream}"
+            );
+        }
+        assert!(
+            err.contains("bad key sk-ar-v1-testk…6789"),
+            "json={json}: {err}"
+        );
     }
 }

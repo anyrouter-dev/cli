@@ -103,10 +103,13 @@ pub fn print(code: i32, message: &str) {
     }
     if json_errors() {
         eprintln!("{}", json_line(code, message));
-    } else if code == USAGE || has_prefix(message) {
-        eprintln!("{message}");
     } else {
-        eprintln!("{} {message}", crate::term::err("error:"));
+        let message = crate::key::mask_secrets(message);
+        if code == USAGE || has_prefix(&message) {
+            eprintln!("{message}");
+        } else {
+            eprintln!("{} {message}", crate::term::err("error:"));
+        }
     }
 }
 
@@ -117,7 +120,7 @@ fn has_prefix(message: &str) -> bool {
 /// One-line JSON error object (ANSI and the `error:` prefix removed; `hint:`
 /// lines move to `hint`).
 pub fn json_line(code: i32, message: &str) -> String {
-    let plain = strip_ansi(message);
+    let plain = strip_ansi(&crate::key::mask_secrets(message));
     let mut text = Vec::new();
     let mut hints = Vec::new();
     for line in plain.lines() {
