@@ -572,6 +572,8 @@ fn relay_start_detach_serves_a_cloud_request_then_stop_ends_it() {
         "start",
         "--detach",
         "--no-pool",
+        "--base-url",
+        "http://127.0.0.1:1/api",
         "--url",
         &ws_url,
         "--target",
@@ -696,6 +698,8 @@ fn relay_handshakes_with_unwritable_config(seed: Option<&str>) -> Vec<String> {
             "start",
             "--no-pool",
             "--no-launch",
+            "--base-url",
+            "http://127.0.0.1:1/api",
             "--url",
             &ws_url,
             "--target",
@@ -740,4 +744,124 @@ fn relay_prefers_the_new_device_id_over_a_stale_cached_one() {
     assert!(seen[0].contains("device=stale-0"), "{}", seen[0]);
     assert!(seen[1].contains("device=dev-1"), "{}", seen[1]);
     assert!(seen[2].contains("device=dev-2"), "{}", seen[2]);
+}
+
+/// WHY: a relay run against a staging or self-hosted base must talk to that
+/// host only. It used to dial the production websocket and send the pool
+/// PATCH, with the profile's key, to production. `--base-url` alone (no
+/// `--url`) has to steer both the handshake and the pool call to the mock.
+#[cfg(unix)]
+#[test]
+fn relay_base_url_steers_the_handshake_and_the_pool_call_to_that_host() {
+    use std::time::Instant;
+    use tungstenite::Message;
+
+    let target = Mock::start(|_| {
+        (
+            200,
+            "application/json",
+            r#"{"data":[{"id":"stub-model"}]}"#.into(),
+        )
+    });
+    let target_url = target.base.trim_end_matches("/api").to_string();
+
+    // One host for both: websocket upgrades become relay sockets, every
+    // other request is recorded as an API call.
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let base_url = format!("http://{}/api", listener.local_addr().unwrap());
+    let sockets: Arc<Mutex<Vec<String>>> = Arc::default();
+    let api: Arc<Mutex<Vec<Req>>> = Arc::default();
+    let (sockets_in, api_in) = (Arc::clone(&sockets), Arc::clone(&api));
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { return };
+            let (sockets, api) = (Arc::clone(&sockets_in), Arc::clone(&api_in));
+            std::thread::spawn(move || {
+                let mut head = [0u8; 8];
+                let is_ws = loop {
+                    match stream.peek(&mut head) {
+                        Ok(n) if n >= head.len() => break head.starts_with(b"GET /api"),
+                        Ok(0) | Err(_) => return,
+                        Ok(_) => std::thread::sleep(Duration::from_millis(10)),
+                    }
+                };
+                if !is_ws {
+                    let Some(req) = read_request(&mut stream) else {
+                        return;
+                    };
+                    api.lock().unwrap().push(req);
+                    let body = "{}";
+                    let _ = write!(
+                        stream,
+                        "HTTP/1.1 200 X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    return;
+                }
+                #[allow(clippy::result_large_err)]
+                let on_handshake =
+                    move |req: &tungstenite::handshake::server::Request,
+                          resp: tungstenite::handshake::server::Response| {
+                        sockets.lock().unwrap().push(req.uri().path().to_string());
+                        Ok(resp)
+                    };
+                let Ok(mut ws) = tungstenite::accept_hdr(stream, on_handshake) else {
+                    return;
+                };
+                let _ = ws.get_ref().set_read_timeout(Some(Duration::from_secs(20)));
+                if ws.read().is_err() {
+                    return;
+                }
+                let _ = ws.send(Message::text(
+                    r#"{"type":"device","id":"dev-1","name":"Desk"}"#,
+                ));
+                while ws.read().is_ok() {}
+            });
+        }
+    });
+
+    let home = temp_home("relay-base-url");
+    let mut child = anyr(&home)
+        .args([
+            "relay",
+            "start",
+            "--no-pool",
+            "--no-launch",
+            "--base-url",
+            &base_url,
+            "--target",
+            &target_url,
+            "--key",
+            KEY,
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn relay");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while (sockets.lock().unwrap().is_empty() || api.lock().unwrap().is_empty())
+        && Instant::now() < deadline
+    {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+
+    assert_eq!(
+        sockets.lock().unwrap().first().map(String::as_str),
+        Some("/api/v1/relay/connect"),
+        "the handshake must reach the --base-url host"
+    );
+    let calls = api.lock().unwrap().clone();
+    let patch = calls
+        .iter()
+        .find(|r| r.method == "PATCH")
+        .unwrap_or_else(|| panic!("the pool PATCH never reached the mock: {calls:?}"));
+    assert_eq!(patch.path, "/api/v1/relay/devices/dev-1");
+    assert_eq!(patch.auth, format!("Bearer {KEY}"));
+    assert!(
+        patch.body.contains("\"pool_enabled\":false"),
+        "{}",
+        patch.body
+    );
 }
