@@ -22,6 +22,11 @@ pub const KNOWN_AGENTS: &[(&str, &str)] = &[
     ("opencode", "OpenCode"),
     ("pi", "Pi"),
     ("pool", "Poolside"),
+    ("qwen", "Qwen Code"),
+    ("goose", "Goose"),
+    ("aider", "Aider"),
+    ("crush", "Crush"),
+    ("kilo", "Kilo Code"),
 ];
 
 /// `ANYR_AGENTS` overrides PATH detection (tests / dump). Unset = probe PATH.
@@ -122,6 +127,36 @@ pub fn tool_hint(tool: &str) -> Option<ToolHint> {
             install: "npm install -g @earendil-works/pi-coding-agent",
             docs: "https://github.com/earendil-works/pi",
             env: "ANYROUTER_PI_PATH",
+        },
+        "qwen" => ToolHint {
+            label: "Qwen Code",
+            install: "npm install -g @qwen-code/qwen-code",
+            docs: "https://github.com/QwenLM/qwen-code",
+            env: "ANYROUTER_QWEN_PATH",
+        },
+        "goose" => ToolHint {
+            label: "Goose",
+            install: "curl -fsSL https://github.com/aaif-goose/goose/releases/download/stable/download_cli.sh | bash",
+            docs: "https://goose-docs.ai/docs/getting-started/installation",
+            env: "ANYROUTER_GOOSE_PATH",
+        },
+        "aider" => ToolHint {
+            label: "Aider",
+            install: "curl -LsSf https://aider.chat/install.sh | sh",
+            docs: "https://aider.chat/docs/install.html",
+            env: "ANYROUTER_AIDER_PATH",
+        },
+        "crush" => ToolHint {
+            label: "Crush",
+            install: "npm install -g @charmland/crush",
+            docs: "https://github.com/charmbracelet/crush",
+            env: "ANYROUTER_CRUSH_PATH",
+        },
+        "kilo" => ToolHint {
+            label: "Kilo Code",
+            install: "npm install -g @kilocode/cli",
+            docs: "https://kilo.ai/docs/code-with-ai/platforms/cli",
+            env: "ANYROUTER_KILO_PATH",
         },
         _ => return None,
     })

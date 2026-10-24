@@ -106,7 +106,7 @@ fn demo_argv(argv: Vec<String>) -> Result<String, String> {
             .to_string());
     }
     match command {
-        "claude" | "codex" | "grok" | "opencode" | "pool" | "pi" => demo_launch(command, &parsed),
+        c if crate::registry::LAUNCHERS.contains(&c) => demo_launch(command, &parsed),
         "models" => Ok(demo_models(parsed.flag_true("json"))),
         "usage" => Ok(demo_usage(parsed.flag_true("json"))),
         "whoami" | "status" => Ok(demo_whoami()),

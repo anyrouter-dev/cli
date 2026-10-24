@@ -263,7 +263,7 @@ pub(crate) fn launch_flags(command: &str) -> Option<&'static [&'static str]> {
     Some(match canonical_command(command) {
         "claude" => CLAUDE_LAUNCH_FLAGS,
         "pool" => POOL_FLAGS,
-        "codex" | "grok" | "opencode" | "pi" => LAUNCH_FLAGS,
+        c if crate::registry::LAUNCHERS.contains(&c) => LAUNCH_FLAGS,
         _ => return None,
     })
 }
@@ -313,6 +313,33 @@ pub(crate) const YOLO: &[Yolo] = &[
         args: &["--unsafe-auto-allow"],
         after: None,
     },
+    Yolo {
+        agent: "qwen",
+        args: &["--yolo"],
+        after: None,
+    },
+    // Goose has no flag: `--yolo` sets GOOSE_MODE=auto (`launch::add_yolo`).
+    Yolo {
+        agent: "goose",
+        args: &[],
+        after: None,
+    },
+    Yolo {
+        agent: "aider",
+        args: &["--yes-always"],
+        after: None,
+    },
+    // A root flag only: `crush run` rejects it.
+    Yolo {
+        agent: "crush",
+        args: &["--yolo"],
+        after: None,
+    },
+    Yolo {
+        agent: "kilo",
+        args: &["--auto"],
+        after: Some("run"),
+    },
 ];
 
 pub(crate) fn yolo_for(agent: &str) -> Option<&'static Yolo> {
@@ -331,10 +358,11 @@ pub(crate) fn cmd_kind(command: &str) -> Option<CmdKind> {
     Some(match c {
         "setup" | "login" | "auth" | "menu" | "models" | "config" | "keys" | "whoami"
         | "status" | "logout" | "account" | "usage" | "claude" | "codex" | "grok" | "opencode"
-        | "pool" | "pi" | "upgrade" | "onboard" | "impl" | "plan" | "fix" | "deploy" | "cp"
-        | "relay" | "decision" | "commands" | "api" | "completion" | "byok" | "publish"
-        | "apps" | "artifact" | "chat" | "logs" | "transactions" | "embed" | "generation"
-        | "presets" | "mcp" | "eval" | "task" | "delegate" => CmdKind::Implemented,
+        | "pool" | "pi" | "qwen" | "goose" | "aider" | "crush" | "kilo" | "upgrade" | "onboard"
+        | "impl" | "plan" | "fix" | "deploy" | "cp" | "relay" | "decision" | "commands" | "api"
+        | "completion" | "byok" | "publish" | "apps" | "artifact" | "chat" | "logs"
+        | "transactions" | "embed" | "generation" | "presets" | "mcp" | "eval" | "task"
+        | "delegate" => CmdKind::Implemented,
         "cursor" | "cline" | "windsurf" => CmdKind::HelpOnly,
         "audit" | "skills" | "prompt" => CmdKind::Stub,
         _ => return None,
@@ -371,6 +399,11 @@ pub(crate) const COMMANDS: &[(&str, &str)] = &[
     ("pi", "Launch Pi"),
     ("pool", "Launch Poolside"),
     ("poolside", "Alias of pool"),
+    ("qwen", "Launch Qwen Code"),
+    ("goose", "Launch Goose"),
+    ("aider", "Launch Aider"),
+    ("crush", "Launch Crush"),
+    ("kilo", "Launch Kilo Code"),
     ("api", "Dashboard from the terminal; raw calls like gh api"),
     ("publish", "Publish a JSON document or a page to an app"),
     ("apps", "Manage what you published to apps"),
@@ -431,9 +464,7 @@ pub(crate) fn value_choices(flag: &str, env: &BTreeMap<String, String>) -> Vec<S
     let owned = |xs: &[&str]| xs.iter().map(|s| s.to_string()).collect();
     match flag {
         "effort" => owned(crate::spawn::REASONING_LEVELS),
-        "agent" | "tool" | "to" | "from" => {
-            owned(&["claude", "codex", "grok", "opencode", "pi", "pool"])
-        }
+        "agent" | "tool" | "to" | "from" => owned(crate::registry::LAUNCHERS),
         "channel" => owned(&["stable", "beta"]),
         "model" | "haiku" | "sonnet" | "opus" | "fable" => owned(&["auto"]),
         "profile" => {
@@ -671,7 +702,7 @@ pub(crate) fn allowed_flags(command: &str) -> Option<&'static [&'static str]> {
             "check", "channel", "fixture", "dry-run", "yes", "auto", "force", "beta", "stable",
             "status", "rollback", "json",
         ],
-        "claude" | "codex" | "grok" | "opencode" | "pi" | "pool" => return launch_flags(canonical),
+        c if crate::registry::LAUNCHERS.contains(&c) => return launch_flags(c),
         "cursor" | "cline" | "windsurf" => &["profile", "key", "base-url", "config", "yes"],
         "byok" => &[
             "profile",

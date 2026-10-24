@@ -185,7 +185,9 @@ fn launch_help(bin: &str, id: &str, label: &str) -> String {
         .map(|line| format!("{line}\n"))
         .collect();
     let native = crate::cmd::dispatch::yolo_for(id).map_or(&[][..], |y| y.args);
-    let yolo = if native.is_empty() {
+    let yolo = if id == "goose" {
+        "Skip permission prompts (sets GOOSE_MODE=auto)".to_string()
+    } else if native.is_empty() {
         format!("No effect: {label} has no flag to skip permission prompts")
     } else {
         let note = if id == "pool" {
@@ -202,6 +204,8 @@ fn launch_help(bin: &str, id: &str, label: &str) -> String {
         "pi" => "--no-skills --no-tools",
         "codex" => "--search",
         "pool" => "--worktree",
+        "aider" => "--architect",
+        "goose" => "session --resume",
         _ => "--continue",
     };
     let body = body
@@ -287,6 +291,11 @@ pub fn command_help(command: &str) -> Option<String> {
         "grok" => launch_help(&bin, "grok", "Grok Build"),
         "opencode" => launch_help(&bin, "opencode", "opencode"),
         "pi" => launch_help(&bin, "pi", "Pi"),
+        "qwen" => launch_help(&bin, "qwen", "Qwen Code"),
+        "goose" => launch_help(&bin, "goose", "Goose"),
+        "aider" => launch_help(&bin, "aider", "Aider"),
+        "crush" => launch_help(&bin, "crush", "Crush"),
+        "kilo" => launch_help(&bin, "kilo", "Kilo Code"),
         "pool" => format!(
             "{}\n{}",
             fill(&bin, POOL),

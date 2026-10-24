@@ -27,7 +27,9 @@ pub const EVERYDAY: &[&str] = &[
 ];
 
 /// Agents `anyr <agent>` launches.
-pub const LAUNCHERS: &[&str] = &["claude", "codex", "grok", "opencode", "pi", "pool"];
+pub const LAUNCHERS: &[&str] = &[
+    "claude", "codex", "grok", "opencode", "pi", "pool", "qwen", "goose", "aider", "crush", "kilo",
+];
 
 /// Flags every command accepts.
 pub const GLOBAL_FLAGS: &[(&str, &str)] = &[
@@ -58,7 +60,7 @@ pub fn group(canonical: &str) -> &'static str {
     match canonical {
         "login" | "logout" | "auth" | "whoami" | "account" => "auth",
         "chat" | "models" | "embed" | "eval" | "decision" | "task" | "delegate" => "chat",
-        "claude" | "codex" | "grok" | "opencode" | "pi" | "pool" => "launch",
+        c if LAUNCHERS.contains(&c) => "launch",
         "relay" => "relay",
         "artifact" | "publish" | "apps" => "publish",
         "usage" | "keys" | "byok" | "presets" | "logs" | "generation" | "transactions" | "mcp"

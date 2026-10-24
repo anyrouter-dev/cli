@@ -11,11 +11,11 @@ use crate::key::{
 use crate::parse::{get_string_flag, ParsedArgs};
 use crate::spawn::{
     apply_model_id_routing, apply_routing_env, build_tool_env, catalog_context_window,
-    catalog_model_id, default_profile_for_env, display_model_id, effort_args_for, env_command_path,
-    grok_user_home, is_auto_model, is_user_preset, is_virtual_preset, model_args_for,
-    normalize_effort, opencode_major_version, opencode_standalone_args, prepare_grok_home,
-    prepare_pi_wrapper, provider_args_for, render_dry_run, resolve_tool, spawn_child,
-    BuildToolEnvInput, GROK_UNSET_ENV,
+    catalog_model_id, crush_user_dir, default_profile_for_env, display_model_id, effort_args_for,
+    env_command_path, grok_user_home, is_auto_model, is_user_preset, is_virtual_preset,
+    model_args_for, normalize_effort, opencode_major_version, opencode_standalone_args,
+    prepare_crush_config, prepare_grok_home, prepare_pi_wrapper, provider_args_for, render_dry_run,
+    resolve_tool, spawn_child, BuildToolEnvInput, GROK_UNSET_ENV,
 };
 use crate::term;
 
@@ -70,7 +70,18 @@ pub(crate) fn resolve_session_model(
 /// Put the agent's native skip-permission argv in `args`: after its
 /// subcommand when the user runs one, else before the agent's own args.
 /// Never twice: a native flag the user passed already wins.
-fn add_yolo(tool_name: &str, args: &mut Vec<String>, agent_args_at: usize, quiet: bool) {
+fn add_yolo(
+    tool_name: &str,
+    args: &mut Vec<String>,
+    child_env: &mut BTreeMap<String, String>,
+    agent_args_at: usize,
+    quiet: bool,
+) {
+    // Goose has no flag for it; its mode comes from the environment.
+    if tool_name == "goose" {
+        child_env.insert("GOOSE_MODE".into(), "auto".into());
+        return;
+    }
     let Some(yolo) = yolo_for(tool_name).filter(|y| !y.args.is_empty()) else {
         if !quiet {
             eprintln!(
@@ -283,6 +294,24 @@ pub(crate) fn launch(
         &mut args,
         &mut env_map,
     );
+    if tool_name == "crush" {
+        let catalog = fetch_models(&base, Some(&key)).unwrap_or_default();
+        let user_dir = crush_user_dir(&|k| env.get(k).cloned());
+        let mcp_url = match &mcp_decision {
+            crate::mcp_wiring::Decision::On { url } => Some(url.as_str()),
+            _ => None,
+        };
+        prepare_crush_config(
+            &mut env_map,
+            &path,
+            &profile,
+            &tool,
+            &model,
+            &catalog,
+            user_dir.as_deref(),
+            mcp_url,
+        )?;
+    }
     let agent_args_at = args.len();
     // Native switches lead the agent's args: after a subcommand or a literal
     // `--` they would be rejected or become positionals.
@@ -297,6 +326,7 @@ pub(crate) fn launch(
         add_yolo(
             tool_name,
             &mut args,
+            &mut env_map,
             agent_args_at,
             term::machine_output(parsed, env),
         );
