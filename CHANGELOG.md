@@ -10,6 +10,21 @@ GitHub Releases use this file as the release notes (full history through that ta
 
 * **cli:** add `anyr decision` for typed `POST /api/v1/decisions` requests with flag or stdin JSON input. Known Decisions models are refused by chat-agent launchers. ([duyet/anyrouter#3550](https://github.com/duyet/anyrouter/issues/3550))
 
+## [0.1.32](https://github.com/anyrouter-dev/cli/compare/v0.1.31...v0.1.32) (2026-10-24)
+
+
+### Features
+
+* **auth:** show name and email in auth status, default model only, add picker ([#201](https://github.com/anyrouter-dev/cli/issues/201)) ([cba42f0](https://github.com/anyrouter-dev/cli/commit/cba42f0b182cc917350d1a10a6960a4d7f524f5f))
+* **chat:** footer with model, tokens, timing and cost under the latest reply ([#203](https://github.com/anyrouter-dev/cli/issues/203)) ([7f6336b](https://github.com/anyrouter-dev/cli/commit/7f6336bb0f9bc220279d98a4c7137f880d2373a5))
+* **launch:** pass unknown flags to the agent; --yolo maps per agent ([#200](https://github.com/anyrouter-dev/cli/issues/200)) ([d36b0ab](https://github.com/anyrouter-dev/cli/commit/d36b0ab08b8a1d1fe5ed0fd908c60f433e88960d))
+
+
+### Bug Fixes
+
+* **relay:** derive websocket and pool API URLs from the base URL ([#207](https://github.com/anyrouter-dev/cli/issues/207)) ([b4fe1b5](https://github.com/anyrouter-dev/cli/commit/b4fe1b52ead054e900ef4dc1d5a3b2009ab8c4ee))
+* **relay:** detect half-open sockets, back off with jitter, bound memory ([#204](https://github.com/anyrouter-dev/cli/issues/204)) ([5736d45](https://github.com/anyrouter-dev/cli/commit/5736d45e0468b95e75abc77cee9b2b1aaee00caf))
+
 ## [0.1.31](https://github.com/anyrouter-dev/cli/compare/v0.1.30...v0.1.31) (2026-10-24)
 
 
