@@ -12,7 +12,7 @@ const AGENTS: &[(&str, &[&str])] = &[
     ("grok", &["--always-approve"]),
     ("opencode", &["--auto"]),
     ("pi", &[]),
-    ("pool", &["--mode", "always-allow"]),
+    ("pool", &["--unsafe-auto-allow"]),
 ];
 
 struct DryRun {
@@ -239,5 +239,24 @@ fn cc_alias_forwards_like_claude() {
     assert_eq!(
         got.args,
         strs(&["--dangerously-skip-permissions", "--no-skills"])
+    );
+}
+
+#[test]
+fn pool_yolo_passes_unsafe_auto_allow_and_not_yolo() {
+    let got = dry_run("pool", &["--yolo", "--dry-run"]);
+    assert_eq!(got.code, 0, "{}", got.stderr);
+    assert_eq!(
+        count_run(&got.args, &["--unsafe-auto-allow"]),
+        1,
+        "{:?}",
+        got.args
+    );
+    assert!(
+        !got.args
+            .iter()
+            .any(|a| a == "--yolo" || a == "always-allow"),
+        "{:?}",
+        got.args
     );
 }

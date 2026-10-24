@@ -3268,7 +3268,7 @@ fn launch_help_lists_claude_only_flags_for_claude_alone() {
         ("grok", "passes --always-approve"),
         ("opencode", "passes --auto"),
         ("pi", "No effect: Pi has no flag to skip permission prompts"),
-        ("pool", "passes --mode always-allow"),
+        ("pool", "passes --unsafe-auto-allow (from docs, unverified)"),
     ] {
         let (code, out, _) = run(&[agent, "--help"]);
         assert_eq!(code, 0);

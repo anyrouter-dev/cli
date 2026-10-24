@@ -188,7 +188,15 @@ fn launch_help(bin: &str, id: &str, label: &str) -> String {
     let yolo = if native.is_empty() {
         format!("No effect: {label} has no flag to skip permission prompts")
     } else {
-        format!("Skip permission prompts (passes {})", native.join(" "))
+        let note = if id == "pool" {
+            " (from docs, unverified)"
+        } else {
+            ""
+        };
+        format!(
+            "Skip permission prompts (passes {}{note})",
+            native.join(" ")
+        )
     };
     let example = match id {
         "pi" => "--no-skills --no-tools",

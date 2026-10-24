@@ -302,7 +302,7 @@ pub(crate) const YOLO: &[Yolo] = &[
     },
     Yolo {
         agent: "pool",
-        args: &["--mode", "always-allow"],
+        args: &["--unsafe-auto-allow"],
         after: None,
     },
 ];
