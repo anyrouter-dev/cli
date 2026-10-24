@@ -3305,3 +3305,97 @@ fn usage_errors_print_clean_message_without_marker() {
     assert_eq!(code, 0);
     assert!(out.contains("anyr relay start"), "{out}");
 }
+
+/// One-shot `/v1/me` server: returns (base_url, join handle).
+fn me_server(body: &'static str) -> (String, thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let handle = thread::spawn(move || {
+        if let Ok((mut s, _)) = listener.accept() {
+            let mut buf = [0u8; 2048];
+            let _ = s.read(&mut buf);
+            let _ = write!(
+                s,
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+        }
+    });
+    (base, handle)
+}
+
+fn status_config(home: &std::path::Path) -> std::path::PathBuf {
+    let path = home.join("config.yaml");
+    std::fs::write(
+        &path,
+        "active_profile: default\nprofiles:\n  default:\n    api_key: sk-ar-v1-abcdefghijklmnopqrstuvwxyz\n    default_model: poolside/laguna-s-2.1\n    claude_haiku: anyrouter/free\n    default_tool: claude\n",
+    )
+    .unwrap();
+    path
+}
+
+#[test]
+fn auth_status_shows_user_and_only_the_default_model() {
+    let home = temp_home();
+    let cfg = status_config(&home);
+    let (base, server) = me_server(r#"{"name":"Duyet Le","email":"me@duyet.net"}"#);
+    let out = anyr()
+        .args([
+            "auth",
+            "status",
+            "--config",
+            cfg.to_str().unwrap(),
+            "--base-url",
+            &base,
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    server.join().unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(0), "{stdout}");
+    assert!(
+        stdout.starts_with("Signed in as Duyet Le <me@duyet.net>"),
+        "{stdout:?}"
+    );
+    assert!(stdout.contains("poolside/laguna-s-2.1"), "{stdout}");
+    assert!(
+        !stdout.contains("claude_") && !stdout.contains("default_tool"),
+        "{stdout}"
+    );
+    assert!(
+        !stdout.contains("abcdefghijklmnopqrstuvwxyz"),
+        "full key leaked: {stdout}"
+    );
+}
+
+#[test]
+fn auth_status_json_has_user_and_masked_key() {
+    let home = temp_home();
+    let cfg = status_config(&home);
+    let (base, server) = me_server(r#"{"name":"Duyet Le","email":"me@duyet.net"}"#);
+    let out = anyr()
+        .args([
+            "status",
+            "--json",
+            "--config",
+            cfg.to_str().unwrap(),
+            "--base-url",
+            &base,
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    server.join().unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["account"], "default");
+    assert_eq!(v["user"]["name"], "Duyet Le");
+    assert_eq!(v["user"]["email"], "me@duyet.net");
+    assert!(v["key_masked"].as_str().unwrap().contains('…'), "{v}");
+    assert_eq!(v["default_model"], "poolside/laguna-s-2.1");
+    assert!(v["config_path"].is_string());
+    assert!(
+        v.get("claude_haiku").is_none() && v.get("default_tool").is_none(),
+        "{v}"
+    );
+}
