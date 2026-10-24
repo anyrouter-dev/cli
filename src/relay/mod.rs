@@ -49,6 +49,7 @@ mod devices;
 mod devname;
 mod doctor;
 mod live;
+mod servers;
 mod state;
 mod view;
 
@@ -220,6 +221,8 @@ struct StartArgs {
     models: Option<String>,
     all: bool,
     max_concurrency: Option<u32>,
+    /// `--no-launch`: use only servers that are already running.
+    no_launch: bool,
 }
 
 fn parse_start_args(parsed: &crate::parse::ParsedArgs) -> StartArgs {
@@ -232,6 +235,7 @@ fn parse_start_args(parsed: &crate::parse::ParsedArgs) -> StartArgs {
         device: String::new(),
         models: get("model"),
         all: parsed.flag_true("all"),
+        no_launch: parsed.flag_true("no-launch"),
         max_concurrency: get("max-concurrency")
             .and_then(|s| s.parse::<u32>().ok())
             .filter(|n| *n > 0),
@@ -525,6 +529,7 @@ fn is_decider_response(body: &str) -> bool {
 static CONFIRMED_DECIDERS: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
 
 /// Send one tiny real decision to `base`/decisions and check the reply shape.
+/// A positive answer is cached; see `probe_decider_uncached`.
 fn probe_decider(base: &str) -> bool {
     if CONFIRMED_DECIDERS
         .lock()
@@ -533,6 +538,20 @@ fn probe_decider(base: &str) -> bool {
     {
         return true;
     }
+    probe_decider_uncached(base)
+}
+
+/// Drop a cached positive probe, once the server is seen down.
+fn forget_decider(base: &str) {
+    CONFIRMED_DECIDERS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(base);
+}
+
+/// Always POST. Supervision needs this: a crashed Decider must not keep
+/// reading as up from the cache.
+fn probe_decider_uncached(base: &str) -> bool {
     let url = format!("{}/decisions", base.trim_end_matches('/'));
     let body = json!({
         "model": DECIDER_ADVERTISED_MODEL_ID,
@@ -690,6 +709,44 @@ impl OnDeviceDetector for SystemDetector {
                 }
             }
         }
+    }
+}
+
+/// `detected` for start: a model whose server is installed but stopped
+/// counts as available when start may launch it, so the picker offers it.
+/// Too old a macOS still says why.
+fn with_launch(
+    model: OnDeviceModel,
+    detected: Result<(), String>,
+    launch: bool,
+    installed: impl FnOnce() -> bool,
+) -> Result<(), String> {
+    if detected.is_ok() || !launch {
+        return detected;
+    }
+    if model == OnDeviceModel::AppleFoundation
+        && macos_major_version().is_some_and(|major| major < 26)
+    {
+        return detected;
+    }
+    if installed() {
+        Ok(())
+    } else {
+        detected
+    }
+}
+
+/// The real detector, plus "installed, start will launch it".
+struct StartDetector {
+    launch: bool,
+}
+
+impl OnDeviceDetector for StartDetector {
+    fn detect(&self, model: OnDeviceModel) -> Result<(), String> {
+        with_launch(model, SystemDetector.detect(model), self.launch, || {
+            servers::spec_for(model)
+                .is_some_and(|spec| servers::Host::installed(&servers::SystemHost::default(), spec))
+        })
     }
 }
 
@@ -1578,13 +1635,10 @@ fn refresh_router(
     serve: &BTreeSet<OnDeviceModel>,
     stats: &Stats,
     last_sig: &mut String,
+    tags: &BTreeMap<&str, &str>,
 ) -> Router {
     let router = build_router(explicit, serve);
-    let endpoints: Vec<(String, String)> = router
-        .targets
-        .iter()
-        .map(|t| (t.label.clone(), t.base.clone()))
-        .collect();
+    let endpoints = endpoint_rows(&router, tags);
     let sig = format!("{endpoints:?}{:?}", router.all_models());
     if sig != *last_sig {
         for t in &router.targets {
@@ -1596,7 +1650,7 @@ fn refresh_router(
             } else {
                 ulog(&format!(
                     "serving {} ({}) at {}",
-                    t.label,
+                    tagged_label(t, tags),
                     t.kind.name(),
                     t.base
                 ));
@@ -1608,13 +1662,31 @@ fn refresh_router(
     router
 }
 
+/// `label (managed)` / `label (external)` for servers start launched or found.
+fn tagged_label(t: &Target, tags: &BTreeMap<&str, &str>) -> String {
+    match tags.get(t.base.as_str()) {
+        Some(tag) => format!("{} ({tag})", t.label),
+        None => t.label.clone(),
+    }
+}
+
+/// The status screen's Endpoints rows.
+fn endpoint_rows(router: &Router, tags: &BTreeMap<&str, &str>) -> Vec<(String, String)> {
+    router
+        .targets
+        .iter()
+        .map(|t| (tagged_label(t, tags), t.base.clone()))
+        .collect()
+}
+
 /// Which on-device models to serve: `--model` / `--all`, then the saved
 /// choice, then the checklist at a terminal (its answer is saved), else all.
 fn resolve_serve(
     choice: &ModelChoice,
     paths: &state::Paths,
+    launch: bool,
 ) -> Result<BTreeSet<OnDeviceModel>, String> {
-    let detected = detect_all(&SystemDetector);
+    let detected = detect_all(&StartDetector { launch });
     for d in &detected {
         if let Some(why) = &d.unavailable {
             ulog(&format!("{} not available: {why}", d.model.id()));
@@ -1706,7 +1778,7 @@ fn run_relay_start(
             .map(|s| s.split(',').filter_map(OnDeviceModel::from_id).collect())
             .unwrap_or_default()
     } else {
-        resolve_serve(&choice, &paths)?
+        resolve_serve(&choice, &paths, launches_servers(&args))?
     };
     let (pool, _) = state::effective_pool(pool_flag, &state::load_prefs(&paths));
 
@@ -1738,6 +1810,15 @@ fn run_relay_start(
     })
 }
 
+/// Start launches missing on-device servers unless `--no-launch` or an
+/// explicit `--target` (the user named the servers).
+fn launches_servers(args: &StartArgs) -> bool {
+    !args.no_launch && args.target.is_none()
+}
+
+/// How often a running relay checks the servers it started.
+const SUPERVISE_EVERY: Duration = Duration::from_secs(2);
+
 /// argv for the detached child. The pool flag is forwarded only when the
 /// user gave one, so the child keeps following `relay pool on|off`; the
 /// credential never goes here (argv is visible in `ps`).
@@ -1759,6 +1840,9 @@ fn detached_child_args(args: &StartArgs, pool_flag: Option<bool>, verbose: bool)
             child.push(flag.into());
             child.push(v);
         }
+    }
+    if args.no_launch {
+        child.push("--no-launch".into());
     }
     if verbose {
         child.push("--verbose".into());
@@ -1806,8 +1890,53 @@ fn run_foreground(f: Foreground<'_>) -> Result<i32, String> {
     );
     vlog(&format!("relay url={url}"));
 
+    // Find or start the on-device servers before the first discovery, so it
+    // sees them. Explicit --target URLs are the user's own servers.
+    let supervisor: Option<Arc<Mutex<servers::Supervisor>>> = f.args.target.is_none().then(|| {
+        let specs = f
+            .serve
+            .iter()
+            .filter_map(|m| servers::spec_for(*m))
+            .collect();
+        Arc::new(Mutex::new(servers::Supervisor::start(
+            specs,
+            f.args.no_launch,
+            Box::new(servers::SystemHost::default()),
+            Box::new(|m: &str| ulog(m)),
+        )))
+    });
+    let tags = || {
+        supervisor
+            .as_ref()
+            .map(|s| s.lock().unwrap_or_else(|e| e.into_inner()).tags())
+            .unwrap_or_default()
+    };
+    let supervise_done = Arc::new(AtomicBool::new(false));
+    let supervise_thread = supervisor.as_ref().map(|sup| {
+        let (sup, done) = (Arc::clone(sup), Arc::clone(&supervise_done));
+        std::thread::spawn(move || loop {
+            let mut waited = Duration::ZERO;
+            while waited < SUPERVISE_EVERY {
+                if done.load(Ordering::SeqCst) || live::stop_requested() != 0 {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+                waited += Duration::from_millis(100);
+            }
+            if sup.lock().unwrap_or_else(|e| e.into_inner()).tick() {
+                live::request_rescan();
+            }
+        })
+    });
+
     let mut last_sig = String::new();
-    let mut router = refresh_router(f.args.target.as_deref(), f.serve, &stats, &mut last_sig);
+    let mut router = refresh_router(
+        f.args.target.as_deref(),
+        f.serve,
+        &stats,
+        &mut last_sig,
+        &tags(),
+    );
     if !live_screen && !f.quiet {
         print_start_summary(&router, f.pool, f.detached, f.env);
     }
@@ -1874,6 +2003,7 @@ fn run_foreground(f: Foreground<'_>) -> Result<i32, String> {
                             f.serve,
                             &stats,
                             &mut last_sig,
+                            &tags(),
                         );
                         continue;
                     }
@@ -1910,11 +2040,25 @@ fn run_foreground(f: Foreground<'_>) -> Result<i32, String> {
         // Re-discover before every reconnect so endpoints started or stopped
         // since the last connect are picked up, and so no socket sits open
         // and unread while probes run.
-        router = refresh_router(f.args.target.as_deref(), f.serve, &stats, &mut last_sig);
+        router = refresh_router(
+            f.args.target.as_deref(),
+            f.serve,
+            &stats,
+            &mut last_sig,
+            &tags(),
+        );
     }
 
     stats.set_conn(Conn::Stopping);
     ticker.finish();
+    // Stop only what this relay started; external servers keep running.
+    supervise_done.store(true, Ordering::SeqCst);
+    if let Some(t) = supervise_thread {
+        let _ = t.join();
+    }
+    if let Some(sup) = &supervisor {
+        sup.lock().unwrap_or_else(|e| e.into_inner()).stop_all();
+    }
     state::clear_if_owned(&f.paths, meta.pid);
     if let Some(msg) = refused {
         return Err(view::error(
@@ -3740,6 +3884,78 @@ profiles:
             .any(|a| a.contains("rk_") || a.contains("sk-ar")));
         assert!(detached_child_args(&args, Some(false), true).ends_with(&["--verbose".to_string()]));
         assert!(detached_child_args(&args, Some(false), false).contains(&"--no-pool".to_string()));
+    }
+
+    #[test]
+    fn no_launch_is_parsed_and_forwarded_to_the_detached_child() {
+        // WHY: --detach re-execs the relay; without forwarding, the
+        // background copy would launch servers the user said not to.
+        let on = parse_start_args(&parsed_start(vec![(
+            "no-launch",
+            crate::parse::FlagValue::Bool(true),
+        )]));
+        assert!(on.no_launch);
+        assert!(!launches_servers(&on));
+        assert!(detached_child_args(&on, None, false).contains(&"--no-launch".to_string()));
+        let off = parse_start_args(&parsed_start(vec![]));
+        assert!(launches_servers(&off));
+        assert!(!detached_child_args(&off, None, false).contains(&"--no-launch".to_string()));
+        let parsed = crate::parse::parse_cli_args(["relay", "start", "--no-launch"]).unwrap();
+        assert!(parse_start_args(&parsed).no_launch);
+    }
+
+    #[test]
+    fn explicit_target_never_launches_servers() {
+        let args = parse_start_args(&parsed_start(vec![(
+            "target",
+            crate::parse::FlagValue::Value("http://localhost:9000/v1".into()),
+        )]));
+        assert!(!launches_servers(&args));
+    }
+
+    #[test]
+    fn installed_but_stopped_server_is_offered_when_start_may_launch_it() {
+        let down = || Err::<(), String>("open the Decider for Mac app (serves on :8080)".into());
+        let m = OnDeviceModel::DeciderFlash;
+        assert_eq!(with_launch(m, down(), true, || true), Ok(()));
+        assert_eq!(
+            with_launch(m, down(), false, || true),
+            down(),
+            "--no-launch"
+        );
+        assert_eq!(
+            with_launch(m, down(), true, || false),
+            down(),
+            "not installed"
+        );
+        assert_eq!(with_launch(m, Ok(()), true, || unreachable!()), Ok(()));
+    }
+
+    #[test]
+    fn endpoints_line_marks_managed_and_external_servers() {
+        let router = Router::new(vec![
+            Target {
+                label: "fm serve (Apple Foundation Models)".into(),
+                base: FM_SERVE_TARGET.into(),
+                kind: TargetKind::Chat,
+                models: vec!["foundation-model".into()],
+                fm_models: None,
+            },
+            decider_target(DECIDER_TARGET),
+            Target {
+                label: "Ollama".into(),
+                base: OLLAMA_TARGET.into(),
+                kind: TargetKind::Chat,
+                models: vec!["llama3".into()],
+                fm_models: None,
+            },
+        ]);
+        let tags: BTreeMap<&str, &str> =
+            [(FM_SERVE_TARGET, "managed"), (DECIDER_TARGET, "external")].into();
+        let rows = endpoint_rows(&router, &tags);
+        assert_eq!(rows[0].0, "fm serve (Apple Foundation Models) (managed)");
+        assert_eq!(rows[1].0, "Perplexity Decider (external)");
+        assert_eq!(rows[2].0, "Ollama");
     }
 
     #[test]

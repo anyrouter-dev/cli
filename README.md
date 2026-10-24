@@ -368,6 +368,15 @@ enable|disable <id>`. `--model <id>` (repeatable) and `--all` override the saved
 choice for one run. Other local servers (Ollama, LM Studio, `--target <url>`)
 are always served.
 
+You don't need a second terminal. When a chosen model's server is installed
+but not running, `start` launches it: `fm serve` as a child process, or the
+Decider app with `open -g -a Decider`. It waits for each to answer, restarts
+one that crashes (backoff 1s, 2s, 4s … up to 60s), and stops it when the relay
+exits. The status screen marks these `(managed)`. A server you started
+yourself shows as `(external)`; the relay never starts a second copy and
+leaves it running on exit. `--no-launch` uses only servers already running,
+and an explicit `--target` never launches anything.
+
 At a terminal, `start` shows one live screen: connection, models, requests,
 tokens and pool, with keys `p` (pool on/off), `r` (rescan local servers) and
 `q` / Ctrl-C (stop). Piped, with `--quiet`, or with `TERM=dumb` it prints plain
