@@ -2038,11 +2038,14 @@ fn run_foreground(f: Foreground<'_>) -> Result<i32, String> {
             );
         }
     };
+    // The id lives in memory first: the config file is only the cache between
+    // runs, so a failed write must not turn every reconnect into `fresh=1`.
+    let device_id: Mutex<Option<String>> = Mutex::new(None);
     let on_device = |id: &str| {
+        *device_id.lock().unwrap_or_else(|e| e.into_inner()) = Some(id.to_string());
         if cached_relay_device_id(f.env).as_deref() != Some(id) {
             if let Err(e) = write_profile_field(RELAY_DEVICE_ID_FIELD, id, f.env) {
                 ulog(&format!("could not save this device's id: {e}"));
-                return;
             }
         }
         sync_pool_once();
@@ -2056,11 +2059,12 @@ fn run_foreground(f: Foreground<'_>) -> Result<i32, String> {
         }
         // Rebuilt per attempt: the first connect's `device` frame turns
         // `fresh=1` into this device's own id for every reconnect.
-        let url = relay_url_with_name(
-            ws_base,
-            &f.args.device,
-            cached_relay_device_id(f.env).as_deref(),
-        );
+        let known_id = device_id
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+            .or_else(|| cached_relay_device_id(f.env));
+        let url = relay_url_with_name(ws_base, &f.args.device, known_id.as_deref());
         vlog(&format!("relay url={url}"));
         match connect_ws(&url, f.token) {
             Ok(mut ws) => {
@@ -2069,7 +2073,7 @@ fn run_foreground(f: Foreground<'_>) -> Result<i32, String> {
                 stats.set_conn(Conn::Connected);
                 stats.set_error(None);
                 ulog(&format!("connected as \"{}\"", f.args.device));
-                if cached_relay_device_id(f.env).is_some() {
+                if known_id.is_some() {
                     sync_pool_once();
                 }
                 set_read_timeouts(&ws, Duration::from_millis(SOCKET_POLL_MS));

@@ -47,7 +47,6 @@ pub(super) fn duration(secs: u64) -> String {
     }
 }
 
-/// `1234567` -> `1,234,567`.
 /// Requests answered without error. `requests` counts every request frame
 /// received, so failed and in-flight ones come off it: a device whose local
 /// server is down must not look like it served anything.
@@ -55,6 +54,7 @@ fn served(requests: u64, in_flight: u64, errors: u64) -> u64 {
     requests.saturating_sub(in_flight.saturating_add(errors))
 }
 
+/// `1234567` -> `1,234,567`.
 pub(super) fn thousands(n: u64) -> String {
     let s = n.to_string();
     let mut out = String::new();
