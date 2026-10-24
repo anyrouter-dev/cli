@@ -123,9 +123,9 @@ fn help_lists_login_claude_account_and_spawn_targets() {
     let (code, stdout, stderr) = run(&["--help"]);
     assert_eq!(code, 0, "stderr={stderr}");
     assert!(stdout.contains("point any coding agent"), "{stdout}");
-    assert!(stdout.contains("auth login"), "{stdout}");
+    assert!(stdout.contains("anyr login"), "{stdout}");
     assert!(stdout.contains("anyr claude"), "{stdout}");
-    assert!(stdout.contains("anyr help commands"), "{stdout}");
+    assert!(stdout.contains("anyr help --all"), "{stdout}");
     assert!(
         !stdout.contains("Install:"),
         "help must not dump an Install: heading, got:\n{stdout}"
@@ -142,9 +142,14 @@ fn help_lists_login_claude_account_and_spawn_targets() {
         !stdout.contains("CORE COMMANDS"),
         "examples-first --help must not dump the catalog:\n{stdout}"
     );
-    let (code, map, map_err) = run(&["help", "commands"]);
+    let (code, map, map_err) = run(&["help", "--all"]);
     assert_eq!(code, 0, "{map}{map_err}");
-    for heading in ["CORE COMMANDS", "LAUNCH"] {
+    let (_, legacy, _) = run(&["help", "commands"]);
+    assert_eq!(
+        map, legacy,
+        "`help commands` stays an alias of `help --all`"
+    );
+    for heading in ["SIGN IN", "CHAT AND MODELS", "LAUNCH", "ACCOUNT"] {
         assert!(map.contains(heading), "missing {heading} in:\n{map}");
     }
     for target in ["claude", "codex", "grok", "opencode", "pi", "pool"] {
@@ -269,7 +274,7 @@ fn no_args_non_tty_prints_grouped_help() {
     let (code, stdout, stderr) = run(&[]);
     assert_eq!(code, 0, "stderr={stderr}");
     assert!(
-        stdout.contains("point any coding agent") && stdout.contains("auth login"),
+        stdout.contains("point any coding agent") && stdout.contains("anyr login"),
         "no-args should print examples-first help when not a TTY, got:\n{stdout}"
     );
 }
@@ -293,8 +298,8 @@ fn help_follows_anyr_display_bin() {
             "ANYR_DISPLAY_BIN={name} missing {needle:?} in:\n{stdout}"
         );
         assert!(
-            stdout.contains(&format!("{name} help commands"))
-                || stdout.contains(&format!("{name} auth login")),
+            stdout.contains(&format!("{name} help --all"))
+                || stdout.contains(&format!("{name} login")),
             "ANYR_DISPLAY_BIN={name} missing usage line in:\n{stdout}"
         );
     }

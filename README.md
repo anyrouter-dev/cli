@@ -92,7 +92,7 @@ npm install -g @anyr/cli@next
 
 ```bash
 anyr                        # interactive TUI (TTY) — launch, model, key, credits
-anyr --help
+anyr --help                 # the everyday commands; anyr help --all for every command
 anyr login                  # browser / device code / paste; key saved on this machine
 anyr login --device         # headless / SSH
 anyr usage                  # credit balance

@@ -111,7 +111,7 @@ pub fn run(argv: Vec<String>, env: HashMap<String, String>) -> i32 {
             println!("{}", crate::registry::tree_json());
         } else if topic == Some("agents") {
             print!("{}", crate::registry::agents_guide());
-        } else if topic == Some("commands") || topic == Some("help") {
+        } else if parsed.flag_true("all") || matches!(topic, Some("commands" | "help" | "all")) {
             print!("{}", commands_help());
         } else if let Some(help) = topic_help(&parsed.passthrough) {
             print!("{help}");
@@ -220,7 +220,8 @@ fn usage_fail(message: &str) -> i32 {
 /// First word of `help <words>` that is not a real topic, if any.
 fn unknown_help_topic(words: &[String]) -> Option<String> {
     let first = words.first()?;
-    let known = |w: &str| w == "agents" || known_command(w) || command_help(w).is_some();
+    let known =
+        |w: &str| matches!(w, "agents" | "all") || known_command(w) || command_help(w).is_some();
     if !known(first) {
         return Some(first.clone());
     }
