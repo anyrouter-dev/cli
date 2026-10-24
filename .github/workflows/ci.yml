@@ -210,6 +210,28 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # Real agents, old and new where their key handling differs. OpenCode 2
+      # has no public build, so its fake in tests/e2e.rs covers it.
+      - name: install real agents
+        run: |
+          set -euo pipefail
+          A="$RUNNER_TEMP/agents"
+          npm i --silent --no-audit --no-fund --prefix "$A/pi-new" @earendil-works/pi-coding-agent@latest
+          npm i --silent --no-audit --no-fund --prefix "$A/pi-old" @mariozechner/pi-coding-agent@0.73.1
+          npm i --silent --no-audit --no-fund --prefix "$A/opencode" opencode-ai@1
+          npm i --silent --no-audit --no-fund --prefix "$A/claude" @anthropic-ai/claude-code@latest
+          {
+            printf 'ANYR_E2E_AGENTS='
+            printf 'pi-new=pi=%s;' "$A/pi-new/node_modules/.bin/pi"
+            printf 'pi-old=pi=%s;' "$A/pi-old/node_modules/.bin/pi"
+            printf 'opencode-1=opencode=%s;' "$A/opencode/node_modules/.bin/opencode"
+            printf 'claude=claude=%s\n' "$A/claude/node_modules/.bin/claude"
+          } >> "$GITHUB_ENV"
+
       - name: cargo test --test e2e_live
         env:
           ANYROUTER_E2E_API_KEY: ${{ secrets.ANYROUTER_E2E_API_KEY }}
