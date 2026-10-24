@@ -495,14 +495,10 @@ const DECIDER_TARGET: &str = "http://127.0.0.1:8080/v1";
 const DECIDER_ADVERTISED_MODEL_ID: &str = "pplx-decider-flash-v1.2";
 const LMSTUDIO_TARGET: &str = "http://localhost:1234/v1";
 
-/// Chat endpoints probed during discovery: (label, base, liveness URL).
+/// Other chat endpoints probed during discovery, after the on-device
+/// servers in `servers::SERVERS`: (label, base, liveness URL).
 /// Any HTTP response counts as listening, not just 2xx.
-const CHAT_PROBES: [(&str, &str, &str); 4] = [
-    (
-        "fm serve (Apple Foundation Models)",
-        FM_SERVE_TARGET,
-        FM_SERVE_HEALTH_URL,
-    ),
+const CHAT_PROBES: [(&str, &str, &str); 3] = [
     (
         "default target",
         DEFAULT_TARGET,
@@ -529,7 +525,6 @@ fn is_decider_response(body: &str) -> bool {
 static CONFIRMED_DECIDERS: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
 
 /// Send one tiny real decision to `base`/decisions and check the reply shape.
-/// A positive answer is cached; see `probe_decider_uncached`.
 fn probe_decider(base: &str) -> bool {
     if CONFIRMED_DECIDERS
         .lock()
@@ -538,20 +533,6 @@ fn probe_decider(base: &str) -> bool {
     {
         return true;
     }
-    probe_decider_uncached(base)
-}
-
-/// Drop a cached positive probe, once the server is seen down.
-fn forget_decider(base: &str) {
-    CONFIRMED_DECIDERS
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .remove(base);
-}
-
-/// Always POST. Supervision needs this: a crashed Decider must not keep
-/// reading as up from the cache.
-fn probe_decider_uncached(base: &str) -> bool {
     let url = format!("{}/decisions", base.trim_end_matches('/'));
     let body = json!({
         "model": DECIDER_ADVERTISED_MODEL_ID,
@@ -606,16 +587,31 @@ fn decider_target(base: &str) -> Target {
     }
 }
 
+/// Whether an on-device server answers the way discovery requires: any
+/// response for a chat server, a real decision for a Decider (8080 is a
+/// common dev port).
+fn on_device_listening(spec: &servers::ServerSpec) -> bool {
+    match spec.kind {
+        TargetKind::Chat => http_probe_listening(spec.health.url()),
+        TargetKind::Decider => probe_decider(spec.base),
+    }
+}
+
 /// Probe every known local endpoint (all of them, not first-wins).
 fn discover_targets() -> Vec<Target> {
     let mut out = Vec::new();
+    for spec in &servers::SERVERS {
+        if on_device_listening(spec) {
+            out.push(match spec.kind {
+                TargetKind::Chat => chat_target(spec.endpoint, spec.base),
+                TargetKind::Decider => decider_target(spec.base),
+            });
+        }
+    }
     for (label, base, health) in CHAT_PROBES {
         if http_probe_listening(health) {
             out.push(chat_target(label, base));
         }
-    }
-    if probe_decider(DECIDER_TARGET) {
-        out.push(decider_target(DECIDER_TARGET));
     }
     out
 }
@@ -634,35 +630,28 @@ enum OnDeviceModel {
 impl OnDeviceModel {
     const ALL: [OnDeviceModel; 2] = [OnDeviceModel::AppleFoundation, OnDeviceModel::DeciderFlash];
 
+    /// Its row in the server table.
+    fn spec(self) -> &'static servers::ServerSpec {
+        servers::spec(self)
+    }
+
     /// Public catalog id, the one `--model` takes and the summary prints.
     fn id(self) -> &'static str {
-        match self {
-            OnDeviceModel::AppleFoundation => "apple/foundation-model",
-            OnDeviceModel::DeciderFlash => "perplexity/pplx-decider-flash-v1.2",
-        }
+        self.spec().id
     }
 
     /// The id the relay advertises in its hello frame (pool join key).
     fn local_id(self) -> &'static str {
-        match self {
-            OnDeviceModel::AppleFoundation => FM_SERVE_ADVERTISED_MODEL_ID,
-            OnDeviceModel::DeciderFlash => DECIDER_ADVERTISED_MODEL_ID,
-        }
+        self.spec().local_id
     }
 
     fn label(self) -> &'static str {
-        match self {
-            OnDeviceModel::AppleFoundation => "Apple Foundation Models",
-            OnDeviceModel::DeciderFlash => "PPLX Decider Flash v1.2",
-        }
+        self.spec().label
     }
 
     /// The local endpoint discovery finds this model at.
     fn base(self) -> &'static str {
-        match self {
-            OnDeviceModel::AppleFoundation => FM_SERVE_TARGET,
-            OnDeviceModel::DeciderFlash => DECIDER_TARGET,
-        }
+        self.spec().base
     }
 
     /// Accepts the catalog id or the local id, any case.
@@ -686,28 +675,22 @@ struct SystemDetector;
 
 impl OnDeviceDetector for SystemDetector {
     fn detect(&self, model: OnDeviceModel) -> Result<(), String> {
-        match model {
-            OnDeviceModel::AppleFoundation => {
-                if let Some(major) = macos_major_version() {
-                    if major < 26 {
-                        return Err(format!("needs macOS 26 or later (this Mac runs {major})"));
-                    }
-                } else if !cfg!(target_os = "macos") {
-                    return Err("needs a Mac on macOS 26+".into());
+        let spec = model.spec();
+        if let Some(min) = spec.min_macos {
+            if let Some(major) = macos_major_version() {
+                if major < min {
+                    return Err(format!(
+                        "needs macOS {min} or later (this Mac runs {major})"
+                    ));
                 }
-                if http_probe_listening(FM_SERVE_HEALTH_URL) {
-                    Ok(())
-                } else {
-                    Err("turn on Apple Intelligence and run `fm serve`".into())
-                }
+            } else if !cfg!(target_os = "macos") {
+                return Err(format!("needs a Mac on macOS {min}+"));
             }
-            OnDeviceModel::DeciderFlash => {
-                if probe_decider(DECIDER_TARGET) {
-                    Ok(())
-                } else {
-                    Err("open the Decider for Mac app (serves on :8080)".into())
-                }
-            }
+        }
+        if on_device_listening(spec) {
+            Ok(())
+        } else {
+            Err(spec.enable_hint.into())
         }
     }
 }
@@ -724,10 +707,10 @@ fn with_launch(
     if detected.is_ok() || !launch {
         return detected;
     }
-    if model == OnDeviceModel::AppleFoundation
-        && macos_major_version().is_some_and(|major| major < 26)
-    {
-        return detected;
+    if let Some(min) = model.spec().min_macos {
+        if macos_major_version().is_some_and(|major| major < min) {
+            return detected;
+        }
     }
     if installed() {
         Ok(())
@@ -744,8 +727,7 @@ struct StartDetector {
 impl OnDeviceDetector for StartDetector {
     fn detect(&self, model: OnDeviceModel) -> Result<(), String> {
         with_launch(model, SystemDetector.detect(model), self.launch, || {
-            servers::spec_for(model)
-                .is_some_and(|spec| servers::Host::installed(&servers::SystemHost::default(), spec))
+            servers::Host::installed(&servers::SystemHost::default(), model.spec())
         })
     }
 }
@@ -1893,14 +1875,13 @@ fn run_foreground(f: Foreground<'_>) -> Result<i32, String> {
     // Find or start the on-device servers before the first discovery, so it
     // sees them. Explicit --target URLs are the user's own servers.
     let supervisor: Option<Arc<Mutex<servers::Supervisor>>> = f.args.target.is_none().then(|| {
-        let specs = f
-            .serve
-            .iter()
-            .filter_map(|m| servers::spec_for(*m))
-            .collect();
+        let specs = f.serve.iter().map(|m| m.spec()).collect();
         Arc::new(Mutex::new(servers::Supervisor::start(
             specs,
             f.args.no_launch,
+            // The detached child must connect within `--detach`'s wait;
+            // supervision picks a slow server up once it answers.
+            !f.detached,
             Box::new(servers::SystemHost::default()),
             Box::new(|m: &str| ulog(m)),
         )))
@@ -2408,7 +2389,7 @@ fn model_rows(prefs: &state::Prefs) -> Vec<view::ModelRow> {
             toggleable: true,
         })
         .collect();
-    for (label, base, health) in CHAT_PROBES.iter().skip(1) {
+    for (label, base, health) in CHAT_PROBES.iter() {
         if !http_probe_listening(health) {
             continue;
         }
@@ -2651,7 +2632,6 @@ impl doctor::Probe for SystemProbe<'_> {
     fn other_servers(&self) -> Vec<String> {
         CHAT_PROBES
             .iter()
-            .skip(1)
             .filter(|(_, _, health)| http_probe_listening(health))
             .map(|(label, base, _)| format!("{label} ({base})"))
             .collect()

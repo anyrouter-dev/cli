@@ -9,7 +9,7 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
-use super::OnDeviceModel;
+use super::{OnDeviceModel, TargetKind};
 
 /// How a server is started and stopped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,65 +20,115 @@ pub(super) enum Launch {
         args: &'static [&'static str],
     },
     /// A macOS app in /Applications, started with `open -g -a <app>` and
-    /// stopped by asking it to quit.
-    MacApp { app: &'static str },
+    /// stopped by asking it to quit. `process` is its `CFBundleExecutable`.
+    MacApp {
+        app: &'static str,
+        process: &'static str,
+    },
 }
 
-/// How to tell the server answers.
+/// How to tell the server answers. Both are cheap GETs: supervision polls
+/// them, so they must never run the model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Health {
     /// Any HTTP response from this URL.
     Get(&'static str),
-    /// A real decision POSTed to `<base>/decisions` returns `{answers}`.
-    Decider(&'static str),
+    /// This URL returns JSON with `"status": "ready"`.
+    Ready(&'static str),
 }
 
-/// One known on-device server.
+impl Health {
+    pub(super) fn url(self) -> &'static str {
+        match self {
+            Health::Get(u) | Health::Ready(u) => u,
+        }
+    }
+}
+
+/// One known on-device server and the model it serves.
 #[derive(Debug)]
 pub(super) struct ServerSpec {
-    pub id: &'static str,
-    pub label: &'static str,
-    /// The base URL discovery finds it at.
+    /// Short key for this server.
+    pub name: &'static str,
+    /// Endpoint label on the status screen.
+    pub endpoint: &'static str,
+    /// The base URL requests are forwarded to.
     pub base: &'static str,
+    /// Chat completions, or the Decisions shape.
+    pub kind: TargetKind,
     pub health: Health,
     pub launch: Launch,
-    /// The catalog model it serves (its `id()` and hello `local_id()`).
     pub model: OnDeviceModel,
+    /// Public catalog id (`--model`, the summary).
+    pub id: &'static str,
+    /// Hello-frame id: the catalog hop's `model_name`, the pool join key.
+    pub local_id: &'static str,
+    pub label: &'static str,
+    /// Oldest macOS major version it runs on, when it has one.
+    pub min_macos: Option<u32>,
+    /// What to tell a user when it is not reachable.
+    pub enable_hint: &'static str,
     /// How long start waits for it to answer before moving on.
     pub ready_timeout: Duration,
 }
 
-/// Known on-device servers. Adding one is one entry here.
+/// Known on-device servers. A new one is a row here plus its
+/// `OnDeviceModel` variant; detection, discovery, the picker, `--model`,
+/// launching and supervision all read this table.
 pub(super) static SERVERS: [ServerSpec; 2] = [
     ServerSpec {
-        id: "fm-serve",
-        label: "fm serve (Apple Foundation Models)",
+        name: "fm-serve",
+        endpoint: "fm serve (Apple Foundation Models)",
         base: super::FM_SERVE_TARGET,
+        kind: TargetKind::Chat,
         health: Health::Get(super::FM_SERVE_HEALTH_URL),
         launch: Launch::Child {
             program: "fm",
             args: &["serve"],
         },
         model: OnDeviceModel::AppleFoundation,
+        id: "apple/foundation-model",
+        local_id: super::FM_SERVE_ADVERTISED_MODEL_ID,
+        label: "Apple Foundation Models",
+        min_macos: Some(26),
+        enable_hint: "turn on Apple Intelligence and run `fm serve`",
         ready_timeout: Duration::from_secs(20),
     },
     ServerSpec {
-        id: "decider",
-        label: "Perplexity Decider",
+        name: "decider",
+        endpoint: "Perplexity Decider",
         base: super::DECIDER_TARGET,
-        health: Health::Decider(super::DECIDER_TARGET),
-        // Perplexity's docs: the app is "Decider" in Applications, opening it
-        // starts the local API (menu bar only), Quit stops it. No CLI.
-        launch: Launch::MacApp { app: "Decider" },
+        kind: TargetKind::Decider,
+        // From the app bundle (Decider 0.1.0, build 8): its server routes
+        // /health, /v1/models and /v1/decisions, and its own browser
+        // extension treats `/health` -> `{"status":"ready"}` as up.
+        health: Health::Ready("http://127.0.0.1:8080/health"),
+        // Perplexity's docs: the app is "Decider" in Applications; opening
+        // it starts the local API (menu bar only) and Quit stops it. No CLI.
+        // Info.plist: CFBundleIdentifier ai.perplexity.decider,
+        // CFBundleExecutable decider.
+        launch: Launch::MacApp {
+            app: "Decider",
+            process: "decider",
+        },
         model: OnDeviceModel::DeciderFlash,
+        id: "perplexity/pplx-decider-flash-v1.2",
+        local_id: super::DECIDER_ADVERTISED_MODEL_ID,
+        label: "PPLX Decider Flash v1.2",
+        min_macos: None,
+        enable_hint: "open the Decider for Mac app (serves on :8080)",
         // The first launch downloads ~5.8 GB before it answers; start does
         // not wait for that, supervision keeps watching.
         ready_timeout: Duration::from_secs(60),
     },
 ];
 
-pub(super) fn spec_for(model: OnDeviceModel) -> Option<&'static ServerSpec> {
-    SERVERS.iter().find(|s| s.model == model)
+/// The table row for `model`. Every variant has one (tested).
+pub(super) fn spec(model: OnDeviceModel) -> &'static ServerSpec {
+    SERVERS
+        .iter()
+        .find(|s| s.model == model)
+        .expect("every OnDeviceModel has a SERVERS row")
 }
 
 /// Everything the supervisor does to the outside world, behind a trait so
@@ -155,6 +205,7 @@ impl Supervisor {
     pub(super) fn start(
         specs: Vec<&'static ServerSpec>,
         no_launch: bool,
+        wait: bool,
         host: Box<dyn Host>,
         log: Box<dyn Fn(&str) + Send>,
     ) -> Self {
@@ -167,25 +218,28 @@ impl Supervisor {
         for spec in specs {
             let healthy = sup.host.healthy(spec);
             let status = if healthy || sup.host.running(spec) {
-                (sup.log)(&format!("found {} running (external)", spec.label));
+                (sup.log)(&format!("found {} running (external)", spec.endpoint));
                 Status::External
             } else if no_launch {
                 (sup.log)(&format!(
                     "{} is not running; not starting it (--no-launch)",
-                    spec.label
+                    spec.endpoint
                 ));
                 Status::Off
             } else if !sup.host.installed(spec) {
-                (sup.log)(&format!("{} is not running and not installed", spec.label));
+                (sup.log)(&format!(
+                    "{} is not running and not installed",
+                    spec.endpoint
+                ));
                 Status::Off
             } else {
                 match sup.host.launch(spec) {
                     Ok(()) => {
-                        (sup.log)(&format!("started {} (managed)", spec.label));
+                        (sup.log)(&format!("started {} (managed)", spec.endpoint));
                         Status::Managed
                     }
                     Err(e) => {
-                        (sup.log)(&format!("could not start {}: {e}", spec.label));
+                        (sup.log)(&format!("could not start {}: {e}", spec.endpoint));
                         Status::Off
                     }
                 }
@@ -199,7 +253,9 @@ impl Supervisor {
                 healthy,
             });
         }
-        sup.wait_ready();
+        if wait {
+            sup.wait_ready();
+        }
         sup
     }
 
@@ -226,7 +282,7 @@ impl Supervisor {
             if e.status == Status::Managed && !e.healthy {
                 (self.log)(&format!(
                     "{} is still starting after {}s; serving it once it answers",
-                    e.spec.label,
+                    e.spec.endpoint,
                     e.spec.ready_timeout.as_secs()
                 ));
             }
@@ -252,7 +308,7 @@ impl Supervisor {
                     Ok(()) => {
                         (self.log)(&format!(
                             "restarted {} (attempt {})",
-                            e.spec.label, e.restarts
+                            e.spec.endpoint, e.restarts
                         ));
                         e.launched_at = now;
                         e.healthy = false;
@@ -263,7 +319,7 @@ impl Supervisor {
                         e.restart_at = Some(now + delay);
                         (self.log)(&format!(
                             "could not restart {}: {err}; retrying in {}s",
-                            e.spec.label,
+                            e.spec.endpoint,
                             delay.as_secs()
                         ));
                     }
@@ -277,17 +333,17 @@ impl Supervisor {
                 e.healthy = false;
                 (self.log)(&format!(
                     "{} exited; restarting in {}s",
-                    e.spec.label,
+                    e.spec.endpoint,
                     delay.as_secs()
                 ));
                 continue;
             }
-            let healthy = self.host.healthy(e.spec);
-            if healthy && !e.healthy {
+            // Once up, a crash shows as `exited`; no need to keep probing.
+            if !e.healthy && self.host.healthy(e.spec) {
+                e.healthy = true;
                 came_up = true;
             }
-            e.healthy = healthy;
-            if healthy && e.restarts > 0 && now.duration_since(e.launched_at) >= STABLE_AFTER {
+            if e.healthy && e.restarts > 0 && now.duration_since(e.launched_at) >= STABLE_AFTER {
                 e.restarts = 0;
             }
         }
@@ -299,7 +355,7 @@ impl Supervisor {
         for e in &mut self.entries {
             if e.status == Status::Managed {
                 self.host.stop(e.spec);
-                (self.log)(&format!("stopped {}", e.spec.label));
+                (self.log)(&format!("stopped {}", e.spec.endpoint));
                 e.status = Status::Off;
             }
         }
@@ -329,6 +385,13 @@ pub(super) struct SystemHost {
     children: BTreeMap<&'static str, std::process::Child>,
 }
 
+/// A `/health` body that says the server is ready.
+fn is_ready(body: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .is_some_and(|v| v.get("status").and_then(|s| s.as_str()) == Some("ready"))
+}
+
 /// `pgrep -f` pattern for a child command: `fm serve`, by any path.
 fn child_pattern(program: &str, args: &[&str]) -> String {
     let mut s = format!("(^|/){program}");
@@ -353,13 +416,12 @@ impl Host for SystemHost {
     fn healthy(&self, spec: &ServerSpec) -> bool {
         match spec.health {
             Health::Get(url) => super::http_probe_listening(url),
-            Health::Decider(base) => {
-                let ok = super::probe_decider_uncached(base);
-                if !ok {
-                    super::forget_decider(base);
-                }
-                ok
-            }
+            Health::Ready(url) => ureq::get(url)
+                .timeout(Duration::from_millis(800))
+                .call()
+                .ok()
+                .and_then(|r| r.into_string().ok())
+                .is_some_and(|body| is_ready(&body)),
         }
     }
 
@@ -367,7 +429,7 @@ impl Host for SystemHost {
         let mut cmd = std::process::Command::new("pgrep");
         match spec.launch {
             Launch::Child { program, args } => cmd.args(["-f", &child_pattern(program, args)]),
-            Launch::MacApp { app } => cmd.args(["-x", app]),
+            Launch::MacApp { process, .. } => cmd.args(["-x", process]),
         };
         quiet_status(&mut cmd)
     }
@@ -378,7 +440,7 @@ impl Host for SystemHost {
         }
         match spec.launch {
             Launch::Child { program, .. } => crate::install::find_on_path(program).is_some(),
-            Launch::MacApp { app } => {
+            Launch::MacApp { app, .. } => {
                 let bundle = format!("{app}.app");
                 let mut dirs = vec![std::path::PathBuf::from("/Applications")];
                 if let Some(home) = std::env::var_os("HOME") {
@@ -408,10 +470,10 @@ impl Host for SystemHost {
                 }
                 let child = cmd.spawn().map_err(|e| format!("`{program}`: {e}"))?;
                 super::live::track_child(child.id());
-                self.children.insert(spec.id, child);
+                self.children.insert(spec.name, child);
                 Ok(())
             }
-            Launch::MacApp { app } => {
+            Launch::MacApp { app, .. } => {
                 if quiet_status(Command::new("open").args(["-g", "-a", app])) {
                     Ok(())
                 } else {
@@ -423,31 +485,33 @@ impl Host for SystemHost {
 
     fn exited(&mut self, spec: &ServerSpec) -> bool {
         match spec.launch {
-            Launch::Child { .. } => match self.children.get_mut(spec.id) {
+            Launch::Child { .. } => match self.children.get_mut(spec.name) {
                 Some(child) => match child.try_wait() {
                     Ok(None) => false,
                     _ => {
                         super::live::untrack_child(child.id());
-                        self.children.remove(spec.id);
+                        self.children.remove(spec.name);
                         true
                     }
                 },
                 None => true,
             },
-            Launch::MacApp { .. } => !self.running(spec),
+            // Gone only when the process is missing AND it stopped answering,
+            // so a misnamed process can never cause a relaunch loop.
+            Launch::MacApp { .. } => !self.running(spec) && !self.healthy(spec),
         }
     }
 
     fn stop(&mut self, spec: &ServerSpec) {
         match spec.launch {
             Launch::Child { .. } => {
-                if let Some(mut child) = self.children.remove(spec.id) {
+                if let Some(mut child) = self.children.remove(spec.name) {
                     super::live::untrack_child(child.id());
                     let _ = child.kill();
                     let _ = child.wait();
                 }
             }
-            Launch::MacApp { app } => {
+            Launch::MacApp { app, .. } => {
                 quiet_status(
                     std::process::Command::new("osascript")
                         .args(["-e", &format!("quit app \"{app}\"")]),
@@ -482,6 +546,7 @@ mod tests {
         fail_launch: Vec<&'static str>,
         launches: Vec<&'static str>,
         stops: Vec<&'static str>,
+        health_checks: usize,
         clock: Duration,
     }
 
@@ -507,23 +572,25 @@ mod tests {
 
     impl Host for Mock {
         fn healthy(&self, s: &ServerSpec) -> bool {
-            self.w().healthy.get(s.id).copied().unwrap_or(false)
+            let mut w = self.w();
+            w.health_checks += 1;
+            w.healthy.get(s.name).copied().unwrap_or(false)
         }
         fn running(&self, s: &ServerSpec) -> bool {
-            self.w().running.get(s.id).copied().unwrap_or(false)
+            self.w().running.get(s.name).copied().unwrap_or(false)
         }
         fn installed(&self, s: &ServerSpec) -> bool {
-            self.w().installed.get(s.id).copied().unwrap_or(false)
+            self.w().installed.get(s.name).copied().unwrap_or(false)
         }
         fn launch(&mut self, s: &ServerSpec) -> Result<(), String> {
             let mut w = self.w();
-            w.launches.push(s.id);
-            if w.fail_launch.contains(&s.id) {
+            w.launches.push(s.name);
+            if w.fail_launch.contains(&s.name) {
                 return Err("boom".into());
             }
-            w.running.insert(s.id, true);
-            if !w.slow.contains(&s.id) {
-                w.healthy.insert(s.id, true);
+            w.running.insert(s.name, true);
+            if !w.slow.contains(&s.name) {
+                w.healthy.insert(s.name, true);
             }
             Ok(())
         }
@@ -532,9 +599,9 @@ mod tests {
         }
         fn stop(&mut self, s: &ServerSpec) {
             let mut w = self.w();
-            w.stops.push(s.id);
-            w.running.insert(s.id, false);
-            w.healthy.insert(s.id, false);
+            w.stops.push(s.name);
+            w.running.insert(s.name, false);
+            w.healthy.insert(s.name, false);
         }
         fn now(&self) -> Instant {
             self.1 + self.w().clock
@@ -545,10 +612,10 @@ mod tests {
     }
 
     fn fm() -> &'static ServerSpec {
-        spec_for(OnDeviceModel::AppleFoundation).unwrap()
+        spec(OnDeviceModel::AppleFoundation)
     }
     fn decider() -> &'static ServerSpec {
-        spec_for(OnDeviceModel::DeciderFlash).unwrap()
+        spec(OnDeviceModel::DeciderFlash)
     }
 
     fn installed_all() -> World {
@@ -564,6 +631,7 @@ mod tests {
         let sup = Supervisor::start(
             vec![fm(), decider()],
             no_launch,
+            true,
             Box::new(m.clone()),
             Box::new(move |l| sink.lock().unwrap().push(l.to_string())),
         );
@@ -576,9 +644,9 @@ mod tests {
         // a model without an entry would silently never auto-start.
         for m in OnDeviceModel::ALL {
             assert_eq!(SERVERS.iter().filter(|s| s.model == m).count(), 1, "{m:?}");
-            assert_eq!(spec_for(m).unwrap().base, m.base());
+            assert_eq!(spec(m).id, m.id());
         }
-        let ids: std::collections::BTreeSet<_> = SERVERS.iter().map(|s| s.id).collect();
+        let ids: std::collections::BTreeSet<_> = SERVERS.iter().map(|s| s.name).collect();
         assert_eq!(ids.len(), SERVERS.len());
     }
 
@@ -591,10 +659,17 @@ mod tests {
                 args: &["serve"]
             }
         );
-        assert_eq!(decider().launch, Launch::MacApp { app: "Decider" });
+        // Info.plist of Decider 0.1.0: the executable is lowercase.
+        assert_eq!(
+            decider().launch,
+            Launch::MacApp {
+                app: "Decider",
+                process: "decider"
+            }
+        );
         assert_eq!(
             decider().health,
-            Health::Decider("http://127.0.0.1:8080/v1")
+            Health::Ready("http://127.0.0.1:8080/health")
         );
         assert_eq!(fm().health, Health::Get("http://127.0.0.1:1976/health"));
     }
@@ -813,6 +888,46 @@ mod tests {
             .unwrap()
             .iter()
             .any(|l| l == "could not start fm serve (Apple Foundation Models): boom"));
+    }
+
+    #[test]
+    fn a_healthy_managed_server_is_not_probed_on_every_tick() {
+        // WHY: probing costs a request to the user's server every 2s for as
+        // long as the relay runs; once up, a crash shows as `exited`.
+        let m = Mock::new(installed_all());
+        let (mut sup, _) = start(&m, false);
+        let before = m.w().health_checks;
+        for _ in 0..30 {
+            m.advance(Duration::from_secs(2));
+            sup.tick();
+        }
+        assert_eq!(m.w().health_checks, before);
+    }
+
+    #[test]
+    fn detached_start_does_not_block_on_slow_servers() {
+        // WHY: `--detach` gives the background relay 10s to connect; a
+        // first-launch Decider takes far longer to answer.
+        let mut w = installed_all();
+        w.slow.push("decider");
+        let m = Mock::new(w);
+        let sup = Supervisor::start(
+            vec![decider()],
+            false,
+            false,
+            Box::new(m.clone()),
+            Box::new(|_| {}),
+        );
+        assert_eq!(m.w().clock, Duration::ZERO);
+        assert_eq!(sup.tags()[decider().base], "managed");
+    }
+
+    #[test]
+    fn ready_means_status_ready_in_the_health_json() {
+        assert!(is_ready(r#"{"status":"ready"}"#));
+        assert!(!is_ready(r#"{"status":"loading"}"#));
+        assert!(!is_ready("ok"));
+        assert!(!is_ready("{}"));
     }
 
     #[test]

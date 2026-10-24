@@ -106,17 +106,18 @@ extern "C" fn on_signal(sig: libc::c_int) {
 #[cfg(unix)]
 static SAVED_TERMIOS: std::sync::OnceLock<libc::termios> = std::sync::OnceLock::new();
 
-/// SIGINT and SIGTERM ask for a graceful stop. A detached relay also ignores
-/// SIGHUP so closing the terminal that launched it does not kill it.
+/// SIGINT and SIGTERM ask for a graceful stop, and so does SIGHUP in the
+/// foreground. A detached relay ignores SIGHUP so closing the terminal that
+/// launched it does not kill it.
 pub(super) fn install_signal_handlers(detached: bool) {
     #[cfg(unix)]
     unsafe {
         let handler = on_signal as extern "C" fn(libc::c_int) as libc::sighandler_t;
         libc::signal(libc::SIGINT, handler);
         libc::signal(libc::SIGTERM, handler);
-        if detached {
-            libc::signal(libc::SIGHUP, libc::SIG_IGN);
-        }
+        // Closing the terminal of a foreground relay stops it gracefully,
+        // so the servers it started are stopped too.
+        libc::signal(libc::SIGHUP, if detached { libc::SIG_IGN } else { handler });
     }
     #[cfg(not(unix))]
     let _ = detached;
