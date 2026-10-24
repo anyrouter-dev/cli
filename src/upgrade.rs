@@ -7,7 +7,7 @@ use std::fs;
 use std::io;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use sha2::{Digest, Sha256};
 
