@@ -34,6 +34,10 @@ pub(super) enum Cmd {
         json: bool,
     },
     Pair,
+    /// `relay rename <name>`: change this device's name here and in the cloud.
+    Rename {
+        name: String,
+    },
     Unpair {
         yes: bool,
     },
@@ -43,7 +47,7 @@ pub(super) enum Cmd {
 }
 
 pub(super) const SUBCOMMANDS: &str =
-    "start|stop|status|logs|models|devices|pool|pair|unpair|doctor";
+    "start|stop|status|logs|models|devices|pool|pair|rename|unpair|doctor";
 
 const DEFAULT_LOG_LINES: usize = 50;
 
@@ -168,6 +172,17 @@ pub(super) fn parse_cmd(parsed: &ParsedArgs) -> Result<Cmd, String> {
             extra(1)?;
             Cmd::Pair
         }
+        "rename" => {
+            let Some(name) = words.get(1).filter(|w| !w.trim().is_empty()) else {
+                return Err(usage(
+                    "`relay rename` needs a name, e.g. `{bin} relay rename \"Studio\"`.",
+                ));
+            };
+            extra(2)?;
+            Cmd::Rename {
+                name: name.to_string(),
+            }
+        }
         "unpair" => {
             extra(1)?;
             Cmd::Unpair {
@@ -196,6 +211,19 @@ pub(super) fn pool_flag(parsed: &ParsedArgs) -> Result<Option<bool>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rename_needs_exactly_one_name() {
+        let ok = parse_cmd(&p(&["rename", "Studio"])).unwrap();
+        assert_eq!(
+            ok,
+            Cmd::Rename {
+                name: "Studio".into()
+            }
+        );
+        assert!(parse_cmd(&p(&["rename"])).is_err());
+        assert!(parse_cmd(&p(&["rename", "a", "b"])).is_err());
+    }
 
     fn p(argv: &[&str]) -> ParsedArgs {
         let mut full = vec!["relay"];

@@ -57,6 +57,7 @@ pub(crate) fn persist_login(
     if let Some(prev) = stored {
         profile.relay_token = prev.relay_token.clone();
         profile.relay_device_id = prev.relay_device_id.clone();
+        profile.relay_device_name = prev.relay_device_name.clone();
         profile.extra = prev.extra.clone();
     }
     let mut cfg = upsert_profile(existing.unwrap_or_default(), &name, profile);
@@ -220,6 +221,7 @@ profiles:
             }
             profile.relay_token = prev.relay_token.clone();
             profile.relay_device_id = prev.relay_device_id.clone();
+            profile.relay_device_name = prev.relay_device_name.clone();
             profile.extra = prev.extra.clone();
         }
 

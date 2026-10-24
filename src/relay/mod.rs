@@ -46,6 +46,7 @@ use serde_json::json;
 mod cli;
 mod daemon;
 mod devices;
+mod devname;
 mod doctor;
 mod live;
 mod state;
@@ -64,7 +65,7 @@ pub const RELAY_DEVICE_ID_FIELD: &str = "relay_device_id";
 const DEFAULT_TARGET: &str = "http://localhost:8000/v1";
 const DEFAULT_WS_URL: &str = "wss://anyrouter.dev/api/v1/relay/connect";
 const DEFAULT_API_BASE: &str = "https://anyrouter.dev/api/v1";
-const DEFAULT_DEVICE_NAME: &str = "My Mac";
+const RELAY_DEVICE_NAME_FIELD: &str = "relay_device_name";
 const MAX_BACKOFF_MS: u64 = 30_000;
 const BASE_BACKOFF_MS: u64 = 1_000;
 /// How long one non-blocking poll of the socket waits before we check the
@@ -211,7 +212,10 @@ struct StartArgs {
     target: Option<String>,
     token: Option<String>,
     url: Option<String>,
-    name: String,
+    /// `--name` as passed. `run_relay_start` resolves it into `device`.
+    name: Option<String>,
+    /// The resolved device name; empty until `resolve_device`.
+    device: String,
     /// Comma-joined `--model` values (the parser joins repeats for relay).
     models: Option<String>,
     all: bool,
@@ -224,9 +228,8 @@ fn parse_start_args(parsed: &crate::parse::ParsedArgs) -> StartArgs {
         target: get("target"),
         token: get("token"),
         url: get("url"),
-        name: get("name")
-            .filter(|s| !s.trim().is_empty())
-            .unwrap_or_else(|| DEFAULT_DEVICE_NAME.into()),
+        name: get("name").filter(|s| !s.trim().is_empty()),
+        device: String::new(),
         models: get("model"),
         all: parsed.flag_true("all"),
         max_concurrency: get("max-concurrency")
@@ -355,6 +358,7 @@ fn write_profile_field(
     match field {
         RELAY_TOKEN_FIELD => entry.relay_token = Some(value.to_string()),
         RELAY_DEVICE_ID_FIELD => entry.relay_device_id = Some(value.to_string()),
+        RELAY_DEVICE_NAME_FIELD => entry.relay_device_name = Some(value.to_string()),
         "api_key" => entry.api_key = Some(value.to_string()),
         other => return Err(format!("unknown relay profile field {other}")),
     }
@@ -1666,7 +1670,7 @@ fn run_relay_start(
     detach: bool,
 ) -> Result<i32, String> {
     let bin = crate::help::invoked_bin();
-    let args = parse_start_args(parsed);
+    let mut args = parse_start_args(parsed);
     let pool_flag = cli::pool_flag(parsed)?;
     let quiet = parsed.flag_true("quiet");
     VERBOSE.store(parsed.flag_true("verbose"), Ordering::Relaxed);
@@ -1696,6 +1700,7 @@ fn run_relay_start(
         crate::cmd::dispatch::hint(&format!("{e}\nSee the list with `{{bin}} relay models`."))
     })?;
     let token = resolve_relay_credential(args.token.as_deref(), parsed, env)?;
+    args.device = resolve_device(args.name.as_deref(), parsed, env, quiet || detached_child);
     let serve = if detached_child {
         env.get(daemon::ENV_SERVE)
             .map(|s| s.split(',').filter_map(OnDeviceModel::from_id).collect())
@@ -1742,7 +1747,7 @@ fn detached_child_args(args: &StartArgs, pool_flag: Option<bool>, verbose: bool)
         child.push(if on { "--pool" } else { "--no-pool" }.into());
     }
     for (flag, value) in [
-        ("--name", Some(args.name.clone())),
+        ("--name", Some(args.device.clone())),
         ("--url", args.url.clone()),
         ("--target", args.target.clone()),
         (
@@ -1784,7 +1789,7 @@ fn run_foreground(f: Foreground<'_>) -> Result<i32, String> {
         pid: std::process::id(),
         started_at: state::now_secs(),
         detached: f.detached,
-        device: f.args.name.clone(),
+        device: f.args.device.clone(),
     };
     state::write_pid(&f.paths, meta.pid)?;
     live::install_signal_handlers(f.detached);
@@ -1797,7 +1802,7 @@ fn run_foreground(f: Foreground<'_>) -> Result<i32, String> {
             .as_deref()
             .filter(|s| !s.trim().is_empty())
             .unwrap_or(DEFAULT_WS_URL),
-        &f.args.name,
+        &f.args.device,
     );
     vlog(&format!("relay url={url}"));
 
@@ -1845,7 +1850,7 @@ fn run_foreground(f: Foreground<'_>) -> Result<i32, String> {
                 last_err.clear();
                 stats.set_conn(Conn::Connected);
                 stats.set_error(None);
-                ulog(&format!("connected as \"{}\"", f.args.name));
+                ulog(&format!("connected as \"{}\"", f.args.device));
                 // After the first connect the cloud has paired this device,
                 // so its id resolves even on a brand-new Mac.
                 if !pool_synced {
@@ -2012,9 +2017,9 @@ fn run_relay_pair(
     env: &BTreeMap<String, String>,
 ) -> Result<i32, String> {
     let bin = crate::help::invoked_bin();
-    let name = crate::parse::get_string_flag(&parsed.flags, "name")
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| DEFAULT_DEVICE_NAME.into());
+    let flag =
+        crate::parse::get_string_flag(&parsed.flags, "name").filter(|s| !s.trim().is_empty());
+    let name = resolve_device(flag.as_deref(), parsed, env, false);
     let Some(api_key) = resolve_sk_ar_key(parsed, env) else {
         return Err(view::error(
             "not logged in",
@@ -2025,6 +2030,134 @@ fn run_relay_pair(
     let _ = pair_device(&api_key, &name, env)?;
     println!("Paired as \"{name}\". Token saved to your AnyRouter config.");
     println!("Next: `{bin} relay start`");
+    Ok(0)
+}
+
+/// The name saved in the active profile, if any.
+fn saved_device_name(env: &BTreeMap<String, String>) -> Option<String> {
+    let path = crate::config::resolve_config_path(None, env);
+    let cfg = crate::key::load_config_if_present(&path)?;
+    cfg.profiles
+        .get(&cfg.active_profile)?
+        .relay_device_name
+        .clone()
+        .filter(|s| !s.trim().is_empty())
+}
+
+/// The device name for this run: `--name`, else the saved name, else the
+/// machine's own, else a generated one. The result is saved on first use, so
+/// resolving again gives the same name even if the Mac is renamed. A new
+/// `--name` replaces the saved one here and, best effort, in the cloud.
+fn resolve_device(
+    flag: Option<&str>,
+    parsed: &crate::parse::ParsedArgs,
+    env: &BTreeMap<String, String>,
+    quiet: bool,
+) -> String {
+    let saved = saved_device_name(env);
+    let host = env
+        .get("HOSTNAME")
+        .or_else(|| env.get("COMPUTERNAME"))
+        .map(String::as_str);
+    let (name, source) = devname::resolve(
+        &devname::SystemRunner,
+        &devname::Inputs {
+            flag,
+            saved: saved.as_deref(),
+            macos: cfg!(target_os = "macos"),
+            env_hostname: host,
+            seed: devname::seed_now(),
+        },
+    );
+    if saved.as_deref() != Some(name.as_str()) {
+        if let Err(e) = write_profile_field(RELAY_DEVICE_NAME_FIELD, &name, env) {
+            eprintln!("Could not save the device name: {e}");
+        } else if let (Some(old), devname::Source::Flag) = (&saved, source) {
+            if *old != name {
+                if let Err(e) = rename_on_cloud(parsed, env, &name) {
+                    eprintln!("Saved the name here; the cloud still shows \"{old}\" ({e})");
+                }
+            }
+        }
+    }
+    if !quiet {
+        if let Some(line) = devname::first_start_line(&name, source, &crate::help::invoked_bin()) {
+            println!("{line}");
+        }
+    }
+    name
+}
+
+/// PATCH /relay/devices/:id { name } for the cached (or only) paired device.
+fn rename_on_cloud(
+    parsed: &crate::parse::ParsedArgs,
+    env: &BTreeMap<String, String>,
+    name: &str,
+) -> Result<(), String> {
+    let id = resolve_relay_device_id(parsed, env)?;
+    let key = resolve_sk_ar_key(parsed, env)
+        .ok_or_else(|| "no AnyRouter key to rename the device".to_string())?;
+    patch_device_name(DEFAULT_API_BASE, &key, &id, name)
+}
+
+fn patch_device_name(api_base: &str, key: &str, id: &str, name: &str) -> Result<(), String> {
+    let url = format!("{api_base}/relay/devices/{id}");
+    let body = json!({ "name": name }).to_string();
+    let (status, resp) = crate::http::http_patch(&url, Some(key), Some(&body))?;
+    if (200..300).contains(&status) {
+        return Ok(());
+    }
+    let value: serde_json::Value = serde_json::from_str(&resp).unwrap_or(serde_json::Value::Null);
+    let msg = value
+        .pointer("/error/message")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unexpected response");
+    Err(format!("Could not rename the device ({status}): {msg}"))
+}
+
+/// Cloud first, then the config: a refused rename leaves the config alone.
+fn rename_device(
+    api_base: &str,
+    key: &str,
+    id: &str,
+    name: &str,
+    env: &BTreeMap<String, String>,
+) -> Result<(), String> {
+    patch_device_name(api_base, key, id, name)?;
+    write_profile_field(RELAY_DEVICE_NAME_FIELD, name, env)
+}
+
+/// `anyr relay rename <name>` — cloud first, so the config never claims a
+/// name the dashboard does not show. A running relay keeps the old name on
+/// its status screen until it restarts.
+fn run_relay_rename(
+    parsed: &crate::parse::ParsedArgs,
+    env: &BTreeMap<String, String>,
+    name: &str,
+) -> Result<i32, String> {
+    let bin = crate::help::invoked_bin();
+    let name = devname::clean(name);
+    if name.is_empty() {
+        return Err(view::error(
+            "the device name is empty",
+            "",
+            &format!("`{bin} relay rename \"Studio\"`"),
+        ));
+    }
+    if resolve_sk_ar_key(parsed, env).is_none() {
+        return Err(view::error(
+            "not logged in",
+            "renaming needs an AnyRouter key",
+            &format!("`{bin} login`"),
+        ));
+    }
+    let id = resolve_relay_device_id(parsed, env)?;
+    let key = resolve_sk_ar_key(parsed, env).unwrap_or_default();
+    rename_device(DEFAULT_API_BASE, &key, &id, &name, env)?;
+    println!("Device renamed to \"{name}\".");
+    if matches!(state::running(&state::paths(env)), state::Running::Yes(_)) {
+        println!("Restart the relay to show it on the status screen: `{bin} relay stop && {bin} relay start`");
+    }
     Ok(0)
 }
 
@@ -2455,6 +2588,7 @@ pub fn run(
         cli::Cmd::ModelSet { id, enable } => run_relay_model_set(env, &id, enable),
         cli::Cmd::Pool { set, json } => run_relay_pool(parsed, env, set, json),
         cli::Cmd::Pair => run_relay_pair(parsed, env),
+        cli::Cmd::Rename { name } => run_relay_rename(parsed, env, &name),
         cli::Cmd::Unpair { yes } => run_relay_unpair(parsed, env, yes),
         cli::Cmd::Doctor { json } => run_relay_doctor(parsed, env, json),
     }
@@ -2657,7 +2791,7 @@ mod tests {
         let bare = mk(vec![("verbose", FlagValue::Bool(true))]);
         let args = parse_start_args(&bare);
         assert!(args.target.is_none());
-        assert_eq!(args.name, DEFAULT_DEVICE_NAME);
+        assert!(args.name.is_none());
         assert!(args.models.is_none());
         assert!(!args.all);
         assert!(args.max_concurrency.is_none());
@@ -2676,7 +2810,7 @@ mod tests {
         let args = parse_start_args(&full);
         assert_eq!(args.target.as_deref(), Some("http://127.0.0.1:1976/v1"));
         assert_eq!(args.token.as_deref(), Some("rk_x"));
-        assert_eq!(args.name, "Desk");
+        assert_eq!(args.name.as_deref(), Some("Desk"));
         assert_eq!(args.max_concurrency, Some(4));
 
         // --pool / --no-pool live in cli::pool_flag (tested there).
@@ -2870,6 +3004,116 @@ profiles:
         let p = again.profiles.get("default").unwrap();
         assert_eq!(p.relay_token.as_deref(), Some("rk_pairing-token"));
         assert_eq!(p.relay_device_id.as_deref(), Some("dev_123"));
+    }
+
+    /// One-shot HTTP stub that records the request line and body it receives.
+    fn spawn_capture_stub(
+        status: u16,
+        resp: &str,
+    ) -> (String, std::thread::JoinHandle<(String, String)>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let resp = resp.to_string();
+        let h = std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            let mut buf = Vec::new();
+            let mut tmp = [0u8; 1024];
+            loop {
+                let n = s.read(&mut tmp).unwrap();
+                buf.extend_from_slice(&tmp[..n]);
+                let text = String::from_utf8_lossy(&buf).to_string();
+                if let Some((head, body)) = text.split_once("\r\n\r\n") {
+                    let want = head
+                        .lines()
+                        .find_map(|l| {
+                            let (k, v) = l.split_once(':')?;
+                            k.eq_ignore_ascii_case("content-length")
+                                .then(|| v.trim().parse::<usize>().ok())
+                                .flatten()
+                        })
+                        .unwrap_or(0);
+                    if body.len() >= want {
+                        let line = head.lines().next().unwrap_or("").to_string();
+                        let out = format!(
+                            "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{resp}",
+                            resp.len()
+                        );
+                        let _ = s.write_all(out.as_bytes());
+                        return (line, body.to_string());
+                    }
+                }
+            }
+        });
+        (base, h)
+    }
+
+    #[test]
+    fn rename_patches_the_device_name_in_the_cloud() {
+        let (base, h) = spawn_capture_stub(200, r#"{"id":"dev_1","name":"Studio"}"#);
+        patch_device_name(&base, "sk-ar-v1-k", "dev_1", "Studio").unwrap();
+        let (line, body) = h.join().unwrap();
+        assert!(line.starts_with("PATCH /relay/devices/dev_1 "), "{line}");
+        assert_eq!(body, r#"{"name":"Studio"}"#);
+    }
+
+    #[test]
+    fn rename_surfaces_a_cloud_refusal() {
+        let (base, h) = spawn_capture_stub(403, r#"{"error":{"message":"nope"}}"#);
+        let err = patch_device_name(&base, "sk-ar-v1-k", "dev_1", "Studio").unwrap_err();
+        let _ = h.join();
+        assert!(err.contains("403") && err.contains("nope"), "{err}");
+    }
+
+    #[test]
+    fn rename_updates_config_and_server_together() {
+        let home = temp_home("rename-ok");
+        let env = env_with(&home, &[]);
+        write_profile_field(RELAY_DEVICE_NAME_FIELD, "Old", &env).unwrap();
+        let (base, h) = spawn_capture_stub(200, r#"{"id":"dev_1","name":"New"}"#);
+        rename_device(&base, "sk-ar-v1-k", "dev_1", "New", &env).unwrap();
+        let (_, body) = h.join().unwrap();
+        assert_eq!(body, r#"{"name":"New"}"#);
+        assert_eq!(saved_device_name(&env).as_deref(), Some("New"));
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn refused_rename_leaves_the_config_alone() {
+        let home = temp_home("rename-refused");
+        let env = env_with(&home, &[]);
+        write_profile_field(RELAY_DEVICE_NAME_FIELD, "Old", &env).unwrap();
+        let (base, h) = spawn_capture_stub(403, r#"{"error":{"message":"nope"}}"#);
+        assert!(rename_device(&base, "sk-ar-v1-k", "dev_1", "New", &env).is_err());
+        let _ = h.join();
+        assert_eq!(saved_device_name(&env).as_deref(), Some("Old"));
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn device_name_is_saved_once_and_kept_when_resolved_again() {
+        let home = temp_home("name-persist");
+        let env = env_with(&home, &[("HOSTNAME", "")]);
+        let p = parsed_start(vec![]);
+        let first = resolve_device(Some("Desk"), &p, &env, true);
+        assert_eq!(first, "Desk");
+        assert_eq!(saved_device_name(&env).as_deref(), Some("Desk"));
+        // No flag: the saved name wins, and saving again changes nothing.
+        let again = resolve_device(None, &p, &env, true);
+        let third = resolve_device(None, &p, &env, true);
+        assert_eq!((again.as_str(), third.as_str()), ("Desk", "Desk"));
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn config_round_trips_the_device_name() {
+        let src = "active_profile: default\nprofiles:\n  default:\n    relay_device_name: swift-otter-42\n";
+        let cfg = crate::config::parse_config(src);
+        let again = crate::config::parse_config(&crate::config::serialize_config(&cfg));
+        assert_eq!(
+            again.profiles["default"].relay_device_name.as_deref(),
+            Some("swift-otter-42")
+        );
     }
 
     fn spawn_stub_target(responses: Vec<(u16, String)>) -> (String, std::thread::JoinHandle<()>) {
@@ -3487,7 +3731,8 @@ profiles:
             ("token", crate::parse::FlagValue::Value("rk_secret".into())),
             ("name", crate::parse::FlagValue::Value("Desk".into())),
         ]);
-        let args = parse_start_args(&parsed);
+        let mut args = parse_start_args(&parsed);
+        args.device = args.name.clone().unwrap();
         let argv = detached_child_args(&args, None, false);
         assert_eq!(argv, vec!["relay", "start", "--name", "Desk"]);
         assert!(!argv
