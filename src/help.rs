@@ -184,7 +184,7 @@ fn launch_help(bin: &str, id: &str, label: &str) -> String {
         })
         .map(|line| format!("{line}\n"))
         .collect();
-    let native = crate::cmd::dispatch::yolo_args(id);
+    let native = crate::cmd::dispatch::yolo_for(id).map_or(&[][..], |y| y.args);
     let yolo = if native.is_empty() {
         format!("No effect: {label} has no flag to skip permission prompts")
     } else {

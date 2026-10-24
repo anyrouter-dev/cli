@@ -1118,14 +1118,12 @@ pub fn model_args_for(
 pub fn opencode_standalone_args(args: &[String], major: Option<u32>) -> Vec<String> {
     let mut out = args.to_vec();
     if major.is_some_and(|m| m >= 2) {
-        match out.iter().position(|a| !a.starts_with('-')) {
-            // `--standalone` is a flag of `run`, not a root flag placed before
-            // it. Root flags such as `--auto` (from `--yolo`) may precede `run`.
-            Some(i) if out[i] == "run" => out.insert(i + 1, "--standalone".into()),
-            _ if out.first().is_none_or(|a| a.starts_with('-')) => {
-                out.insert(0, "--standalone".into())
-            }
-            _ => {}
+        match out.first().map(String::as_str) {
+            // `--standalone` is a flag of `run`, not a root flag placed before it.
+            Some("run") => out.insert(1, "--standalone".into()),
+            None => out.push("--standalone".into()),
+            Some(first) if first.starts_with('-') => out.insert(0, "--standalone".into()),
+            Some(_) => {}
         }
     }
     out
@@ -1288,10 +1286,6 @@ mod tests {
         assert_eq!(
             opencode_standalone_args(&a(&["models"]), Some(2)),
             a(&["models"])
-        );
-        assert_eq!(
-            opencode_standalone_args(&a(&["--auto", "run", "hi"]), Some(2)),
-            a(&["--auto", "run", "--standalone", "hi"])
         );
         assert_eq!(
             opencode_standalone_args(&a(&["run", "hi"]), Some(1)),

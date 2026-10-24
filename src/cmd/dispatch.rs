@@ -262,22 +262,53 @@ pub(crate) fn launch_flags(command: &str) -> Option<&'static [&'static str]> {
     })
 }
 
-/// `--yolo` on each launcher: the agent's own flag for skipping permission
-/// prompts. Empty means the agent has none, so `--yolo` is dropped with a
-/// notice. Pool's comes from docs.poolside.ai (not installed where checked).
-pub(crate) const YOLO: &[(&str, &[&str])] = &[
-    ("claude", &["--dangerously-skip-permissions"]),
-    ("codex", &["--dangerously-bypass-approvals-and-sandbox"]),
-    ("grok", &["--always-approve"]),
-    ("opencode", &["--auto"]),
-    ("pi", &[]),
-    ("pool", &["--mode", "always-allow"]),
+/// `--yolo` on one launcher: the agent's own argv for skipping permission
+/// prompts, and the subcommand it must follow when the user runs one.
+pub(crate) struct Yolo {
+    pub(crate) agent: &'static str,
+    /// Empty: the agent has none, so `--yolo` is dropped with a notice.
+    pub(crate) args: &'static [&'static str],
+    pub(crate) after: Option<&'static str>,
+}
+
+/// Each from the agent's own `--help`, except pool (docs.poolside.ai; not
+/// installed where checked).
+pub(crate) const YOLO: &[Yolo] = &[
+    Yolo {
+        agent: "claude",
+        args: &["--dangerously-skip-permissions"],
+        after: None,
+    },
+    Yolo {
+        agent: "codex",
+        args: &["--dangerously-bypass-approvals-and-sandbox"],
+        after: None,
+    },
+    Yolo {
+        agent: "grok",
+        args: &["--always-approve"],
+        after: None,
+    },
+    // `--standalone` before `run` did not reach the run (#181); same for `--auto`.
+    Yolo {
+        agent: "opencode",
+        args: &["--auto"],
+        after: Some("run"),
+    },
+    Yolo {
+        agent: "pi",
+        args: &[],
+        after: None,
+    },
+    Yolo {
+        agent: "pool",
+        args: &["--mode", "always-allow"],
+        after: None,
+    },
 ];
 
-pub(crate) fn yolo_args(agent: &str) -> &'static [&'static str] {
-    YOLO.iter()
-        .find(|(name, _)| *name == agent)
-        .map_or(&[], |(_, args)| args)
+pub(crate) fn yolo_for(agent: &str) -> Option<&'static Yolo> {
+    YOLO.iter().find(|y| y.agent == agent)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

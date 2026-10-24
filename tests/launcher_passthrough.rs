@@ -210,3 +210,34 @@ fn non_launcher_commands_still_reject_unknown_flags() {
     assert_eq!(out.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&out.stderr).contains("Unknown flag --no-skills"));
 }
+
+#[test]
+fn yolo_follows_the_subcommand_the_flag_belongs_to() {
+    let opencode = dry_run("opencode", &["run", "--yolo", "fix it"]);
+    assert_eq!(opencode.code, 0, "{}", opencode.stderr);
+    assert!(
+        opencode.args.ends_with(&strs(&["run", "--auto", "fix it"])),
+        "{:?}",
+        opencode.args
+    );
+    let codex = dry_run("codex", &["exec", "--yolo", "fix it"]);
+    assert!(
+        codex.args.ends_with(&strs(&[
+            "--dangerously-bypass-approvals-and-sandbox",
+            "exec",
+            "fix it"
+        ])),
+        "{:?}",
+        codex.args
+    );
+}
+
+#[test]
+fn cc_alias_forwards_like_claude() {
+    let got = dry_run("cc", &["--no-skills", "--yolo"]);
+    assert_eq!(got.code, 0, "{}", got.stderr);
+    assert_eq!(
+        got.args,
+        strs(&["--dangerously-skip-permissions", "--no-skills"])
+    );
+}
