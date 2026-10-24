@@ -11,16 +11,16 @@ use crate::key::{
 use crate::parse::{get_string_flag, ParsedArgs};
 use crate::spawn::{
     apply_model_id_routing, apply_routing_env, build_tool_env, catalog_context_window,
-    catalog_model_id, crush_user_dir, default_profile_for_env, display_model_id, effort_args_for,
-    env_command_path, grok_user_home, is_auto_model, is_user_preset, is_virtual_preset,
-    model_args_for, normalize_effort, opencode_major_version, opencode_standalone_args,
-    prepare_crush_config, prepare_grok_home, prepare_pi_wrapper, provider_args_for, render_dry_run,
-    resolve_tool, spawn_child, BuildToolEnvInput, GROK_UNSET_ENV,
+    catalog_model_id, crush_user_dir, default_profile_for_env, display_model_id, env_command_path,
+    grok_user_home, is_auto_model, is_user_preset, is_virtual_preset, model_args_for,
+    normalize_effort, opencode_major_version, opencode_standalone_args, prepare_crush_config,
+    prepare_grok_home, prepare_pi_wrapper, provider_args_for, render_dry_run, resolve_tool,
+    spawn_child, BuildToolEnvInput, GROK_UNSET_ENV,
 };
 use crate::term;
 
 use crate::cmd::decision::{chat_model_error, is_systemone_model};
-use crate::cmd::dispatch::{catalog_lookup_enabled, config_path, yolo_for};
+use crate::cmd::dispatch::{catalog_lookup_enabled, config_path};
 use crate::cmd::login::persist_login;
 use crate::cmd::models::apply_claude_alias_flags;
 
@@ -67,89 +67,32 @@ pub(crate) fn resolve_session_model(
     }
 }
 
-/// Put the agent's native skip-permission argv in `args`: after its
-/// subcommand when the user runs one, else before the agent's own args.
-/// Never twice: a native flag the user passed already wins.
-fn add_yolo(
+/// An exit this soon after spawn is a launch failure, not a session ending.
+const LAUNCH_FAILURE_WINDOW: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Spawn the agent. When it fails right away, name a forwarded flag its
+/// `--help` does not list: the usual cause is a flag from another agent.
+fn run_agent(
     tool_name: &str,
-    args: &mut Vec<String>,
-    child_env: &mut BTreeMap<String, String>,
-    agent_args_at: usize,
-    quiet: bool,
-) {
-    // Goose has no flag for it; its mode comes from the environment.
-    if tool_name == "goose" {
-        child_env.insert("GOOSE_MODE".into(), "auto".into());
-        return;
-    }
-    let Some(yolo) = yolo_for(tool_name).filter(|y| !y.args.is_empty()) else {
-        if !quiet {
-            eprintln!(
-                "{} {tool_name} has no flag to skip permission prompts; --yolo ignored.",
-                term::dim("note:")
-            );
+    resolved: &str,
+    args: &[String],
+    env_map: &BTreeMap<String, String>,
+    unset: &[&str],
+    forwarded: &[String],
+    raw_from: usize,
+) -> i32 {
+    let started = std::time::Instant::now();
+    let code = spawn_child(resolved, args, env_map, unset);
+    let forwarded_flags = forwarded.iter().any(|a| a.starts_with("--"));
+    if code != 0 && forwarded_flags && started.elapsed() < LAUNCH_FAILURE_WINDOW {
+        let hint = crate::spawn::help_text(resolved).and_then(|help| {
+            crate::cmd::portable::unknown_flag_hint(tool_name, &help, forwarded, raw_from)
+        });
+        if let Some(hint) = hint {
+            eprintln!("{} {hint}", term::dim("anyr:"));
         }
-        return;
-    };
-    let first = yolo.args[0];
-    let forwarded = &args[agent_args_at..];
-    if forwarded
-        .iter()
-        .any(|a| a == first || a.starts_with(&format!("{first}=")))
-    {
-        return;
     }
-    let at = yolo
-        .after
-        .and_then(|sub| {
-            forwarded
-                .iter()
-                .position(|a| !a.starts_with('-'))
-                .filter(|&i| forwarded[i] == sub)
-        })
-        .map_or(agent_args_at, |i| agent_args_at + i + 1);
-    args.splice(at..at, yolo.args.iter().map(|a| a.to_string()));
-}
-
-/// Portable switches and each agent's own spelling, from its `--help`.
-/// Empty: the agent has none, so the flag is dropped with a notice.
-type PortableFlag = (
-    &'static str,
-    &'static str,
-    &'static [(&'static str, &'static str)],
-);
-
-const PORTABLE_FLAGS: &[PortableFlag] = &[
-    (
-        "--skills-off",
-        "skills",
-        &[
-            ("pi", "--no-skills"),
-            ("claude", "--disable-slash-commands"),
-        ],
-    ),
-    ("--tools-off", "tools", &[("pi", "--no-tools")]),
-];
-
-/// The agent's native flag for each `--skills-off` / `--tools-off` anyr
-/// owns (registered in the launch flags like `--yolo`), or one stderr line
-/// when the agent has none. Args after `--` never reach here.
-/// Note: claude's `--disable-slash-commands` also disables slash commands.
-fn map_portable_flags(tool_name: &str, parsed: &ParsedArgs, quiet: bool) -> Vec<String> {
-    PORTABLE_FLAGS
-        .iter()
-        .filter(|(flag, _, _)| parsed.flag_true(&flag[2..]))
-        .filter_map(|(flag, what, map)| {
-            let native = map.iter().find(|(t, _)| *t == tool_name).map(|(_, n)| *n);
-            if native.is_none() && !quiet {
-                eprintln!(
-                    "{} {tool_name} has no {what} switch; ignoring {flag}",
-                    term::dim("note:")
-                );
-            }
-            native.map(str::to_string)
-        })
-        .collect()
+    code
 }
 
 pub(crate) fn run_launch(
@@ -264,7 +207,6 @@ pub(crate) fn launch(
         prepare_grok_home(&mut env_map, &path, &key, user_home.as_deref())?;
     }
     let mut args = Vec::new();
-    args.extend(effort_args_for(tool_name, effort.as_deref()));
     args.extend(provider_args_for(tool_name, &profile));
     let user_picked_model = tool_name == "kilo"
         && parsed
@@ -323,25 +265,38 @@ pub(crate) fn launch(
             mcp_url,
         )?;
     }
-    let agent_args_at = args.len();
-    // Native switches lead the agent's args: after a subcommand or a literal
-    // `--` they would be rejected or become positionals.
-    let portable = map_portable_flags(tool_name, parsed, term::machine_output(parsed, env));
-    args.splice(agent_args_at..agent_args_at, portable);
+    let mut agent_args = Vec::new();
     if let Some(h) = &headless {
-        args.extend(h.args.clone());
+        agent_args.extend(h.args.clone());
         env_map.extend(h.extra_env.iter().cloned());
     }
-    args.extend(parsed.passthrough.iter().cloned());
-    if parsed.flag_true("yolo") || tool.extra_flag("yolo") {
-        add_yolo(
-            tool_name,
-            &mut args,
-            &mut env_map,
-            agent_args_at,
-            term::machine_output(parsed, env),
-        );
+    let raw_from = agent_args.len() + parsed.raw_from.unwrap_or(parsed.passthrough.len());
+    agent_args.extend(parsed.passthrough.clone());
+    let mut lead = Vec::new();
+    if let Some(effort) = &effort {
+        lead.push(("effort", Some(effort.clone())));
     }
+    if parsed.flag_true("yolo") || tool.extra_flag("yolo") {
+        lead.push(("yolo", None));
+    }
+    for switch in ["skills-off", "tools-off"] {
+        if parsed.flag_true(switch) {
+            lead.push((switch, None));
+        }
+    }
+    let mapped = crate::cmd::portable::apply(tool_name, &lead, &agent_args, raw_from)?;
+    if !term::machine_output(parsed, env) {
+        for notice in &mapped.notices {
+            eprintln!("{} {notice}", term::dim("note:"));
+        }
+    }
+    args.extend(mapped.args);
+    env_map.extend(
+        mapped
+            .env
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string())),
+    );
     let unset: &[&str] = if tool_name == "grok" {
         GROK_UNSET_ENV
     } else {
@@ -378,7 +333,15 @@ pub(crate) fn launch(
         if tool_name == "opencode" {
             args = opencode_standalone_args(&args, opencode_major_version(&resolved));
         }
-        return Ok(spawn_child(&resolved, &args, &env_map, unset));
+        return Ok(run_agent(
+            tool_name,
+            &resolved,
+            &args,
+            &env_map,
+            unset,
+            &parsed.passthrough,
+            parsed.raw_from.unwrap_or(parsed.passthrough.len()),
+        ));
     }
     let resolved = ensure_tool_installed(tool_name, &command, install)?;
     // Persist on top of the existing config when there is one; a fresh setup
@@ -420,5 +383,13 @@ pub(crate) fn launch(
     if tool_name == "opencode" {
         args = opencode_standalone_args(&args, opencode_major_version(&resolved));
     }
-    Ok(spawn_child(&resolved, &args, &env_map, unset))
+    Ok(run_agent(
+        tool_name,
+        &resolved,
+        &args,
+        &env_map,
+        unset,
+        &parsed.passthrough,
+        parsed.raw_from.unwrap_or(parsed.passthrough.len()),
+    ))
 }

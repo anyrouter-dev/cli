@@ -1487,6 +1487,7 @@ mod tests {
                 crate::parse::FlagValue::Bool(true),
             )]),
             passthrough: Vec::new(),
+            raw_from: None,
         }
     }
 
@@ -1524,6 +1525,7 @@ mod tests {
                 .map(|(k, v)| ((*k).into(), crate::parse::FlagValue::Bool(*v)))
                 .collect(),
             passthrough: Vec::new(),
+            raw_from: None,
         }
     }
 
@@ -1554,6 +1556,7 @@ mod tests {
                 ),
             ]),
             passthrough: Vec::new(),
+            raw_from: None,
         };
         let err = channel_switch_flag(&parsed).unwrap_err();
         assert!(err.contains("--channel"), "{err}");

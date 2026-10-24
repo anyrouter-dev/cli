@@ -618,6 +618,7 @@ mod tests {
             command: "onboard".into(),
             flags,
             passthrough: vec!["deploy".into()],
+            raw_from: None,
         };
         assert!(want_copy(&with_flag, "onboard", &with_flag.passthrough));
     }

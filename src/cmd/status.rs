@@ -235,6 +235,7 @@ fn run_status_action(
         command: parsed.command.clone(),
         flags: parsed.flags.clone(),
         passthrough: Vec::new(),
+        raw_from: None,
     };
     match action {
         StatusAction::SwitchAccount => run_auth_switch(&bare, env).map(|_| ()),
@@ -402,6 +403,7 @@ mod tests {
                 command: "status".into(),
                 flags: HashMap::new(),
                 passthrough: Vec::new(),
+                raw_from: None,
             };
             let mut env = BTreeMap::new();
             if via_env {

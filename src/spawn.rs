@@ -18,7 +18,6 @@ const MIN_1M_CONTEXT: i64 = 1_000_000;
 
 pub const REASONING_LEVELS: &[&str] = &["minimal", "low", "medium", "high", "xhigh", "max"];
 const CLAUDE_LEVELS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
-const CODEX_LEVELS: &[&str] = &["minimal", "low", "medium", "high"];
 const CLAUDE_EFFORT_TOKENS: &[(&str, i64)] = &[
     ("low", 2048),
     ("medium", 8192),
@@ -326,7 +325,7 @@ pub fn default_profile_for_env(base_url: Option<&str>, api_key: Option<&str>) ->
     }
 }
 
-fn clamp_level(levels: &[&str], level: &str) -> Option<String> {
+pub(crate) fn clamp_level(levels: &[&str], level: &str) -> Option<String> {
     if levels.contains(&level) {
         return Some(level.to_string());
     }
@@ -362,7 +361,6 @@ fn harness_effort(tool: &str, effort: Option<&str>) -> Option<String> {
     let effort = effort?;
     match tool {
         "claude" => clamp_level(CLAUDE_LEVELS, effort),
-        "codex" => clamp_level(CODEX_LEVELS, effort),
         _ => Some(effort.to_string()),
     }
 }
@@ -578,16 +576,6 @@ pub fn apply_routing_env(
     if tool_name == "claude" {
         env.insert("CLAUDE_CODE_EXTRA_BODY".into(), body);
     }
-}
-
-pub fn effort_args_for(tool_name: &str, effort: Option<&str>) -> Vec<String> {
-    let Some(mapped) = harness_effort(tool_name, effort) else {
-        return vec![];
-    };
-    if tool_name == "codex" {
-        return vec!["-c".into(), format!("model_reasoning_effort=\"{mapped}\"")];
-    }
-    vec![]
 }
 
 /// First-party virtual presets (`anyrouter/auto`, `anyrouter/free`, …).
@@ -1509,6 +1497,39 @@ pub fn spawn_child(
     let _ = (args, extra_env, unset);
     eprintln!("spawn is not available in the browser demo ({command})");
     1
+}
+
+/// The agent's `--help` (stdout and stderr), or None if it does not finish
+/// within 3 s.
+#[cfg(feature = "native")]
+pub fn help_text(command: &str) -> Option<String> {
+    let mut child = Command::new(command)
+        .arg("--help")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .ok()?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while child.try_wait().ok()?.is_none() {
+        if std::time::Instant::now() > deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let out = child.wait_with_output().ok()?;
+    Some(format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    ))
+}
+
+#[cfg(not(feature = "native"))]
+pub fn help_text(_command: &str) -> Option<String> {
+    None
 }
 
 #[cfg(feature = "native")]

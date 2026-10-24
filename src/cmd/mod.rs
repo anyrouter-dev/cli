@@ -21,6 +21,7 @@ pub(crate) mod mcp;
 pub(crate) mod menu;
 pub(crate) mod models;
 pub(crate) mod pool;
+pub(crate) mod portable;
 pub(crate) mod presets;
 pub(crate) mod status;
 #[cfg(feature = "native")]

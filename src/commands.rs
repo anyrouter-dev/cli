@@ -92,6 +92,7 @@ pub fn run(argv: Vec<String>, env: HashMap<String, String>) -> i32 {
             command: "menu".into(),
             flags: parsed.flags.clone(),
             passthrough: Vec::new(),
+            raw_from: None,
         };
         return match run_menu(&empty, &env) {
             Ok(code) => code,
