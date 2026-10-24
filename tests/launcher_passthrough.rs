@@ -348,3 +348,22 @@ fn skills_off_is_dropped_with_a_note_where_the_agent_has_no_switch() {
         Some("--disable-slash-commands")
     );
 }
+
+#[test]
+fn skills_off_after_separator_stays_raw() {
+    let base = dry_run("pi", &[]).args;
+    let got = dry_run("pi", &["--", "--skills-off", "--tools-off"]);
+    assert_eq!(got.code, 0, "{}", got.stderr);
+    let mut want = base;
+    want.extend(strs(&["--skills-off", "--tools-off"]));
+    assert_eq!(got.args, want);
+}
+
+#[test]
+fn skills_off_equals_true_maps_and_never_rewrites_a_value() {
+    let got = dry_run("pi", &["--skills-off=true"]);
+    assert_eq!(got.code, 0, "{}", got.stderr);
+    assert_eq!(got.args.last().map(String::as_str), Some("--no-skills"));
+    let value = dry_run("pi", &["-p", "--", "--skills-off"]);
+    assert_eq!(value.args.last().map(String::as_str), Some("--skills-off"));
+}

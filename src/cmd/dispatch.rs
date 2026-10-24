@@ -196,6 +196,8 @@ pub(crate) const LAUNCH_FLAGS: &[&str] = &[
     "paste",
     "install",
     "yolo",
+    "skills-off",
+    "tools-off",
     "no-mcp",
 ];
 
@@ -225,6 +227,8 @@ const CLAUDE_LAUNCH_FLAGS: &[&str] = &[
     "hub",
     "install",
     "yolo",
+    "skills-off",
+    "tools-off",
     "no-mcp",
 ];
 
@@ -248,6 +252,8 @@ pub(crate) const POOL_FLAGS: &[&str] = &[
     "paste",
     "install",
     "yolo",
+    "skills-off",
+    "tools-off",
     "no-mcp",
     "json",
 ];

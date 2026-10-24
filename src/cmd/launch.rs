@@ -112,15 +112,15 @@ const PORTABLE_FLAGS: &[PortableFlag] = &[
     ("--tools-off", "tools", &[("pi", "--no-tools")]),
 ];
 
-/// Rewrite `--skills-off` / `--tools-off` in the passthrough args to the
-/// agent's native flag, or drop them with one stderr line.
-fn map_portable_flags(tool_name: &str, passthrough: &[String], quiet: bool) -> Vec<String> {
-    passthrough
+/// The agent's native flag for each `--skills-off` / `--tools-off` anyr
+/// owns (registered in the launch flags like `--yolo`), or one stderr line
+/// when the agent has none. Args after `--` never reach here.
+/// Note: claude's `--disable-slash-commands` also disables slash commands.
+fn map_portable_flags(tool_name: &str, parsed: &ParsedArgs, quiet: bool) -> Vec<String> {
+    PORTABLE_FLAGS
         .iter()
-        .filter_map(|a| {
-            let Some((flag, what, map)) = PORTABLE_FLAGS.iter().find(|(f, _, _)| a == f) else {
-                return Some(a.clone());
-            };
+        .filter(|(flag, _, _)| parsed.flag_true(&flag[2..]))
+        .filter_map(|(flag, what, map)| {
             let native = map.iter().find(|(t, _)| *t == tool_name).map(|(_, n)| *n);
             if native.is_none() && !quiet {
                 eprintln!(
@@ -277,9 +277,10 @@ pub(crate) fn launch(
         args.extend(h.args.clone());
         env_map.extend(h.extra_env.iter().cloned());
     }
+    args.extend(parsed.passthrough.iter().cloned());
     args.extend(map_portable_flags(
         tool_name,
-        &parsed.passthrough,
+        parsed,
         term::machine_output(parsed, env),
     ));
     if parsed.flag_true("yolo") || tool.extra_flag("yolo") {
