@@ -638,7 +638,7 @@ const ARTIFACT: &str = "{bin} artifact — publish a page or folder to a shareab
 
 Usage:
   {bin} artifact publish <file|dir> [options]   Print the artifact URL
-  {bin} artifact ls                             List your artifacts
+  {bin} artifact ls [--limit N] [--cursor C|--all]  List your artifacts (one page, or all)
   {bin} artifact rm <id>                        Delete one (asks first)
   {bin} artifact visibility <id> <v>            private | unlisted | public
   {bin} artifact visibility <id> --show-author  Show or hide your name on the page
@@ -655,11 +655,15 @@ Options:
   --label <text>       Version label (with --id)
   --show-author        Show your profile name on the page (default: hidden)
   --no-show-author     Hide your name again
+  --limit <n>          ls: rows per page, 1 to 100
+  --cursor <c>         ls: continue from a next_cursor
+  --all                ls: follow every page (with --json, one merged result)
   --yes                Skip confirmation (public, rm)
   --json               Print the server response instead of the URL
 
 A version conflict (someone published first) exits 2 and prints the
-current version. Exit codes: 0 ok, 1 error, 2 usage or conflict,
+current version. A file edited while it uploads fails with exit 1 and
+commits nothing. Exit codes: 0 ok, 1 error, 2 usage or conflict,
 3 not found, 4 auth.
 ";
 
