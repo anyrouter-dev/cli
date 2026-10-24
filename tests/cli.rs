@@ -3314,6 +3314,13 @@ fn usage_errors_print_clean_message_without_marker() {
 
 /// One-shot `/v1/me` server: returns (base_url, join handle).
 fn me_server(body: &'static str) -> (String, thread::JoinHandle<()>) {
+    me_server_with_status("200 OK", body)
+}
+
+fn me_server_with_status(
+    status: &'static str,
+    body: &'static str,
+) -> (String, thread::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
     let handle = thread::spawn(move || {
@@ -3322,7 +3329,7 @@ fn me_server(body: &'static str) -> (String, thread::JoinHandle<()>) {
             let _ = s.read(&mut buf);
             let _ = write!(
                 s,
-                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
                 body.len()
             );
         }
@@ -3404,6 +3411,33 @@ fn auth_status_json_has_user_and_masked_key() {
         v.get("claude_haiku").is_none() && v.get("default_tool").is_none(),
         "{v}"
     );
+}
+
+#[test]
+fn whoami_keeps_the_exit_tag_out_of_identity_error_on_401() {
+    // WHY: scope_error tags 401/403 with an internal exit marker; it must not
+    // reach `identity_error` in JSON or the human text line.
+    let home = temp_home();
+    let cfg = status_config(&home);
+    for json in [true, false] {
+        let (base, server) = me_server_with_status("401 Unauthorized", r#"{"error":"bad key"}"#);
+        let mut args = vec!["whoami"];
+        if json {
+            args.push("--json");
+        }
+        args.extend(["--config", cfg.to_str().unwrap(), "--base-url", &base]);
+        let out = anyr().args(args).stdin(Stdio::null()).output().unwrap();
+        server.join().unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(!stdout.contains('\u{1}'), "{stdout:?}");
+        assert!(!stderr.contains('\u{1}'), "{stderr:?}");
+        if json {
+            let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+            let msg = v["identity_error"].as_str().unwrap();
+            assert!(!msg.is_empty() && !msg.contains('\u{1}'), "{v}");
+        }
+    }
 }
 
 #[test]

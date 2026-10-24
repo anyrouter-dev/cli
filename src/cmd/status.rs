@@ -136,7 +136,8 @@ fn build_view(
         crate::exit::tag(crate::exit::AUTH, hint("Not signed in. Run: {bin} login"))
     })?;
     let base_url = resolve_base_url(&parsed.flags, Some(&profile));
-    let me = fetch_me_within(&base_url, &key, IDENTITY_TIMEOUT);
+    let me = fetch_me_within(&base_url, &key, IDENTITY_TIMEOUT)
+        .map_err(|err| crate::exit::classify(&err).1);
     let identity_error = me.as_ref().err().cloned();
     let (name, email, identity_note) = identity_from_me(me);
     Ok(StatusView {
