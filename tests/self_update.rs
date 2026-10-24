@@ -9,7 +9,7 @@ use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
 use std::path::PathBuf;
-use std::process::{Command, Output, Stdio};
+use std::process::{Child, Command, Output, Stdio};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread;
@@ -134,6 +134,20 @@ fn route(path: &str, base: &str, releases: &[Release], delay: Duration) -> (u16,
     (404, b"not found".to_vec())
 }
 
+/// A binary copied in while another test thread forks can briefly be "text
+/// file busy" (ETXTBSY); that is the harness, not the updater.
+fn retry_busy<T>(mut run: impl FnMut() -> std::io::Result<T>) -> T {
+    for _ in 0..20 {
+        match run() {
+            Err(e) if e.raw_os_error() == Some(26) && cfg!(unix) => {
+                thread::sleep(Duration::from_millis(50));
+            }
+            out => return out.unwrap(),
+        }
+    }
+    run().unwrap()
+}
+
 struct Install {
     root: PathBuf,
     bin: PathBuf,
@@ -185,17 +199,11 @@ impl Install {
     /// Run the installed copy. Auto-update is allowed off a TTY (tests have
     /// none) unless `extra` turns it off.
     fn run(&self, mock: &MockRelease, args: &[&str], extra: &[(&str, &str)]) -> Output {
-        // A binary copied in while another test thread forks can briefly be
-        // "text file busy" (ETXTBSY); that is the harness, not the updater.
-        for attempt in 0.. {
-            match self.command(mock, args, extra).output() {
-                Err(e) if e.raw_os_error() == Some(26) && attempt < 20 => {
-                    thread::sleep(Duration::from_millis(50));
-                }
-                out => return out.unwrap(),
-            }
-        }
-        unreachable!()
+        retry_busy(|| self.command(mock, args, extra).output())
+    }
+
+    fn spawn(&self, mock: &MockRelease, args: &[&str]) -> Child {
+        retry_busy(|| self.command(mock, args, &[]).spawn())
     }
 
     fn command(&self, mock: &MockRelease, args: &[&str], extra: &[(&str, &str)]) -> Command {
@@ -655,10 +663,7 @@ fn a_killed_stager_does_not_block_the_next_update() {
         Duration::from_secs(30),
     );
     let install = Install::new();
-    let mut stager = install
-        .command(&mock, &["update", "--auto"], &[])
-        .spawn()
-        .unwrap();
+    let mut stager = install.spawn(&mock, &["update", "--auto"]);
     let deadline = Instant::now() + Duration::from_secs(10);
     while install.state()["last_check"].as_u64().unwrap_or(0) == 0 {
         assert!(Instant::now() < deadline, "stager never took the lock");
@@ -666,6 +671,15 @@ fn a_killed_stager_does_not_block_the_next_update() {
     }
     stager.kill().unwrap();
     stager.wait().unwrap();
+    // Windows frees a dead process's locks soon after, not at once.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while install.lock_held() {
+        assert!(
+            Instant::now() < deadline,
+            "killed stager still holds the lock"
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
 
     let fast = serve(vec![Release::good("v999.0.0", false)], Duration::ZERO);
     let out = install.run(&fast, &["update"], &[]);
