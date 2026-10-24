@@ -122,6 +122,16 @@ pub fn http_post_stream(
     api_key: &str,
     json_body: &str,
 ) -> Result<(u16, Box<dyn std::io::Read + Send + Sync>), String> {
+    http_post_stream_headers(url, api_key, json_body).map(|(status, _, reader)| (status, reader))
+}
+
+/// `http_post_stream` that also returns the response headers (lowercased names).
+#[cfg(feature = "native")]
+pub fn http_post_stream_headers(
+    url: &str,
+    api_key: &str,
+    json_body: &str,
+) -> Result<StreamReply, String> {
     let stream_agent = ureq::AgentBuilder::new()
         .timeout_connect(std::time::Duration::from_secs(15))
         .user_agent(&format!("anyr-cli/{VERSION}"))
@@ -129,12 +139,30 @@ pub fn http_post_stream(
     let req = with_auth(stream_agent.post(url), Some(api_key))
         .set("Content-Type", "application/json")
         .set("Accept", "text/event-stream");
-    match req.send_string(json_body) {
-        Ok(resp) => Ok((resp.status(), resp.into_reader())),
-        Err(ureq::Error::Status(code, resp)) => Ok((code, resp.into_reader())),
-        Err(err) => Err(format!("Could not reach AnyRouter: {err}")),
-    }
+    let resp = match req.send_string(json_body) {
+        Ok(resp) => resp,
+        Err(ureq::Error::Status(_, resp)) => resp,
+        Err(err) => return Err(format!("Could not reach AnyRouter: {err}")),
+    };
+    let status = resp.status();
+    let headers = resp
+        .headers_names()
+        .into_iter()
+        .filter_map(|n| {
+            resp.header(&n)
+                .map(|v| (n.to_ascii_lowercase(), v.to_string()))
+        })
+        .collect();
+    Ok((status, headers, resp.into_reader()))
 }
+
+/// Status, headers and the unread body of a streamed reply.
+#[cfg(feature = "native")]
+pub type StreamReply = (
+    u16,
+    Vec<(String, String)>,
+    Box<dyn std::io::Read + Send + Sync>,
+);
 
 /// `HTTP <status>: <server message>` for a failed API call.
 pub fn error_message(status: u16, body: &str) -> String {

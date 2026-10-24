@@ -2,23 +2,50 @@
 //! One-shot with a prompt argument (or piped stdin); a REPL on a terminal.
 
 use std::collections::BTreeMap;
-use std::io::{self, BufRead, Read, Write};
+use std::io::{self, BufRead, IsTerminal, Read, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
 use crate::cmd::dispatch::config_path;
-use crate::http::{http_post_stream, join_api};
+use crate::http::{http_post_stream_headers, join_api};
 use crate::key::{load_config_if_present, no_key_error, resolve_api_key, resolve_base_url};
 use crate::parse::{get_string_flag, ParsedArgs};
 use crate::spawn::catalog_model_id;
 use crate::term;
 
+/// What the gateway reported on one stream chunk. Fields the chunk did not
+/// carry stay `None`; chunks are merged with `absorb`.
+#[derive(Debug, Default, PartialEq)]
+pub(crate) struct ChunkMeta {
+    model: Option<String>,
+    /// `anyrouter_metadata.requestId`.
+    request_id: Option<String>,
+    /// The upstream `id` of the chunk (`gen-…`), the last resort for an id.
+    chunk_id: Option<String>,
+    usage: Option<(u64, u64)>,
+    cost: Option<f64>,
+}
+
+impl ChunkMeta {
+    fn absorb(&mut self, other: ChunkMeta) {
+        self.model = other.model.or(self.model.take());
+        self.request_id = other.request_id.or(self.request_id.take());
+        self.chunk_id = other.chunk_id.or(self.chunk_id.take());
+        self.usage = other.usage.or(self.usage);
+        self.cost = other.cost.or(self.cost);
+    }
+}
+
 /// One decoded server-sent-event line.
 #[derive(Debug, PartialEq)]
 pub(crate) enum Sse {
-    Delta(String),
-    /// Final chunk with token counts (prompt, completion).
-    Usage(u64, u64),
+    Chunk {
+        delta: Option<String>,
+        meta: ChunkMeta,
+    },
     Done,
     Skip,
 }
@@ -34,23 +61,71 @@ pub(crate) fn parse_sse_line(line: &str) -> Sse {
     let Ok(v) = serde_json::from_str::<Value>(data) else {
         return Sse::Skip;
     };
-    match v
-        .pointer("/choices/0/delta/content")
-        .and_then(Value::as_str)
-    {
-        Some(t) if !t.is_empty() => Sse::Delta(t.to_string()),
+    let text = |p: &str| v.pointer(p).and_then(Value::as_str).map(str::to_string);
+    let tokens = |p: &str| v.pointer(p).and_then(Value::as_u64);
+    let delta = text("/choices/0/delta/content").filter(|t| !t.is_empty());
+    let usage = match (
+        tokens("/usage/prompt_tokens"),
+        tokens("/usage/completion_tokens"),
+    ) {
+        (Some(p), Some(c)) => Some((p, c)),
         _ => match (
-            v.pointer("/usage/prompt_tokens").and_then(Value::as_u64),
-            v.pointer("/usage/completion_tokens")
-                .and_then(Value::as_u64),
+            tokens("/anyrouter_metadata/usage/inputTokens"),
+            tokens("/anyrouter_metadata/usage/outputTokens"),
         ) {
-            (Some(p), Some(c)) => Sse::Usage(p, c),
-            _ => Sse::Skip,
+            (Some(p), Some(c)) => Some((p, c)),
+            _ => None,
+        },
+    };
+    Sse::Chunk {
+        delta,
+        meta: ChunkMeta {
+            model: text("/model"),
+            request_id: text("/anyrouter_metadata/requestId"),
+            chunk_id: text("/id"),
+            usage,
+            cost: v.pointer("/usage/cost").and_then(Value::as_f64),
         },
     }
 }
 
+/// Something that happened on the wire, in order.
+enum Event {
+    Delta(String),
+    Meta(ChunkMeta),
+    End,
+    Failed(String),
+}
+
+/// Decode `reader` and hand each event to `on`. `on` returns `false` to stop.
+fn read_events(reader: impl BufRead, mut on: impl FnMut(Event) -> bool) {
+    for line in reader.lines() {
+        let line = match line {
+            Ok(l) => l,
+            Err(e) => {
+                on(Event::Failed(format!("Stream interrupted: {e}")));
+                return;
+            }
+        };
+        let keep_going = match parse_sse_line(&line) {
+            Sse::Chunk { delta, meta } => {
+                delta.is_none_or(|t| on(Event::Delta(t))) && on(Event::Meta(meta))
+            }
+            Sse::Done => {
+                on(Event::End);
+                return;
+            }
+            Sse::Skip => true,
+        };
+        if !keep_going {
+            return;
+        }
+    }
+    on(Event::End);
+}
+
 /// Copy streamed text to `out` as it arrives and return the full reply.
+#[cfg(test)]
 fn stream_reply(reader: impl BufRead, out: &mut impl Write) -> Result<String, String> {
     stream_reply_usage(reader, out).map(|(reply, _)| reply)
 }
@@ -62,21 +137,185 @@ pub(crate) fn stream_reply_usage(
     out: &mut impl Write,
 ) -> Result<(String, Option<(u64, u64)>), String> {
     let mut reply = String::new();
-    let mut usage = None;
-    for line in reader.lines() {
-        let line = line.map_err(|e| format!("Stream interrupted: {e}"))?;
-        match parse_sse_line(&line) {
-            Sse::Delta(t) => {
+    let mut meta = ChunkMeta::default();
+    let mut failure = None;
+    read_events(reader, |ev| {
+        match ev {
+            Event::Delta(t) => {
                 reply.push_str(&t);
                 let _ = write!(out, "{t}");
                 let _ = out.flush();
             }
-            Sse::Usage(p, c) => usage = Some((p, c)),
-            Sse::Done => break,
-            Sse::Skip => {}
+            Event::Meta(m) => meta.absorb(m),
+            Event::End => {}
+            Event::Failed(e) => failure = Some(e),
+        }
+        failure.is_none()
+    });
+    match failure {
+        Some(e) => Err(e),
+        None => Ok((reply, meta.usage)),
+    }
+}
+
+/// Facts about the latest reply, filled from the stream. A field the server
+/// did not send stays `None` and is left out of the footer.
+#[derive(Debug, Default, PartialEq)]
+pub(crate) struct TurnStats {
+    pub model: Option<String>,
+    pub prompt_tokens: Option<u64>,
+    pub completion_tokens: Option<u64>,
+    /// Request sent to first text.
+    pub ttft: Option<Duration>,
+    pub total: Duration,
+    /// USD, as the gateway reported it.
+    pub cost: Option<f64>,
+    pub request_id: Option<String>,
+}
+
+impl TurnStats {
+    fn new(
+        headers: &[(String, String)],
+        meta: ChunkMeta,
+        ttft: Option<Duration>,
+        total: Duration,
+    ) -> Self {
+        let header = |name: &str| {
+            headers
+                .iter()
+                .find(|(k, _)| k == name)
+                .map(|(_, v)| v.clone())
+        };
+        TurnStats {
+            model: meta.model.or_else(|| header("x-anyrouter-model")),
+            prompt_tokens: meta.usage.map(|u| u.0),
+            completion_tokens: meta.usage.map(|u| u.1),
+            ttft,
+            total,
+            cost: meta.cost,
+            request_id: header("x-anyrouter-generation-id")
+                .or(meta.request_id)
+                .or_else(|| header("x-request-id"))
+                .or(meta.chunk_id),
         }
     }
-    Ok((reply, usage))
+
+    /// The one dim line shown under the newest reply.
+    pub fn footer(&self) -> String {
+        let mut parts: Vec<String> = Vec::new();
+        parts.extend(self.model.clone());
+        if let (Some(p), Some(c)) = (self.prompt_tokens, self.completion_tokens) {
+            parts.push(format!("{p}→{c} tokens"));
+        }
+        if let Some(t) = self.ttft {
+            parts.push(format!("first token {}", fmt_dur(t)));
+        }
+        parts.push(fmt_dur(self.total));
+        let generating = self.total.saturating_sub(self.ttft.unwrap_or_default());
+        if let Some(c) = self.completion_tokens.filter(|c| *c > 0) {
+            if generating >= Duration::from_millis(50) {
+                parts.push(format!("{:.0} tok/s", c as f64 / generating.as_secs_f64()));
+            }
+        }
+        if let Some(cost) = self.cost {
+            parts.push(if cost > 0.0 {
+                crate::http::format_usd(cost)
+            } else {
+                "free".to_string()
+            });
+        }
+        if let Some(id) = &self.request_id {
+            parts.push(id.chars().take(12).collect());
+        }
+        parts.join(" · ")
+    }
+
+    /// `timing` for the `--json` object. Only what was measured.
+    fn timing_json(&self) -> Value {
+        let mut t = serde_json::Map::new();
+        if let Some(d) = self.ttft {
+            t.insert("ttft_ms".into(), json!(d.as_millis() as u64));
+        }
+        t.insert("total_ms".into(), json!(self.total.as_millis() as u64));
+        Value::Object(t)
+    }
+}
+
+fn fmt_dur(d: Duration) -> String {
+    if d < Duration::from_secs(1) {
+        format!("{}ms", d.as_millis())
+    } else {
+        format!("{:.1}s", d.as_secs_f64())
+    }
+}
+
+static CANCEL: AtomicBool = AtomicBool::new(false);
+
+extern "C" fn on_sigint(_: libc::c_int) {
+    CANCEL.store(true, Ordering::SeqCst);
+}
+
+/// While alive, Ctrl-C sets `CANCEL` instead of killing the process, so a
+/// reply can be stopped and the session kept. Dropping restores the default.
+struct CancelOnCtrlC;
+
+impl CancelOnCtrlC {
+    fn arm() -> Self {
+        CANCEL.store(false, Ordering::SeqCst);
+        unsafe { libc::signal(libc::SIGINT, on_sigint as *const () as libc::sighandler_t) };
+        CancelOnCtrlC
+    }
+}
+
+impl Drop for CancelOnCtrlC {
+    fn drop(&mut self) {
+        unsafe { libc::signal(libc::SIGINT, libc::SIG_DFL) };
+    }
+}
+
+/// How one streamed reply ended.
+struct Streamed {
+    reply: String,
+    meta: ChunkMeta,
+    ttft: Option<Duration>,
+    cancelled: bool,
+}
+
+/// Print deltas as they arrive. The wire is read on a helper thread so the
+/// caller can notice `cancel` between chunks; a cancelled read thread exits
+/// (and drops the connection) when its next send finds nobody listening.
+fn stream_live(
+    reader: impl BufRead + Send + 'static,
+    out: &mut impl Write,
+    start: Instant,
+    cancel: &AtomicBool,
+) -> Result<Streamed, String> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || read_events(reader, |ev| tx.send(ev).is_ok()));
+    let mut s = Streamed {
+        reply: String::new(),
+        meta: ChunkMeta::default(),
+        ttft: None,
+        cancelled: false,
+    };
+    loop {
+        if cancel.load(Ordering::SeqCst) {
+            s.cancelled = true;
+            return Ok(s);
+        }
+        match rx.recv_timeout(Duration::from_millis(50)) {
+            Ok(Event::Delta(t)) => {
+                s.ttft.get_or_insert_with(|| start.elapsed());
+                s.reply.push_str(&t);
+                let _ = write!(out, "{t}");
+                let _ = out.flush();
+            }
+            Ok(Event::Meta(m)) => s.meta.absorb(m),
+            Ok(Event::Failed(e)) => return Err(e),
+            Ok(Event::End) | Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(s),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+        }
+    }
 }
 
 const CHAT_USAGE: &str =
@@ -137,41 +376,105 @@ struct Session {
     key: String,
     model: String,
     messages: Vec<Value>,
+    /// Print the stats line under each reply (a terminal, not machine output).
+    footer: bool,
+    /// Ctrl-C stops the reply and keeps the session (the REPL).
+    cancellable: bool,
 }
 
 impl Session {
-    /// One non-streamed turn; returns the `reply_json` shape.
+    /// One non-streamed turn; returns the `reply_json` shape plus `timing`.
     fn ask(&mut self, user: &str) -> Result<Value, String> {
         self.messages.push(json!({"role": "user", "content": user}));
         let body = json!({"model": self.model, "messages": self.messages, "stream": false});
+        let start = Instant::now();
         let (status, headers, text) =
             crate::http::http_post_json_headers(&self.url, &self.key, &body.to_string())?;
+        let total = start.elapsed();
         if !(200..300).contains(&status) {
             self.messages.pop();
             return Err(crate::http::status_error(status, &text));
         }
         let value: Value =
             serde_json::from_str(&text).map_err(|e| format!("Invalid chat response: {e}"))?;
-        Ok(reply_json(&headers, &value, &self.model))
+        let mut reply = reply_json(&headers, &value, &self.model);
+        reply["timing"] = TurnStats {
+            total,
+            ..TurnStats::default()
+        }
+        .timing_json();
+        Ok(reply)
     }
 
     /// Send one user turn, stream the answer to stdout, remember both sides.
-    fn turn(&mut self, user: &str) -> Result<(), String> {
+    /// `Ok(true)` when a footer was printed under the reply.
+    fn turn(&mut self, user: &str) -> Result<bool, String> {
         self.messages.push(json!({"role": "user", "content": user}));
-        let body = json!({"model": self.model, "messages": self.messages, "stream": true});
-        let (status, mut reader) = http_post_stream(&self.url, &self.key, &body.to_string())?;
+        let body = json!({
+            "model": self.model,
+            "messages": self.messages,
+            "stream": true,
+            "stream_options": {"include_usage": true},
+        });
+        let _guard = self.cancellable.then(CancelOnCtrlC::arm);
+        let start = Instant::now();
+        let (status, headers, mut reader) =
+            match http_post_stream_headers(&self.url, &self.key, &body.to_string()) {
+                Ok(r) => r,
+                Err(e) => {
+                    self.messages.pop();
+                    return Err(e);
+                }
+            };
         if !(200..300).contains(&status) {
             self.messages.pop();
             let mut text = String::new();
             let _ = reader.read_to_string(&mut text);
             return Err(crate::http::status_error(status, &text));
         }
-        let reply = stream_reply(io::BufReader::new(reader), &mut io::stdout().lock())?;
+        let streamed = stream_live(
+            io::BufReader::new(reader),
+            &mut io::stdout().lock(),
+            start,
+            &CANCEL,
+        );
+        let streamed = match streamed {
+            Ok(s) => s,
+            Err(e) => {
+                println!();
+                self.messages.pop();
+                return Err(e);
+            }
+        };
         println!();
+        if streamed.cancelled {
+            self.messages.pop();
+            println!("{}", term::dim("(stopped)"));
+            return Ok(false);
+        }
         self.messages
-            .push(json!({"role": "assistant", "content": reply}));
-        Ok(())
+            .push(json!({"role": "assistant", "content": streamed.reply}));
+        if !self.footer {
+            return Ok(false);
+        }
+        let stats = TurnStats::new(&headers, streamed.meta, streamed.ttft, start.elapsed());
+        println!("{}", term::dim(&stats.footer()));
+        Ok(true)
     }
+}
+
+/// Remove the footer line printed above the prompt the user just submitted.
+/// The cursor sits below the echoed input (`rows` lines, wrapped at the
+/// terminal width) and the footer is the line right above it.
+fn erase_footer(submitted: &str) {
+    let cols = crossterm::terminal::size()
+        .ok()
+        .map(|(c, _)| usize::from(c))
+        .filter(|c| *c > 0)
+        .unwrap_or(80);
+    let rows = (2 + submitted.chars().count()).div_ceil(cols).max(1);
+    print!("\x1b[{}A\r\x1b[M\x1b[{}B", rows + 1, rows);
+    let _ = io::stdout().flush();
 }
 
 pub(crate) fn run_chat(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, String> {
@@ -194,6 +497,8 @@ pub(crate) fn run_chat(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> R
         key,
         model: catalog_model_id(&model),
         messages,
+        footer: io::stdout().is_terminal() && !term::machine_output(parsed, env),
+        cancellable: false,
     };
 
     let json_out = parsed.flag_true("json");
@@ -238,6 +543,8 @@ pub(crate) fn run_chat(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> R
             session.model
         ))
     );
+    session.cancellable = true;
+    let mut footer_up = false;
     loop {
         eprint!("{} ", term::accent(">"));
         let _ = io::stderr().flush();
@@ -245,6 +552,10 @@ pub(crate) fn run_chat(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> R
         if io::stdin().lock().read_line(&mut line).unwrap_or(0) == 0 {
             eprintln!();
             return Ok(0);
+        }
+        if footer_up {
+            erase_footer(line.trim_end_matches(['\r', '\n']));
+            footer_up = false;
         }
         let line = line.trim();
         if line.is_empty() {
@@ -254,12 +565,13 @@ pub(crate) fn run_chat(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> R
             return Ok(0);
         }
         // A failed turn must not end the session.
-        if let Err(e) = session.turn(line) {
-            eprintln!(
+        match session.turn(line) {
+            Ok(shown) => footer_up = shown,
+            Err(e) => eprintln!(
                 "{} {}",
                 term::err("error:"),
                 crate::key::mask_secrets(&e.to_string())
-            );
+            ),
         }
     }
 }
@@ -301,15 +613,151 @@ mod tests {
 
     #[test]
     fn sse_lines_decode_deltas_done_and_noise() {
-        assert_eq!(
-            parse_sse_line(r#"data: {"choices":[{"delta":{"content":"Hi"}}]}"#),
-            Sse::Delta("Hi".into())
-        );
+        let Sse::Chunk { delta, meta } = parse_sse_line(
+            r#"data: {"id":"g1","model":"m","choices":[{"delta":{"content":"Hi"}}]}"#,
+        ) else {
+            panic!("expected a chunk");
+        };
+        assert_eq!(delta.as_deref(), Some("Hi"));
+        assert_eq!(meta.model.as_deref(), Some("m"));
+        assert_eq!(meta.chunk_id.as_deref(), Some("g1"));
         assert_eq!(parse_sse_line("data: [DONE]"), Sse::Done);
         assert_eq!(parse_sse_line(": keep-alive"), Sse::Skip);
+        let Sse::Chunk { delta, .. } =
+            parse_sse_line(r#"data: {"choices":[{"delta":{"role":"assistant"}}]}"#)
+        else {
+            panic!("expected a chunk");
+        };
+        assert_eq!(delta, None);
+    }
+
+    const FINAL: &str = r#"data: {"id":"gen-1","model":"cohere/x","choices":[{"delta":{"content":""}}],"usage":{"prompt_tokens":2,"completion_tokens":36,"cost":0.0012}}"#;
+    const META: &str = r#"data: {"id":"req_9725c9bdc61c4a74","model":"cohere/x","choices":[],"anyrouter_metadata":{"requestId":"req_9725c9bdc61c4a74"}}"#;
+
+    #[test]
+    fn stats_come_from_the_final_usage_and_metadata_chunks() {
+        let mut meta = ChunkMeta::default();
+        for l in [FINAL, META] {
+            let Sse::Chunk { meta: m, .. } = parse_sse_line(l) else {
+                panic!("chunk")
+            };
+            meta.absorb(m);
+        }
+        let stats = TurnStats::new(
+            &[],
+            meta,
+            Some(Duration::from_millis(250)),
+            Duration::from_millis(1400),
+        );
         assert_eq!(
-            parse_sse_line(r#"data: {"choices":[{"delta":{"role":"assistant"}}]}"#),
-            Sse::Skip
+            stats.footer(),
+            "cohere/x · 2→36 tokens · first token 250ms · 1.4s · 31 tok/s · $0.0012 · req_9725c9bd"
+        );
+    }
+
+    #[test]
+    fn footer_leaves_out_what_the_server_did_not_send() {
+        let stats = TurnStats {
+            total: Duration::from_millis(800),
+            ..TurnStats::default()
+        };
+        assert_eq!(stats.footer(), "800ms");
+        let free = TurnStats {
+            cost: Some(0.0),
+            total: Duration::from_millis(800),
+            ..TurnStats::default()
+        };
+        assert_eq!(free.footer(), "800ms · free");
+    }
+
+    #[test]
+    fn the_generation_header_wins_the_request_id() {
+        let headers = vec![
+            ("x-request-id".to_string(), "req_h".to_string()),
+            ("x-anyrouter-generation-id".to_string(), "gen_h".to_string()),
+        ];
+        let meta = ChunkMeta {
+            request_id: Some("req_m".into()),
+            ..ChunkMeta::default()
+        };
+        let s = TurnStats::new(&headers, meta, None, Duration::ZERO);
+        assert_eq!(s.request_id.as_deref(), Some("gen_h"));
+    }
+
+    /// A reader that yields one SSE line per `read` call, so the stream is
+    /// consumed in separate steps like a real socket.
+    struct Trickle(std::collections::VecDeque<Vec<u8>>);
+    impl Read for Trickle {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            let Some(chunk) = self.0.pop_front() else {
+                return Ok(0);
+            };
+            buf[..chunk.len()].copy_from_slice(&chunk);
+            Ok(chunk.len())
+        }
+    }
+
+    /// Records the size of every `write` call.
+    #[derive(Default)]
+    struct Writes(Vec<usize>);
+    impl Write for Writes {
+        fn write(&mut self, b: &[u8]) -> io::Result<usize> {
+            self.0.push(b.len());
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn trickle(lines: &[&str]) -> io::BufReader<Trickle> {
+        let parts = lines.iter().map(|l| format!("{l}\n\n").into_bytes());
+        io::BufReader::new(Trickle(parts.collect()))
+    }
+
+    #[test]
+    fn live_stream_writes_each_delta_separately_and_reports_ttft() {
+        let lines = [
+            r#"data: {"choices":[{"delta":{"content":"a"}}]}"#,
+            r#"data: {"choices":[{"delta":{"content":"bc"}}]}"#,
+            FINAL,
+            "data: [DONE]",
+        ];
+        let mut out = Writes::default();
+        let s = stream_live(
+            trickle(&lines),
+            &mut out,
+            Instant::now(),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(s.reply, "abc");
+        assert_eq!(
+            out.0,
+            vec![1, 2],
+            "one write per delta, before the stream ended"
+        );
+        assert!(s.ttft.is_some());
+        assert_eq!(s.meta.usage, Some((2, 36)));
+        assert!(!s.cancelled);
+    }
+
+    #[test]
+    fn a_set_cancel_flag_stops_the_reply_without_an_error() {
+        struct Hang;
+        impl Read for Hang {
+            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+                std::thread::sleep(Duration::from_secs(5));
+                Ok(0)
+            }
+        }
+        let cancel = AtomicBool::new(true);
+        let t = Instant::now();
+        let s = stream_live(io::BufReader::new(Hang), &mut Writes::default(), t, &cancel).unwrap();
+        assert!(s.cancelled);
+        assert!(
+            t.elapsed() < Duration::from_secs(2),
+            "must not wait on the socket"
         );
     }
 
