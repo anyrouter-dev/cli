@@ -277,6 +277,11 @@ anyr relay logs --follow                    # background log
 anyr relay stop                             # graceful stop (same as Ctrl-C)
 anyr relay models [--json]                  # local models and which are served
 anyr relay models disable apple/foundation-model
+anyr relay devices [--json]                 # your paired devices: state, models, last seen, pool
+anyr relay devices rename <id> "Studio Mac"
+anyr relay devices pool <id> off            # stop sharing one device with the pool
+anyr relay devices rm <id> --yes            # revoke a device (management key or session)
+anyr relay models --devices                 # per model: devices, online, pool-shared
 anyr relay pool off                         # stop donating idle capacity (saved)
 anyr relay doctor                           # macOS, fm serve, Decider, network, auth
 anyr relay unpair --yes                     # remove this device from your account

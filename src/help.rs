@@ -575,6 +575,12 @@ Usage:
   {bin} relay logs [--follow] [--lines N]   log of the background relay
   {bin} relay models [--json]     local models and which ones are served
   {bin} relay models enable|disable <id>    choose on-device models (saved)
+  {bin} relay models --devices [--json]     per model: devices, online, pool (all your devices)
+  {bin} relay devices [--json]    your paired devices: id, name, state, models, last seen, pool
+  {bin} relay devices rename <id> <name>    rename a device
+  {bin} relay devices pool <id> on|off      share one device with the pool, or stop
+  {bin} relay devices rm <id> --yes         remove a device (needs --yes; a management key
+                                  ak_… via ANYROUTER_MANAGEMENT_KEY, or sign in)
   {bin} relay pool [on|off]       show or set pool sharing (saved, updates the device)
   {bin} relay pair [--name <device>]        pair this device (start pairs too)
   {bin} relay unpair [--yes]      remove this device from your account

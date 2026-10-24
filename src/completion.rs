@@ -72,6 +72,7 @@ pub fn subcommands(command: &str) -> &'static [(&'static str, &'static str)] {
             ("status", "Show whether it runs and what it serves"),
             ("logs", "Show the background relay log"),
             ("models", "List local models; enable or disable them"),
+            ("devices", "List, rename, pool or remove paired devices"),
             ("pool", "Show or set pool sharing (on|off)"),
             ("pair", "Pair this device"),
             ("unpair", "Remove this device from your account"),

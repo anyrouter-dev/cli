@@ -22,6 +22,9 @@ pub(super) enum Cmd {
     Models {
         json: bool,
     },
+    /// `relay models --devices`: per-model status across the account's devices.
+    DeviceModels,
+    Devices(super::devices::Devices),
     ModelSet {
         id: String,
         enable: bool,
@@ -39,7 +42,8 @@ pub(super) enum Cmd {
     },
 }
 
-pub(super) const SUBCOMMANDS: &str = "start|stop|status|logs|models|pool|pair|unpair|doctor";
+pub(super) const SUBCOMMANDS: &str =
+    "start|stop|status|logs|models|devices|pool|pair|unpair|doctor";
 
 const DEFAULT_LOG_LINES: usize = 50;
 
@@ -66,14 +70,15 @@ pub(super) fn parse_cmd(parsed: &ParsedArgs) -> Result<Cmd, String> {
     only_on(
         parsed,
         "json",
-        &["", "status", "models", "pool", "doctor"],
+        &["", "status", "models", "pool", "doctor", "devices"],
         sub,
     )
     .map_err(|_| usage(&format!("--json does not apply to `{label}`.")))?;
     only_on(parsed, "detach", &["start"], sub)?;
     only_on(parsed, "follow", &["logs"], sub)?;
     only_on(parsed, "lines", &["logs"], sub)?;
-    only_on(parsed, "yes", &["unpair"], sub)?;
+    only_on(parsed, "yes", &["unpair", "devices"], sub)?;
+    only_on(parsed, "devices", &["models"], sub)?;
     let extra = |n: usize| -> Result<(), String> {
         match words.get(n) {
             Some(w) => Err(usage(&format!(
@@ -118,7 +123,11 @@ pub(super) fn parse_cmd(parsed: &ParsedArgs) -> Result<Cmd, String> {
         "models" => match words.get(1).copied() {
             None | Some("list") | Some("ls") => {
                 extra(2)?;
-                Cmd::Models { json }
+                if parsed.flag_true("devices") {
+                    Cmd::DeviceModels
+                } else {
+                    Cmd::Models { json }
+                }
             }
             Some(verb @ ("enable" | "disable")) => {
                 let Some(id) = words.get(2) else {
@@ -138,6 +147,9 @@ pub(super) fn parse_cmd(parsed: &ParsedArgs) -> Result<Cmd, String> {
                 )))
             }
         },
+        "devices" => Cmd::Devices(
+            super::devices::parse(&words[1..], parsed.skip_confirm()).map_err(|e| usage(&e))?,
+        ),
         "pool" => {
             let set = match words.get(1).copied() {
                 None => None,
@@ -258,6 +270,21 @@ mod tests {
         assert_eq!(cmd(&["unpair", "--yes"]), Cmd::Unpair { yes: true });
         assert_eq!(cmd(&["unpair"]), Cmd::Unpair { yes: false });
         assert_eq!(cmd(&["doctor", "--json"]), Cmd::Doctor { json: true });
+        assert_eq!(cmd(&["models", "--devices"]), Cmd::DeviceModels);
+        assert_eq!(
+            cmd(&["devices", "rm", "d1", "--yes"]),
+            Cmd::Devices(super::super::devices::Devices::Rm {
+                id: "d1".into(),
+                yes: true
+            })
+        );
+        assert_eq!(
+            cmd(&["devices", "rm", "d1"]),
+            Cmd::Devices(super::super::devices::Devices::Rm {
+                id: "d1".into(),
+                yes: false
+            })
+        );
     }
 
     #[test]
@@ -270,6 +297,10 @@ mod tests {
             (&["stop", "--detach"], "--detach does not apply"),
             (&["start", "--json"], "--json does not apply"),
             (&["logs", "--lines", "0"], "positive number"),
+            (&["devices", "rename", "d1"], "needs a new name"),
+            (&["devices", "pool", "d1", "x"], "on or off"),
+            (&["devices", "--detach"], "--detach does not apply"),
+            (&["status", "--devices"], "--devices does not apply"),
             (&["status", "extra"], "Unexpected argument \"extra\""),
         ] {
             let e = err(argv);

@@ -463,6 +463,7 @@ pub(crate) fn allowed_flags(command: &str) -> Option<&'static [&'static str]> {
             "follow",
             "lines",
             "yes",
+            "devices",
         ],
         "task" => &[
             "plan-model",
