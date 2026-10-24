@@ -651,3 +651,95 @@ fn private_publish_says_the_link_is_not_shareable_yet() {
     assert_eq!(code, 0, "{err}");
     assert!(!err.contains("only you can open"), "{err}");
 }
+
+fn publish_body(dir: &Path, extra: &[&str]) -> serde_json::Value {
+    std::fs::write(dir.join("p.html"), "<h1>Hi</h1>").unwrap();
+    let (base, seen) = serve(vec![(201, OK.into())]);
+    let file = dir.join("p.html");
+    let mut args = vec!["artifact", "publish", file.to_str().unwrap()];
+    args.extend_from_slice(extra);
+    args.extend_from_slice(&["--base-url", &base, "--key", "sk-ar-test"]);
+    let (code, _, err) = anyr(dir, &args);
+    assert_eq!(code, 0, "{err}");
+    let s = seen.lock().unwrap()[0].clone();
+    serde_json::from_str(s.splitn(5, ' ').nth(4).unwrap()).unwrap()
+}
+
+#[test]
+fn show_author_is_sent_only_when_a_flag_asks_for_it() {
+    let dir = tmp("author-pub");
+    // WHY: an older server rejects unknown keys, so no flag means no field.
+    assert!(publish_body(&dir, &[]).get("show_author").is_none());
+    assert_eq!(publish_body(&dir, &["--show-author"])["show_author"], true);
+    assert_eq!(
+        publish_body(&dir, &["--no-show-author"])["show_author"],
+        false
+    );
+}
+
+#[test]
+fn visibility_can_change_only_the_author_setting() {
+    let dir = tmp("author-vis");
+    let (base, seen) = serve(vec![(200, "{}".into()), (200, "{}".into())]);
+    let (code, _, err) = anyr(
+        &dir,
+        &[
+            "artifact",
+            "visibility",
+            "abc123",
+            "--show-author",
+            "--base-url",
+            &base,
+            "--key",
+            "sk-ar-test",
+        ],
+    );
+    assert_eq!(code, 0, "{err}");
+    assert!(err.contains("shows your name"), "{err}");
+    let (code, _, err) = anyr(
+        &dir,
+        &[
+            "artifact",
+            "visibility",
+            "abc123",
+            "unlisted",
+            "--no-show-author",
+            "--base-url",
+            &base,
+            "--key",
+            "sk-ar-test",
+        ],
+    );
+    assert_eq!(code, 0, "{err}");
+    let seen = seen.lock().unwrap();
+    assert!(seen[0].ends_with(r#"{"show_author":true}"#), "{}", seen[0]);
+    assert!(
+        seen[1].ends_with(r#"{"show_author":false,"visibility":"unlisted"}"#)
+            || seen[1].ends_with(r#"{"visibility":"unlisted","show_author":false}"#),
+        "{}",
+        seen[1]
+    );
+}
+
+#[test]
+fn both_author_flags_or_neither_value_are_usage_errors() {
+    let dir = tmp("author-bad");
+    let (code, _, err) = anyr(
+        &dir,
+        &[
+            "artifact",
+            "visibility",
+            "abc123",
+            "--show-author",
+            "--no-show-author",
+            "--key",
+            "sk-ar-test",
+        ],
+    );
+    assert_eq!(code, 2, "{err}");
+    let (code, _, err) = anyr(
+        &dir,
+        &["artifact", "visibility", "abc123", "--key", "sk-ar-test"],
+    );
+    assert_eq!(code, 2, "{err}");
+}

@@ -639,6 +639,7 @@ Usage:
   {bin} artifact ls                             List your artifacts
   {bin} artifact rm <id>                        Delete one (asks first)
   {bin} artifact visibility <id> <v>            private | unlisted | public
+  {bin} artifact visibility <id> --show-author  Show or hide your name on the page
 
 A file (html or md) is sent inline. A folder is uploaded file by file;
 dotfiles, node_modules and .git are skipped. Limits: 5 MB per file,
@@ -650,6 +651,8 @@ Options:
                        private links open only for you; unlisted to share
   --id <id>            Publish a new version of an existing artifact
   --label <text>       Version label (with --id)
+  --show-author        Show your profile name on the page (default: hidden)
+  --no-show-author     Hide your name again
   --yes                Skip confirmation (public, rm)
   --json               Print the server response instead of the URL
 
