@@ -561,7 +561,7 @@ pub(crate) fn allowed_flags(command: &str) -> Option<&'static [&'static str]> {
             "enable",
         ],
         "audit" => &["profile", "config", "json", "launches", "tool", "limit"],
-        "logout" => &["profile", "config"],
+        "logout" => &["profile", "config", "json"],
         "auth" => &[
             "key",
             "preset",
