@@ -3,7 +3,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use crate::http::{fetch_keys, fetch_models, is_active_key_row, reveal_key};
-use crate::install::{available_agents, ensure_tool_installed, missing_agents};
+use crate::install::{available_agents, ensure_tool_installed, missing_agents, Install};
 use crate::key::{
     load_config_if_present, mask_api_key, no_key_error, resolve_api_key, resolve_base_url,
 };
@@ -569,7 +569,7 @@ pub(crate) fn install_agent_dialog(
     )?;
     let (id, _) = missing[idx];
     let command = tool_command_for(path, id);
-    let resolved = ensure_tool_installed(id, &command, true)?;
+    let resolved = ensure_tool_installed(id, &command, Install::Yes)?;
     persist_tool_command(path, id, &resolved)?;
     println!("{}  {id}  {}", term::ok("Installed"), term::dim(&resolved));
     Ok(0)

@@ -364,12 +364,21 @@ pub fn machine_output(
     parsed: &crate::parse::ParsedArgs,
     env: &std::collections::BTreeMap<String, String>,
 ) -> bool {
+    machine_output_flags(&parsed.flags, env)
+}
+
+/// `machine_output` for callers that hold only the parsed flags.
+pub fn machine_output_flags(
+    flags: &std::collections::HashMap<String, crate::parse::FlagValue>,
+    env: &std::collections::BTreeMap<String, String>,
+) -> bool {
     let on = |k: &str| {
         env.get(k)
             .is_some_and(|v| !matches!(v.trim(), "" | "0" | "false"))
     };
-    parsed.flag_true("json")
-        || parsed.flag_true("quiet")
+    let flag = |k: &str| matches!(flags.get(k), Some(crate::parse::FlagValue::Bool(true)));
+    flag("json")
+        || flag("quiet")
         || env
             .get("ANYR_OUTPUT")
             .is_some_and(|v| v.trim().eq_ignore_ascii_case("json"))
