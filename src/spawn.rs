@@ -1083,6 +1083,16 @@ pub fn crush_config_dir(config_path: &Path) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("crush"))
 }
 
+/// Private stand-in for Crush's data directory, next to the private config.
+/// Crush keeps the picked model in `<data>/crush.json`, loads it after the
+/// config and rewrites it, so the user's own data directory must stay out.
+pub fn crush_data_dir(config_path: &Path) -> PathBuf {
+    config_path
+        .parent()
+        .map(|p| p.join("crush-data"))
+        .unwrap_or_else(|| PathBuf::from("crush-data"))
+}
+
 /// Point Crush at an AnyRouter-owned global config directory.
 ///
 /// `CRUSH_GLOBAL_CONFIG` replaces the user's directory, so their `crush.json`
@@ -1113,6 +1123,18 @@ pub fn prepare_crush_config(
         mcp_url,
     );
     write_crush_files(&dir, &config, user_dir)?;
+    let data = crush_data_dir(config_path);
+    #[cfg(feature = "native")]
+    crate::config::ensure_private_dir(&data).map_err(|e| {
+        format!(
+            "Could not create Crush data directory {}: {e}",
+            data.display()
+        )
+    })?;
+    env.insert(
+        "CRUSH_GLOBAL_DATA".into(),
+        data.to_string_lossy().into_owned(),
+    );
     env.insert(
         "CRUSH_GLOBAL_CONFIG".into(),
         dir.to_string_lossy().into_owned(),
@@ -1329,6 +1351,11 @@ pub fn model_args_for(
     if tool_name == "qwen" {
         // A `model.name` in the user's settings.json beats OPENAI_MODEL.
         return vec!["-m".into(), catalog];
+    }
+    if tool_name == "kilo" {
+        // On a fresh HOME kilo ignores the top-level `model` of its inline
+        // config and falls back to its own default.
+        return vec!["-m".into(), format!("anyrouter/{catalog}")];
     }
     if tool_name != "codex" {
         return vec![];

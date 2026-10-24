@@ -35,11 +35,12 @@ elif agent == "crush":
     p = cfg["providers"]["anyrouter"]
     url, key = p["base_url"] + "/chat/completions", env[p["api_key"].removeprefix("$")]
     model = cfg["models"]["large"]["model"]
+    assert env["CRUSH_GLOBAL_DATA"] != os.path.expanduser("~/.local/share/crush")
 elif agent == "kilo":
     cfg = json.loads(env["KILO_CONFIG_CONTENT"])
     o = cfg["provider"]["anyrouter"]["options"]
     url, key = o["baseURL"] + "/chat/completions", env[o["apiKey"][len("{env:"):-1]]
-    model = cfg["model"].removeprefix("anyrouter/")
+    model = arg("-m").removeprefix("anyrouter/")
 body = json.dumps({"model": model}).encode()
 req = urllib.request.Request(url, data=body, headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"})
 try:
@@ -259,9 +260,10 @@ fn dry_run_points_each_agent_at_anyrouter_with_the_chosen_model() {
     assert_eq!(env["AIDER_OPENAI_API_BASE"], "https://gw.example/api/v1");
     assert_eq!(env["AIDER_MODEL"], format!("openai/{MODEL}"));
 
-    let (_, env) = dry_env("kilo", &[]);
+    let (args, env) = dry_env("kilo", &[]);
     let cfg: serde_json::Value = serde_json::from_str(&env["KILO_CONFIG_CONTENT"]).unwrap();
     assert_eq!(cfg["model"], format!("anyrouter/{MODEL}"));
+    assert_eq!(args, ["-m", &format!("anyrouter/{MODEL}")]);
     let options = &cfg["provider"]["anyrouter"]["options"];
     assert_eq!(options["baseURL"], "https://gw.example/api/v1");
     assert_eq!(options["apiKey"], "{env:ANYROUTER_API_KEY}");
@@ -302,4 +304,44 @@ fn missing_binary_names_the_install_command() {
         assert!(err.contains(install), "{agent}: {err}");
         let _ = std::fs::remove_dir_all(&dir);
     }
+}
+
+#[test]
+fn kilo_keeps_a_model_the_user_passed() {
+    let (args, _) = dry_env("kilo", &["--", "-m", "other/model"]);
+    assert_eq!(args, ["-m", "other/model"], "anyr must not add a second -m");
+}
+
+#[test]
+fn crush_data_dir_is_private_and_the_users_data_file_is_untouched() {
+    let dir = temp_dir("crush-data");
+    let home = dir.join("home");
+    plant_user_files(&home, "crush");
+    let user_data = home.join(".local/share/crush/crush.json");
+    std::fs::create_dir_all(user_data.parent().unwrap()).unwrap();
+    let planted = r#"{"models":{"large":{"provider":"mine","model":"my-model"}}}"#;
+    std::fs::write(&user_data, planted).unwrap();
+    let out = anyr(
+        &dir,
+        &home,
+        "crush",
+        &["--dry-run", "--command-path", "/nonexistent/crush"],
+    )
+    .env("CRUSH_GLOBAL_DATA", home.join(".local/share/crush"))
+    .output()
+    .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let private = dir.join("anyr").join("crush-data");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains(&format!("CRUSH_GLOBAL_DATA={}", private.display())),
+        "{stdout}"
+    );
+    assert!(private.is_dir());
+    assert_eq!(std::fs::read_to_string(&user_data).unwrap(), planted);
+    let _ = std::fs::remove_dir_all(&dir);
 }

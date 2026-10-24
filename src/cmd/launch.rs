@@ -266,12 +266,19 @@ pub(crate) fn launch(
     let mut args = Vec::new();
     args.extend(effort_args_for(tool_name, effort.as_deref()));
     args.extend(provider_args_for(tool_name, &profile));
-    args.extend(model_args_for(
-        tool_name,
-        &model,
-        model_mode,
-        resolved.context_window,
-    ));
+    let user_picked_model = tool_name == "kilo"
+        && parsed
+            .passthrough
+            .iter()
+            .any(|a| a == "-m" || a == "--model" || a.starts_with("--model="));
+    if !user_picked_model {
+        args.extend(model_args_for(
+            tool_name,
+            &model,
+            model_mode,
+            resolved.context_window,
+        ));
+    }
     // Wire the AnyRouter MCP gateway in when the workspace asks for it.
     let mcp_decision = crate::mcp_wiring::decide(&crate::mcp_wiring::DecideInput {
         tool: tool_name,
