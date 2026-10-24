@@ -303,10 +303,17 @@ pub(crate) fn sync_grok(
     Ok(GrokSync::Written)
 }
 
+/// Write `content` to `path`. A symlink is replaced by a regular file (its
+/// target's content is already in `content`), so a launch-private Grok home
+/// that links to the user's config never writes through into the user's file.
 fn write_file(path: &Path, content: &str) -> Result<(), String> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)
             .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    }
+    if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
+        std::fs::remove_file(path)
+            .map_err(|e| format!("cannot replace link {}: {e}", path.display()))?;
     }
     std::fs::write(path, content).map_err(|e| format!("cannot write {}: {e}", path.display()))
 }
@@ -355,7 +362,7 @@ pub(crate) fn apply(
         Decision::Off(_) => None,
     };
     if strategy == Strategy::GrokManaged {
-        return apply_grok(input, url);
+        return apply_grok(input, url, child_env);
     }
     let Some(url) = url else {
         let Decision::Off(why) = input.decision else {
@@ -393,8 +400,17 @@ pub(crate) fn apply(
     }
 }
 
-fn apply_grok(input: &ApplyInput<'_>, url: Option<&str>) -> Wiring {
-    let Some(paths) = grok_paths(input.env, input.config_path) else {
+fn apply_grok(
+    input: &ApplyInput<'_>,
+    url: Option<&str>,
+    child_env: &BTreeMap<String, String>,
+) -> Wiring {
+    // A launch that gives Grok its own home wins over the user's GROK_HOME.
+    let mut env = input.env.clone();
+    if let Some(home) = child_env.get("GROK_HOME").filter(|v| !v.trim().is_empty()) {
+        env.insert("GROK_HOME".into(), home.clone());
+    }
+    let Some(paths) = grok_paths(&env, input.config_path) else {
         return Wiring {
             summary: "mcp: off (cannot find Grok's home; set GROK_HOME)".into(),
         };
@@ -745,6 +761,51 @@ mod tests {
         assert_eq!(sync_grok(&paths, None, KEY).unwrap(), GrokSync::UserOwned);
         assert_eq!(std::fs::read_to_string(&paths.config).unwrap(), user);
         assert!(!paths.token.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn grok_follows_the_launch_grok_home_and_never_writes_through_a_link() {
+        let dir = tmp("grok-link");
+        let user_home = dir.join("user-grok");
+        std::fs::create_dir_all(&user_home).unwrap();
+        let user = "[models]\ndefault = \"grok-4.5\"\n";
+        std::fs::write(user_home.join("config.toml"), user).unwrap();
+        // The launch gives Grok a private home whose config links to the user's.
+        let launch_home = dir.join("anyr").join("grok");
+        std::fs::create_dir_all(&launch_home).unwrap();
+        std::os::unix::fs::symlink(
+            user_home.join("config.toml"),
+            launch_home.join("config.toml"),
+        )
+        .unwrap();
+        let env = BTreeMap::from([("GROK_HOME".to_string(), user_home.display().to_string())]);
+        let mut child =
+            BTreeMap::from([("GROK_HOME".to_string(), launch_home.display().to_string())]);
+        let decision = Decision::On { url: URL.into() };
+        apply(
+            &ApplyInput {
+                tool: "grok",
+                decision: &decision,
+                key: KEY,
+                env: &env,
+                config_path: &dir.join("anyr").join("config.yaml"),
+                dry_run: false,
+            },
+            &mut vec![],
+            &mut child,
+        );
+        assert_eq!(
+            std::fs::read_to_string(user_home.join("config.toml")).unwrap(),
+            user
+        );
+        let private = launch_home.join("config.toml");
+        assert!(!std::fs::symlink_metadata(&private)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        let text = std::fs::read_to_string(&private).unwrap();
+        assert!(text.starts_with(user.trim_end()) && text.contains("[mcp_servers.anyrouter]"));
     }
 
     #[test]
