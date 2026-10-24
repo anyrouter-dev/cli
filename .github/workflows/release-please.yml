@@ -26,7 +26,8 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ fromJSON(steps.rp.outputs.pr).headBranchName }}
-      - if: steps.rp.outputs.pr
+      - name: sync Cargo.lock on the release PR branch
+        if: steps.rp.outputs.pr
         run: |
           v=$(sed -n 's/^version = "\([^"]*\)".*/\1/p' Cargo.toml | head -1)
           awk -v v="$v" '/^name = "anyr-cli"$/{print;getline;print "version = \"" v "\"";next}1' Cargo.lock > Cargo.lock.new
@@ -41,7 +42,8 @@ jobs:
       # A PR pushed with GITHUB_TOKEN gets its pull_request runs parked as
       # action_required (#157), so dispatch ci on the release branch. Its
       # check runs land on the PR head commit and gate the merge.
-      - if: steps.rp.outputs.pr
+      - name: dispatch ci on the release PR branch
+        if: steps.rp.outputs.pr
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh workflow run ci.yml -R ${{ github.repository }} --ref ${{ fromJSON(steps.rp.outputs.pr).headBranchName }}
