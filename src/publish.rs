@@ -28,6 +28,7 @@ pub const PUBLISH_FLAGS: &[&str] = &[
     "yes",
     "visibility",
     "dry-run",
+    "light",
 ];
 pub const APPS_FLAGS: &[&str] = &["profile", "base-url", "config", "key", "json", "yes"];
 
@@ -50,14 +51,19 @@ pub fn publish_help() -> String {
     let bin = crate::help::invoked_bin();
     format!(
         "{bin} publish — send a JSON document to an AnyRouter app\n\n\
-Usage:\n  {bin} publish <app> [file|-] [--visibility unlisted|private|public] [--yes] [--dry-run] [--json]\n\n\
+Usage:\n  {bin} publish <app> [file|-] [--visibility unlisted|private|public] [--yes] [--dry-run] [--json]\n  \
+{bin} publish <app> <page.html|figure.svg> [--light <page-light.html>] [options]\n\n\
 Reads the document from <file>, or from stdin with `-` (or when piped with no file).\n\
 It is checked locally against the app's published JSON Schema first; problems are\n\
 listed by field and nothing is uploaded (exit 2). On success the URL is printed.\n\n\
+An .html or .svg file is uploaded as a page when the app takes uploads (see\n\
+`upload` in `{bin} apps schema <app>`). A sibling <name>-light.<ext> is sent as\n\
+the light build; pass --light <file> to name it yourself.\n\n\
 Examples\n  $ {bin} apps schema explain > schema.json     # what an agent must produce\n  \
 $ <agent produces explain json> | {bin} publish explain -\n  \
 $ {bin} publish explain fig.json --visibility public --yes\n  \
-$ {bin} publish explain fig.json --dry-run\n\n\
+$ {bin} publish explain fig.json --dry-run\n  \
+$ {bin} publish explain page.html --dry-run    # page.html + page-light.html\n\n\
 Visibility: unlisted (default; link works, not listed), private (only you),\n\
 public (listed after review). Re-running the same document is safe: it carries a\n\
 stable Idempotency-Key, so the server returns the original instead of a copy.\n\n\
@@ -231,6 +237,97 @@ fn read_document(source: Option<&&str>) -> Result<Value, String> {
     serde_json::from_str(&text).map_err(|e| usage(format!("input is not valid JSON: {e}")))
 }
 
+/// `.html`/`.htm` and `.svg` files are pages to upload, not JSON documents.
+fn page_ext(path: &str) -> Option<&'static str> {
+    let ext = std::path::Path::new(path).extension()?.to_str()?;
+    match ext.to_ascii_lowercase().as_str() {
+        "html" | "htm" => Some("html"),
+        "svg" => Some("svg"),
+        _ => None,
+    }
+}
+
+/// `fig.html` -> `fig-light.html` in the same folder.
+fn light_sibling(path: &str) -> std::path::PathBuf {
+    let p = std::path::Path::new(path);
+    let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or_default();
+    let ext = p.extension().and_then(|s| s.to_str()).unwrap_or_default();
+    p.with_file_name(format!("{stem}-light.{ext}"))
+}
+
+fn read_page(path: &str, max: u64) -> Result<String, String> {
+    let len = std::fs::metadata(path)
+        .map_err(|e| usage(format!("cannot read {path}: {e}")))?
+        .len();
+    if len > max {
+        return Err(usage(format!(
+            "{path} is {}, over the {} upload limit",
+            size(len as usize),
+            size(max as usize)
+        )));
+    }
+    std::fs::read_to_string(path).map_err(|e| usage(format!("cannot read {path}: {e}")))
+}
+
+/// Wrap a page file as the app's upload payload, checked against the
+/// schema's `upload` block. The format is the enum value ending in `-<ext>`,
+/// so the app names it, not the CLI.
+fn page_payload<'s>(
+    spec: &'s Value,
+    app: &str,
+    path: &str,
+    ext: &str,
+    light: Option<&str>,
+) -> Result<(Value, &'s Value), String> {
+    let bin = crate::help::invoked_bin();
+    let upload = spec.get("upload").and_then(|u| u.get("json_schema"));
+    let Some(schema) = upload else {
+        return Err(usage(format!(
+            "the {app} app takes JSON documents, not .{ext} pages\n{} {bin} apps schema {app}",
+            term::dim("see:")
+        )));
+    };
+    let formats: Vec<&str> = schema
+        .pointer("/properties/format/enum")
+        .and_then(Value::as_array)
+        .map(|v| v.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    let suffix = format!("-{ext}");
+    let format = formats
+        .iter()
+        .find(|f| f.ends_with(&suffix))
+        .ok_or_else(|| {
+            usage(format!(
+                "the {app} app does not take .{ext} uploads (formats: {})",
+                if formats.is_empty() {
+                    "none".to_string()
+                } else {
+                    formats.join(", ")
+                }
+            ))
+        })?;
+    let max = spec
+        .pointer("/upload/max_bytes")
+        .and_then(Value::as_u64)
+        .unwrap_or(crate::api::MAX_INPUT_BYTES);
+    let mut payload = json!({ "format": format, "content": read_page(path, max)? });
+    let light_path = match light {
+        Some(l) => Some(std::path::PathBuf::from(l)),
+        None => Some(light_sibling(path)).filter(|p| p.is_file()),
+    };
+    if let Some(lp) = light_path {
+        if schema.pointer("/properties/content_light").is_none() {
+            return Err(usage(format!("the {app} app takes no light build")));
+        }
+        let lp = lp.to_string_lossy().into_owned();
+        payload["content_light"] = json!(read_page(&lp, max)?);
+        if light.is_none() {
+            eprintln!("{} {lp}", term::dim("light build:"));
+        }
+    }
+    Ok((payload, schema))
+}
+
 fn site_origin(base: &str) -> String {
     let b = base.trim_end_matches('/');
     b.strip_suffix("/api").unwrap_or(b).to_string()
@@ -251,7 +348,18 @@ fn publish_inner(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<
     let visibility = get_string_flag(&parsed.flags, "visibility")
         .map(|v| visibility_arg(&v).map(str::to_string))
         .transpose()?;
-    let payload = read_document(args.get(1))?;
+    let page = args
+        .get(1)
+        .copied()
+        .and_then(|path| page_ext(path).map(|ext| (path, ext)));
+    let light = get_string_flag(&parsed.flags, "light");
+    if light.is_some() && page.is_none() {
+        return Err(usage("--light goes with an .html or .svg page"));
+    }
+    let document = match page {
+        Some(_) => None,
+        None => Some(read_document(args.get(1))?),
+    };
     let ctx = context(parsed, env);
 
     let schema_path = format!("/v1/apps/{app}/schema");
@@ -259,12 +367,19 @@ fn publish_inner(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<
         Ok((_, v)) => v,
         Err(code) => return Ok(code),
     };
-    let json_schema = spec.get("json_schema").ok_or_else(|| {
-        format!(
-            "{} {schema_path} returned no json_schema",
-            term::err("error:")
-        )
-    })?;
+    let (payload, json_schema) = match (document, page) {
+        (Some(doc), _) => {
+            let schema = spec.get("json_schema").ok_or_else(|| {
+                format!(
+                    "{} {schema_path} returned no json_schema",
+                    term::err("error:")
+                )
+            })?;
+            (doc, schema)
+        }
+        (None, Some((path, ext))) => page_payload(&spec, &app, path, ext, light.as_deref())?,
+        (None, None) => unreachable!("a document is read whenever there is no page"),
+    };
     let problems = schema::validate(json_schema, &payload);
     let bytes = payload.to_string().len();
     if !problems.is_empty() {

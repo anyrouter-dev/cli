@@ -149,6 +149,8 @@ CORE COMMANDS
   embed:      Embed text (args, --file or stdin)
   transactions: Credit ledger (purchases, usage, refunds)
   artifact:   Publish a file or folder to a shareable URL
+  publish:    Send a JSON document or HTML/SVG page to an app
+  apps:       List, delete or change what you published to apps
   api:        Dashboard from the terminal (keys, credits, logs, presets…)
   completion: Shell completion (bash, zsh, fish, powershell)
   onboard:    Paste-ready prompts for coding agents
