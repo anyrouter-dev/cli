@@ -287,6 +287,43 @@ fn launch_with_an_existing_preset_runs_the_agent_on_the_preset_model() {
     );
 }
 
+/// Most users hold only an inference key, which may not read /presets. The
+/// gateway still resolves `@preset/<slug>` for that key, so the launch must go
+/// on instead of demanding a management key.
+#[cfg(unix)]
+#[test]
+fn launch_with_only_an_inference_key_runs_the_agent_when_presets_are_forbidden() {
+    let (base, rx) = serve(vec![(
+        401,
+        r#"{"error":{"message":"Invalid or expired token"}}"#.into(),
+    )]);
+    let dir = home("launchapikey");
+    let (agent, marker) = fake_agent(&dir);
+    let _ = std::fs::remove_file(&marker);
+    let (code, _, err) = run_with(
+        &base,
+        &[
+            "claude",
+            "--preset",
+            "coding",
+            "--command-path",
+            &agent,
+            "--yes",
+        ],
+        &[],
+        "launchapikey",
+    );
+    assert_eq!(code, 0, "{err}");
+    let seen = next(&rx);
+    assert_eq!(seen.path, "/api/v1/presets/coding");
+    assert_eq!(seen.auth, format!("Bearer {KEY}"));
+    assert!(err.contains("could not check preset \"coding\""), "{err}");
+    assert_eq!(
+        std::fs::read_to_string(&marker).unwrap().trim(),
+        "@preset/coding"
+    );
+}
+
 #[test]
 fn preset_with_model_is_rejected_before_anything_runs() {
     let (code, _, err) = managed(

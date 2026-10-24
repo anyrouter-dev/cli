@@ -418,7 +418,8 @@ pub(crate) fn launch_args(parsed: &ParsedArgs) -> Result<Option<(ParsedArgs, Str
 }
 
 /// Fail before the agent starts when the preset does not exist. Prefers the
-/// management key, falls back to the launch API key.
+/// management key, falls back to the launch API key; when that key may not
+/// read presets, launch without the check.
 pub(crate) fn verify_for_launch(
     parsed: &ParsedArgs,
     env: &BTreeMap<String, String>,
@@ -444,14 +445,15 @@ pub(crate) fn verify_for_launch(
             term::err("error:"),
             term::dim("hint:")
         )),
-        401 | 403 if !has_management => Err(management_ctx(
-            &Ctx { base: base.into(), key: None, management_key: None, json: false },
-            "presets",
-            SCOPES,
-        )
-        .err()
-        .unwrap_or_default()
-            .replacen("need a management key", &format!("need a management key to verify \"{slug}\" at launch"), 1)),
+        // An inference key cannot read /presets, but the gateway still resolves
+        // `@preset/<slug>` for it, so launch and let a missing preset fail there.
+        401 | 403 if !has_management => {
+            eprintln!(
+                "{} could not check preset \"{slug}\" without a management key (ak_…); launching anyway. A missing preset fails on the first request.",
+                term::dim("note:")
+            );
+            Ok(())
+        }
         s => Err(format!(
             "{} could not verify preset \"{slug}\" (HTTP {s}). Nothing was launched.",
             term::err("error:")
