@@ -105,10 +105,18 @@ impl Default for Timing {
 }
 
 impl Timing {
-    /// `ANYR_RELAY_TIME_SCALE` (0.001 to 1) shrinks every timing so the
-    /// hermetic tests run in seconds.
+    /// Debug builds honour `ANYR_RELAY_TIME_SCALE` (0.001 to 1), which shrinks
+    /// every timing so the hermetic tests run in seconds. Release builds
+    /// always use the default timings.
     fn from_env(env: &BTreeMap<String, String>) -> Self {
+        Self::from_env_with(env, cfg!(debug_assertions))
+    }
+
+    fn from_env_with(env: &BTreeMap<String, String>, allow_scale: bool) -> Self {
         let t = Timing::default();
+        if !allow_scale {
+            return t;
+        }
         let Some(k) = env
             .get("ANYR_RELAY_TIME_SCALE")
             .and_then(|v| v.parse::<f64>().ok())
@@ -1244,11 +1252,20 @@ fn handle_request(
     });
 }
 
-/// Longest prefix of `bytes` ending on a UTF-8 codepoint boundary.
+/// Longest prefix of `bytes` that can be flushed: everything except a
+/// trailing truncated codepoint. An invalid byte (not a truncation) is
+/// flushed too, so `from_utf8_lossy` turns it into U+FFFD instead of stalling
+/// the stream behind it.
 fn utf8_flush_len(bytes: &[u8]) -> usize {
-    match std::str::from_utf8(bytes) {
-        Ok(_) => bytes.len(),
-        Err(e) => e.valid_up_to(),
+    let mut flushed = 0;
+    loop {
+        match std::str::from_utf8(&bytes[flushed..]) {
+            Ok(_) => return bytes.len(),
+            Err(e) => match e.error_len() {
+                Some(bad) => flushed += e.valid_up_to() + bad,
+                None => return flushed + e.valid_up_to(),
+            },
+        }
     }
 }
 
@@ -3278,6 +3295,31 @@ mod tests {
 
         // ASCII flushes everything.
         assert_eq!(utf8_flush_len(b"plain"), 5);
+    }
+
+    #[test]
+    fn utf8_flush_len_flushes_past_an_invalid_byte() {
+        // 0xFF is never valid UTF-8; the text after it must not stall.
+        assert_eq!(utf8_flush_len(b"a\xffbc"), 4);
+        assert_eq!(utf8_flush_len(b"\xffhello"), 6);
+        // Invalid byte followed by a truncated codepoint keeps only the tail.
+        let mut v = b"a\xff".to_vec();
+        v.extend_from_slice(&"é".as_bytes()[..1]);
+        assert_eq!(utf8_flush_len(&v), 2);
+        assert_eq!(
+            String::from_utf8_lossy(&b"a\xffbc"[..utf8_flush_len(b"a\xffbc")]),
+            "a\u{FFFD}bc"
+        );
+    }
+
+    #[test]
+    fn time_scale_is_ignored_when_scaling_is_disallowed() {
+        let env = BTreeMap::from([("ANYR_RELAY_TIME_SCALE".to_string(), "0.01".to_string())]);
+        let release = Timing::from_env_with(&env, false);
+        assert_eq!(release.ping_every, Timing::default().ping_every);
+        assert_eq!(release.dead_after, Timing::default().dead_after);
+        let debug = Timing::from_env_with(&env, true);
+        assert!(debug.ping_every < Timing::default().ping_every);
     }
 
     #[test]

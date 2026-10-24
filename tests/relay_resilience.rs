@@ -737,7 +737,8 @@ fn set_receive_buffer(s: &TcpStream, bytes: libc::c_int) {
 /// Soak: many reconnects, each serving one streamed request. Prints RSS
 /// every 100 cycles. Run with
 /// `cargo test --test relay_resilience soak -- --ignored --nocapture`;
-/// `ANYR_RELAY_BIN` points it at another build, `ANYR_SOAK_CYCLES` and
+/// `ANYR_RELAY_BIN` points it at another build, which must be a debug build
+/// (release builds ignore `ANYR_RELAY_TIME_SCALE`); `ANYR_SOAK_CYCLES` and
 /// `ANYR_SOAK_SCALE` size it, and `ANYR_SOAK_LARGE=1` makes each answer a
 /// 1 MB stream.
 #[cfg(target_os = "linux")]
