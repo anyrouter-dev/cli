@@ -626,6 +626,7 @@ dotfiles, node_modules and .git are skipped. Limits: 5 MB per file,
 Options:
   --title <text>       Page title
   --visibility <v>     private (default) | unlisted | public
+                       private links open only for you; unlisted to share
   --id <id>            Publish a new version of an existing artifact
   --label <text>       Version label (with --id)
   --yes                Skip confirmation (public, rm)

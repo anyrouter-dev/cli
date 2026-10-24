@@ -606,3 +606,48 @@ fn server_413_is_reported_and_the_key_is_redacted() {
         "{err}"
     );
 }
+
+#[test]
+fn private_publish_says_the_link_is_not_shareable_yet() {
+    // WHY: the default is private, and a private link shows other people a
+    // sign-in page. Without this line a user shares a link nobody can open.
+    let dir = tmp("private-hint");
+    std::fs::write(dir.join("p.html"), "<h1>Hi</h1>").unwrap();
+    let (base, _seen) = serve(vec![(201, OK.into())]);
+    let p = dir.join("p.html");
+    let (code, out, err) = anyr(
+        &dir,
+        &[
+            "artifact",
+            "publish",
+            p.to_str().unwrap(),
+            "--base-url",
+            &base,
+            "--key",
+            "sk-ar-test",
+        ],
+    );
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out.trim(), "https://anyrouter.dev/a/abc123");
+    assert!(err.contains("only you can open this link"), "{err}");
+    assert!(err.contains("artifact visibility abc123 unlisted"), "{err}");
+
+    let unlisted = r#"{"id":"abc123","version":1,"url":"https://anyrouter.dev/a/abc123","visibility":"unlisted"}"#;
+    let (base, _seen) = serve(vec![(201, unlisted.into())]);
+    let (code, _out, err) = anyr(
+        &dir,
+        &[
+            "artifact",
+            "publish",
+            p.to_str().unwrap(),
+            "--visibility",
+            "unlisted",
+            "--base-url",
+            &base,
+            "--key",
+            "sk-ar-test",
+        ],
+    );
+    assert_eq!(code, 0, "{err}");
+    assert!(!err.contains("only you can open"), "{err}");
+}
