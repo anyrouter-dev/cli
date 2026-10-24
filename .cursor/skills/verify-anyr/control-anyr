@@ -154,7 +154,7 @@ cmd_doctor() {
   local who_out
   who_out="$(run_anyr whoami 2>&1 || true)"
   local who_ok=0
-  if [[ "$who_out" == *"active account"* && "$who_out" == *"default"* && "$who_out" != *"sk-ar-v1-verify-fixture-not-a-real-key"* ]]; then
+  if [[ "$who_out" == "Signed in"* && "$who_out" == *"account"* && "$who_out" == *"default"* && "$who_out" != *"sk-ar-v1-verify-fixture-not-a-real-key"* ]]; then
     who_ok=1
   fi
   check whoami "$who_ok" "whoami shows masked default profile"

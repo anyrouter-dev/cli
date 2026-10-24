@@ -11,7 +11,7 @@ use crate::term;
 use crate::cmd::account::{run_account_use, run_logout};
 use crate::cmd::dispatch::{config_path, hint, shift_passthrough};
 use crate::cmd::login::run_login;
-use crate::cmd::usage::run_whoami;
+use crate::cmd::status::run_whoami;
 
 pub(crate) fn run_auth(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, String> {
     let sub = parsed

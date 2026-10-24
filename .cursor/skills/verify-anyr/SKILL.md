@@ -56,7 +56,7 @@ Doctor must report:
 - `help` — `anyr --help` contains `point any coding agent`, `auth login`, `claude`, and `help commands`.
 - `isolated` — `ANYROUTER_HOME` is under `anyr-verify-` and is not `~/.anyrouter`.
 - `config` / `config_path` — `anyr config path` prints that isolated `config.yaml`.
-- `whoami` — active account `default`, key masked, fixture secret not printed in full.
+- `whoami` — starts with `Signed in`, account row `default`, key masked, fixture secret not printed in full.
 - `update_guard` — auto-update and live catalog are off.
 - `pty` — `stopped` or `running` for session `anyr-verify`.
 - `paid_guard` — reminder not to spawn agents without `--dry-run`.
@@ -101,7 +101,7 @@ Stable handles. Match these strings, not column layout or ANSI color.
 | Command help | `cli -- auth --help` / `cli -- claude --help` | subcommands or `--dry-run`; exit `0`; not `Unknown command` |
 | Onboard impl | `cli -- onboard impl` | `ANYROUTER_API_KEY`, `https://anyrouter.dev/api/v1`, `https://anyrouter.dev/api` |
 | Onboard plan JSON | `cli -- onboard plan --json` | `"mode":"plan"` (or spaced) and `do not change` |
-| Whoami | `cli -- whoami` | `active account` `default`; full fixture key absent |
+| Whoami | `cli -- whoami` | starts `Signed in`; `account` row `default`; full fixture key absent |
 | Config path | `cli -- config path` | isolated `config.yaml` |
 | Account switch | `cli -- account use work` | stdout contains `work`; follow with `whoami` |
 | Menu dump | `cli -- menu --dump-tui` | ANSI-free HUD dump with `What do you want to do?`, `Launch claude`, `Config`, `Models`, `Quit`; secret absent |

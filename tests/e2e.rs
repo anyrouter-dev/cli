@@ -287,7 +287,7 @@ fn login_from_stdin_saves_the_key_privately_and_every_command_uses_it() {
     assert_eq!(code, 0, "{err}");
     let who = json(&out);
     assert_eq!(who["base_url"], gw.base.as_str());
-    let shown = who["api_key"].as_str().unwrap();
+    let shown = who["key_masked"].as_str().unwrap();
     assert!(shown.starts_with("sk-ar-v1-") && shown != KEY, "{shown}");
     assert!(
         !out.contains(KEY) && !err.contains(KEY),
