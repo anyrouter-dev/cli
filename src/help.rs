@@ -563,8 +563,7 @@ and prints `anyr updated A → B`. A running agent keeps its build until you
 start it again. A beta build stays on beta; nothing is ever downgraded.
 
 It stays off in CI, when output is not a terminal, with --json, and inside
-agents {bin} launches. Homebrew and npm installs get the upgrade command to
-run instead. Failures are silent; `{bin} update --status` shows them.
+agents {bin} launches. An npm install gets the npm command to run instead. Failures are silent; `{bin} update --status` shows them.
 
   update:
     auto: false          in ~/.anyrouter/config.yaml to turn it off

@@ -279,14 +279,14 @@ pub fn is_cargo_target_build(exe: &Path) -> bool {
 
 /// The command to run when a package manager owns the binary, or `None`
 /// when anyr installed it and may replace it.
-pub fn package_manager_hint(exe: &Path, beta: bool) -> Option<String> {
+pub fn package_manager_hint(exe: &Path) -> Option<String> {
     let p = exe.to_string_lossy().replace('\\', "/");
     if p.contains("/Cellar/") || p.contains("/homebrew/") || p.contains("linuxbrew/") {
         return Some("brew upgrade anyr".into());
     }
+    // npm publishes every build under the `next` dist-tag only.
     if p.contains("/node_modules/") || p.contains("/.anyrouter/binaries/") {
-        let tag = if beta { "next" } else { "latest" };
-        return Some(format!("npm install -g @anyr/cli@{tag}"));
+        return Some("npm install -g @anyr/cli@next".into());
     }
     None
 }
@@ -679,24 +679,24 @@ mod tests {
 
     #[test]
     fn package_managers_get_a_hint_not_a_swap() {
-        let hint = |p: &str, beta| package_manager_hint(Path::new(p), beta);
+        let hint = |p: &str| package_manager_hint(Path::new(p));
         assert_eq!(
-            hint("/opt/homebrew/Cellar/anyr/0.1.30/bin/anyr", false).as_deref(),
+            hint("/opt/homebrew/Cellar/anyr/0.1.30/bin/anyr").as_deref(),
             Some("brew upgrade anyr")
         );
         assert_eq!(
-            hint("/home/u/.linuxbrew/bin/anyr", false).as_deref(),
+            hint("/home/u/.linuxbrew/bin/anyr").as_deref(),
             Some("brew upgrade anyr")
         );
         assert_eq!(
-            hint("/usr/lib/node_modules/@anyr/cli/binaries/anyr", true).as_deref(),
+            hint("/usr/lib/node_modules/@anyr/cli/binaries/anyr").as_deref(),
             Some("npm install -g @anyr/cli@next")
         );
         assert_eq!(
-            hint("/home/u/.anyrouter/binaries/0.1.30/anyr", false).as_deref(),
-            Some("npm install -g @anyr/cli@latest")
+            hint("/home/u/.anyrouter/binaries/0.1.30/anyr").as_deref(),
+            Some("npm install -g @anyr/cli@next")
         );
-        assert_eq!(hint("/home/u/.local/bin/anyr", false), None);
+        assert_eq!(hint("/home/u/.local/bin/anyr"), None);
     }
 
     #[test]
