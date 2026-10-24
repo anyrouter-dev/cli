@@ -3264,10 +3264,6 @@ profiles:
     }
 
     #[test]
-    #[cfg_attr(
-        windows,
-        ignore = "hangs on windows-latest CI (loopback websocket round trip never completes); see #109"
-    )]
     fn mock_cloud_round_trip_returns_the_model_text() {
         // Whole device path with no network beyond loopback: cloud sends a
         // `request` frame down, the relay forwards it to a stub "fm serve",
@@ -3280,9 +3276,16 @@ profiles:
         ]);
         let router = Router::new(vec![chat_target("stub", &local)]);
 
-        let (url, _seen, cloud_join) = spawn_mock_cloud(None, |ws| {
+        let trace: Arc<Mutex<Vec<String>>> = Arc::default();
+        let cloud_trace = Arc::clone(&trace);
+        let (url, _seen, cloud_join) = spawn_mock_cloud(None, move |ws| {
+            // A read that never completes must fail the test, not hang CI (#109).
+            let _ = ws.get_ref().set_read_timeout(Some(Duration::from_secs(20)));
+            let note = |s: String| cloud_trace.lock().unwrap().push(s);
+            note("cloud: waiting for hello".into());
             let first = ws.read().unwrap();
             let hello: serde_json::Value = serde_json::from_str(first.to_text().unwrap()).unwrap();
+            note(format!("cloud: got {}", first.to_text().unwrap()));
             assert_eq!(hello["type"], "hello");
             assert_eq!(hello["models"][0], "_base");
             let body =
@@ -3299,6 +3302,10 @@ profiles:
             let mut text = String::new();
             loop {
                 let msg = ws.read().unwrap();
+                note(format!(
+                    "cloud: got {}",
+                    msg.to_text().unwrap_or("<binary>")
+                ));
                 let v: serde_json::Value = serde_json::from_str(msg.to_text().unwrap()).unwrap();
                 assert_eq!(v["id"], "req-1");
                 let ty = v["type"].as_str().unwrap().to_string();
@@ -3323,8 +3330,20 @@ profiles:
         let mut ws = connect_ws(&url, "sk-ar-v1-test").expect("connect to mock cloud");
         set_read_timeouts(&ws, Duration::from_millis(20));
         let state = ConnState::new(Arc::default());
-        serve_connection(&mut ws, &router, &state, None);
-        cloud_join.join().expect("mock cloud assertions");
+        let (done_tx, done_rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let end = serve_connection(&mut ws, &router, &state, None);
+            let _ = done_tx.send(end);
+        });
+        let end = done_rx
+            .recv_timeout(Duration::from_secs(60))
+            .unwrap_or_else(|_| {
+                panic!("relay did not finish in 60s: {:#?}", trace.lock().unwrap())
+            });
+        assert_eq!(end, ConnEnd::Dropped, "{:#?}", trace.lock().unwrap());
+        cloud_join
+            .join()
+            .unwrap_or_else(|_| panic!("mock cloud assertions: {:#?}", trace.lock().unwrap()));
         let _ = local_join.join();
     }
 
