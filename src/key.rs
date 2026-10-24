@@ -268,10 +268,21 @@ pub fn mask_api_key(key: Option<&str>) -> String {
     format!("{prefix}…{suffix}")
 }
 
+/// True when `out` ends in a `%XX` escape or a literal `\n`, `\t`, `\r`.
+fn after_escape(out: &str) -> bool {
+    let b = out.as_bytes();
+    let n = b.len();
+    let pct = n >= 3 && b[n - 3] == b'%' && b[n - 2..].iter().all(u8::is_ascii_hexdigit);
+    let esc = n >= 2 && b[n - 2] == b'\\' && matches!(b[n - 1], b'n' | b't' | b'r');
+    pct || esc
+}
+
 /// Mask every `sk-ar-v1-…` and `ak_…` token in free text (error messages and
 /// echoed server bodies). A token runs from its marker to the first character
-/// outside `[A-Za-z0-9_-]`; a marker glued to a preceding word character is not
-/// a token start. Tokens too short to hide behind a prefix keep only the prefix.
+/// outside `[A-Za-z0-9_-]`. `sk-ar-v1-` is long enough to match anywhere; the
+/// short `ak_` must not be glued to a preceding word character (`break_even`),
+/// except after an escaped separator (`%20`, a literal `\n`, `\t` or `\r`).
+/// Tokens too short to hide behind a prefix keep only the prefix.
 pub fn mask_secrets(text: &str) -> String {
     const MARKERS: [&str; 2] = ["sk-ar-v1-", "ak_"];
     let is_token_char = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '-';
@@ -279,7 +290,9 @@ pub fn mask_secrets(text: &str) -> String {
     let mut rest = text;
     let mut prev_word = false;
     while let Some(c) = rest.chars().next() {
-        if !prev_word && MARKERS.iter().any(|m| rest.starts_with(m)) {
+        let long_marker = rest.starts_with(MARKERS[0]);
+        let short_ok = rest.starts_with(MARKERS[1]) && (!prev_word || after_escape(&out));
+        if long_marker || short_ok {
             let end = rest.find(|c: char| !is_token_char(c)).unwrap_or(rest.len());
             let token = &rest[..end];
             let prefix_len = if token.starts_with("sk-ar-v1-") {
@@ -345,6 +358,51 @@ mod tests {
     fn empty_stdin_for_dash_key_is_an_error_not_a_literal_dash() {
         let mut flags = HashMap::from([("key".to_string(), FlagValue::Value("-".into()))]);
         assert!(normalize_key_flag(&mut flags, &mut "".as_bytes(), &mut Vec::new()).is_err());
+    }
+
+    #[test]
+    fn mask_secrets_hides_keys_wherever_they_sit() {
+        let k = "sk-ar-v1-abcdefghijklmnop1234";
+        let m = mask_api_key(Some(k));
+        assert_eq!(
+            mask_secrets(&format!("bad key {k}")),
+            format!("bad key {m}")
+        );
+        assert_eq!(
+            mask_secrets(&format!("{k} and {k}")),
+            format!("{m} and {m}")
+        );
+        assert_eq!(
+            mask_secrets(&format!("\"{k}\" '{k}'")),
+            format!("\"{m}\" '{m}'")
+        );
+        assert_eq!(mask_secrets(&format!("x{k}")), format!("x{m}"));
+        assert_eq!(mask_secrets(&format!("line\n{k}")), format!("line\n{m}"));
+        assert_eq!(mask_secrets(&format!("line\\n{k}")), format!("line\\n{m}"));
+    }
+
+    #[test]
+    fn mask_secrets_ak_keys_respect_word_boundaries() {
+        let k = "ak_abcdefghijklmnop1234";
+        let m = mask_api_key(Some(k));
+        assert_eq!(
+            mask_secrets("break_even and sneak_peek"),
+            "break_even and sneak_peek"
+        );
+        assert_eq!(mask_secrets(&format!("q=%20{k}")), format!("q=%20{m}"));
+        assert_eq!(mask_secrets(&format!("a\t{k}")), format!("a\t{m}"));
+        assert!(!mask_secrets(&format!("key: {k}")).contains("abcdefghijklmnop"));
+    }
+
+    #[test]
+    fn mask_secrets_keeps_non_ascii_text_intact() {
+        let k = "sk-ar-v1-abcdefghijklmnop1234";
+        let m = mask_api_key(Some(k));
+        assert_eq!(
+            mask_secrets(&format!("lỗi 🔑 {k}é日本語")),
+            format!("lỗi 🔑 {m}é日本語")
+        );
+        assert_eq!(mask_secrets("日本語 ak_"), "日本語 ak_…");
     }
 
     use super::*;

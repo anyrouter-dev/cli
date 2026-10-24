@@ -55,7 +55,7 @@ pub fn warn(text: &str) -> String {
 }
 
 pub fn err(text: &str) -> String {
-    paint(DANGER, text)
+    paint(DANGER, &crate::key::mask_secrets(text))
 }
 
 pub fn model_id(text: &str) -> String {

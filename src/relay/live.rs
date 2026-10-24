@@ -154,6 +154,7 @@ pub(super) fn set_quiet(on: bool) {
 /// `eprintln` would tear the redraw, so it becomes an on-screen event.
 pub(super) fn log(msg: &str) {
     // One event per line (screen and log file alike): fold multi-line errors.
+    let msg = crate::key::mask_secrets(msg);
     let msg = msg.lines().map(str::trim).collect::<Vec<_>>().join(" ");
     if LIVE.load(Ordering::Relaxed) {
         let mut ev = EVENTS.lock().unwrap_or_else(|e| e.into_inner());

@@ -255,7 +255,11 @@ pub(crate) fn run_chat(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> R
         }
         // A failed turn must not end the session.
         if let Err(e) = session.turn(line) {
-            eprintln!("{} {e}", term::err("error:"));
+            eprintln!(
+                "{} {}",
+                term::err("error:"),
+                crate::key::mask_secrets(&e.to_string())
+            );
         }
     }
 }
