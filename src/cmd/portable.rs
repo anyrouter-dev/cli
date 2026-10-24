@@ -1196,7 +1196,8 @@ mod tests {
 
     #[test]
     fn readme_block_matches_registry() {
-        let readme = include_str!("../../README.md");
+        // Windows checkouts may turn LF into CRLF.
+        let readme = include_str!("../../README.md").replace("\r\n", "\n");
         let start = "<!-- portable-flags:start -->\n";
         let end = "<!-- portable-flags:end -->";
         let block = readme

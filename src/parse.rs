@@ -173,11 +173,11 @@ where
 }
 
 /// Does a launcher keep `--name` / `--name=value` for itself? Of the global
-/// flags only `--help` is always anyr's; `--json` and `--quiet` reach the
-/// agent unless the launcher lists them (pool's `--json`).
+/// flags `--help` and `--json` (anyr's own output) are always anyr's;
+/// `--quiet` reaches the agent unless the launcher lists it.
 fn owns(owned: &[&str], arg: &str) -> bool {
     let name = arg[2..].split('=').next().unwrap_or_default();
-    owned.contains(&name) || name == "help"
+    owned.contains(&name) || matches!(name, "help" | "json")
 }
 
 /// `--target` may repeat (relay with several local endpoints), and so may

@@ -283,14 +283,23 @@ fn pool_yolo_passes_unsafe_auto_allow_and_not_yolo() {
 }
 
 #[test]
-fn json_and_quiet_reach_the_agent_on_launchers() {
-    let codex = dry_run("codex", &["exec", "--json", "x"]);
-    assert_eq!(codex.code, 0, "{}", codex.stderr);
-    assert!(
-        codex.args.ends_with(&strs(&["exec", "--json", "x"])),
-        "{:?}",
-        codex.args
-    );
+fn json_is_anyrs_and_reaches_the_agent_only_after_separator() {
+    for agent in ["claude", "codex"] {
+        let owned = dry_run(agent, &["--json", "-p", "x"]);
+        assert_eq!(owned.code, 0, "{}", owned.stderr);
+        assert!(
+            !owned.args.iter().any(|a| a == "--json"),
+            "{agent}: {:?}",
+            owned.args
+        );
+        let raw = dry_run(agent, &["--", "--json"]);
+        assert_eq!(raw.code, 0, "{}", raw.stderr);
+        assert_eq!(
+            raw.args.last().map(String::as_str),
+            Some("--json"),
+            "{agent}"
+        );
+    }
     let claude = dry_run("claude", &["--quiet", "-p", "x"]);
     assert_eq!(claude.code, 0, "{}", claude.stderr);
     assert!(

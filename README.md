@@ -512,14 +512,16 @@ not need `--`. anyr takes its own flags (`--model`, `--key`, `--dry-run`,
 `--yolo`, `--help`, ...) and forwards every other flag to the agent in order:
 
 ```bash
-anyr codex exec --json "fix the tests"   # --json reaches codex
+anyr codex exec --search "fix the tests" # --search reaches codex
 anyr claude --quiet -p "hi"              # --quiet reaches claude
+anyr codex exec "fix it" -- --json       # the agent's own --json goes after `--`
 anyr claude -- --model raw               # after `--`, everything is raw
 ```
 
-`--help` is always anyr's. `--json` and `--quiet` belong to the agent; anyr's
-own machine-output mode on a launcher is set with `ANYR_OUTPUT=json` and
-`ANYR_QUIET=1`. The exception is `anyr pool --json`, a documented anyr flag.
+`--help` and `--json` are always anyr's. `--json` sets anyr's own output to
+JSON and never reaches the agent; to give the agent its own `--json`, put it
+after `--`. `--quiet` belongs to the agent; anyr's quiet mode on a launcher is
+`ANYR_QUIET=1`.
 Other commands (`anyr models --bogus`) still reject unknown flags with exit 2.
 
 Portable flags have one name on every launcher. anyr swaps each for the

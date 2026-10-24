@@ -26,6 +26,8 @@ are min-context floors on auto (not catalog SKUs).
   --install             Install a missing agent without prompting (implied on a TTY)
   --config <path>       Override the config file path
   --dry-run             Print the child command and env (secrets redacted)
+  --json                anyr's own output as JSON; never sent to the agent
+                        (for the agent's own --json, put it after `--`)
   --no-mcp              Don't connect the AnyRouter MCP gateway this launch
                         (`{bin} mcp auto off` turns it off on this machine)
   --device              Force the device-code flow (headless / SSH)
