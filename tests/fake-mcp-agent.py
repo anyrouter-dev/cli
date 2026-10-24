@@ -68,6 +68,9 @@ def grok():
         return None
     body = m.group(1)
     url = re.search(r'^url = "(.*)"$', body, re.M).group(1)
+    env_var = re.search(r'^bearer_token_env_var = "(.*)"$', body, re.M)
+    if env_var:
+        return url, "Bearer " + os.environ[env_var.group(1)]
     token_file = re.search(r'^bearer_token_file = "(.*)"$', body, re.M).group(1)
     return url, "Bearer " + open(token_file, encoding="utf-8").read().strip()
 

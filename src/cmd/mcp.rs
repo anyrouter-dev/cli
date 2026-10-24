@@ -355,7 +355,7 @@ fn auto(
 
 /// `mcp add grok` / `mcp remove grok`: the anyr-managed entry in Grok's config.
 fn grok(parsed: &ParsedArgs, env: &BTreeMap<String, String>, add: bool) -> Result<i32, String> {
-    use crate::mcp_wiring::{grok_paths, sync_grok, GrokSync};
+    use crate::mcp_wiring::{grok_paths, sync_grok, GrokAuth, GrokSync};
     let ctx = context(parsed, env);
     let path = crate::cmd::dispatch::config_path(parsed, env);
     let paths = grok_paths(env, &path).ok_or("cannot find Grok's home (set GROK_HOME)")?;
@@ -365,10 +365,19 @@ fn grok(parsed: &ParsedArgs, env: &BTreeMap<String, String>, add: bool) -> Resul
     } else {
         String::new()
     };
-    let result = sync_grok(&paths, add.then_some(url.as_str()), &key)?;
+    let target = add.then_some((url.as_str(), GrokAuth::File(key.as_str())));
+    let result = sync_grok(&paths, target)?;
+    if !add {
+        // The key file is anyr's; only this command takes it away.
+        let _ = std::fs::remove_file(&paths.token);
+    }
     let file = paths.config.display();
+    let token = paths.token.display();
     let msg = match result {
-        GrokSync::Written => format!("Wrote the {SERVER_NAME} MCP server to {file}"),
+        GrokSync::Written => format!(
+            "Wrote the {SERVER_NAME} MCP server to {file}.\nGrok reads the key from an owner-only file, {token}; `{} mcp remove grok` deletes both. (`anyr grok` itself writes no key file: it passes the key by environment.)",
+            crate::help::invoked_bin()
+        ),
         GrokSync::Unchanged => {
             format!("{file} already has the {SERVER_NAME} MCP server; nothing changed.")
         }

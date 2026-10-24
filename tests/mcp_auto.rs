@@ -23,6 +23,16 @@ struct Req {
     auth: String,
 }
 
+/// How the gateway answers `GET /api/v1/mcp/config`.
+#[derive(Clone, Copy)]
+enum Mode {
+    Enabled(bool),
+    /// Answers after the CLI's 2.5 s timeout.
+    Hang,
+    ServerError,
+    NotFound,
+}
+
 struct Gateway {
     base: String,
     seen: Arc<Mutex<Vec<Req>>>,
@@ -31,6 +41,11 @@ struct Gateway {
 impl Gateway {
     /// `enabled`: what `GET /api/v1/mcp/config` answers for this workspace.
     fn start(enabled: bool) -> Self {
+        Self::start_mode(Mode::Enabled(enabled))
+    }
+
+    fn start_mode(mode: Mode) -> Self {
+        let enabled = matches!(mode, Mode::Enabled(true));
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}/api", listener.local_addr().unwrap());
         let seen: Arc<Mutex<Vec<Req>>> = Arc::default();
@@ -67,8 +82,16 @@ impl Gateway {
                         path: parts.next().unwrap_or("").into(),
                         auth,
                     };
-                    let (status, out) = route(&req, &body, enabled);
-                    seen.lock().unwrap().push(req);
+                    seen.lock().unwrap().push(req.clone());
+                    let is_config = req.path.split('?').next() == Some("/api/v1/mcp/config");
+                    if is_config && matches!(mode, Mode::Hang) {
+                        std::thread::sleep(std::time::Duration::from_millis(4000));
+                    }
+                    let (status, out) = match mode {
+                        Mode::ServerError if is_config => (500, r#"{"error":"boom"}"#.into()),
+                        Mode::NotFound if is_config => (404, r#"{"error":"nope"}"#.into()),
+                        _ => route(&req, &body, enabled),
+                    };
                     let _ = write!(
                         stream,
                         "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{out}",
@@ -250,12 +273,14 @@ fn grok_entry_follows_the_setting_and_mcp_remove_cleans_it() {
     let home = temp_home("grok-cycle");
     login(&home, &gw.base);
     let grok_config = home.join("grok").join("config.toml");
-    launch(&gw, &home, "grok", &[]);
+    assert!(launch(&gw, &home, "grok", &[]).contains("TOOLS"));
     let text = std::fs::read_to_string(&grok_config).unwrap();
     assert!(
         text.contains("# Managed by anyr") && !text.contains(KEY),
         "{text}"
     );
+    // A launch passes the key by env: it writes no key file.
+    assert!(!home.join("mcp").join("grok-token").exists());
 
     // Turning it off on the next launch takes anyr's entry back out.
     assert_eq!(launch(&gw, &home, "grok", &["--no-mcp"]).trim(), "NO_MCP");
@@ -275,16 +300,86 @@ fn grok_entry_follows_the_setting_and_mcp_remove_cleans_it() {
 }
 
 #[test]
-fn dry_run_shows_the_wiring_with_the_key_redacted() {
+fn a_launch_dropping_the_grok_entry_keeps_the_key_of_an_explicit_mcp_add() {
+    let gw = Gateway::start(true);
+    let home = temp_home("grok-token");
+    login(&home, &gw.base);
+    let token = home.join("mcp").join("grok-token");
+    let (code, out, _) = run(anyr(&home).args(["mcp", "add", "grok"]));
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(std::fs::read_to_string(&token).unwrap().trim(), KEY);
+    assert!(out.contains("owner-only file"), "{out}");
+
+    assert_eq!(launch(&gw, &home, "grok", &["--no-mcp"]).trim(), "NO_MCP");
+    assert!(token.exists(), "--no-mcp deleted the key of `mcp add grok`");
+
+    run(anyr(&home).args(["mcp", "auto", "off"]));
+    assert_eq!(launch(&gw, &home, "grok", &[]).trim(), "NO_MCP");
+    assert!(
+        token.exists(),
+        "mcp auto off deleted the key of `mcp add grok`"
+    );
+
+    let (code, out, _) = run(anyr(&home).args(["mcp", "remove", "grok"]));
+    assert_eq!(code, 0, "{out}");
+    assert!(!token.exists(), "mcp remove grok leaves the key behind");
+}
+
+#[test]
+fn dry_run_never_asks_the_gateway_and_shows_the_wiring_from_a_warm_cache() {
     let gw = Gateway::start(true);
     let home = temp_home("dry");
     login(&home, &gw.base);
+    let cache = home.join("mcp-config-cache.json");
+
+    let (code, out, err) = run(anyr(&home).args(["claude", "--yes", "--dry-run"]));
+    assert_eq!(code, 0, "{out}{err}");
+    assert!(out.contains("mcp: not checked"), "{out}");
+    assert!(!out.contains("--mcp-config="), "{out}");
+    assert!(gw.hits("GET", "/api/v1/mcp/config").is_empty());
+    assert!(!cache.exists(), "--dry-run wrote the cache");
+
+    // A real launch warms the cache; the dry run then reads it, without a request.
+    assert!(launch(&gw, &home, "claude", &[]).contains("TOOLS"));
+    assert_eq!(gw.hits("GET", "/api/v1/mcp/config").len(), 1);
     let (code, out, err) = run(anyr(&home).args(["claude", "--yes", "--dry-run"]));
     assert_eq!(code, 0, "{out}{err}");
     assert!(out.contains("--mcp-config="), "{out}");
     assert!(out.contains("mcp: anyrouter http://127.0.0.1"), "{out}");
     assert!(!out.contains(KEY), "dry-run printed the key:\n{out}");
+    assert_eq!(gw.hits("GET", "/api/v1/mcp/config").len(), 1);
 
     let (_, out, _) = run(anyr(&home).args(["pi", "--yes", "--dry-run"]));
     assert!(out.contains("mcp: off (Pi has no MCP support)"), "{out}");
+
+    let (_, out, _) = run(anyr(&home).args(["grok", "--yes", "--dry-run"]));
+    assert!(out.contains("no key file"), "{out}");
+    assert!(!home.join("mcp").join("grok-token").exists());
+}
+
+#[test]
+fn a_slow_failing_or_absent_gateway_is_asked_once_not_on_every_launch() {
+    for (tag, mode) in [
+        ("hang", Mode::Hang),
+        ("500", Mode::ServerError),
+        ("404", Mode::NotFound),
+    ] {
+        let gw = Gateway::start_mode(mode);
+        let home = temp_home(&format!("neg-{tag}"));
+        login(&home, &gw.base);
+        assert_eq!(launch(&gw, &home, "codex", &[]).trim(), "NO_MCP", "{tag}");
+        let first = gw.hits("GET", "/api/v1/mcp/config").len();
+        assert_eq!(first, 1, "{tag}");
+        let started = std::time::Instant::now();
+        assert_eq!(launch(&gw, &home, "codex", &[]).trim(), "NO_MCP", "{tag}");
+        assert_eq!(
+            gw.hits("GET", "/api/v1/mcp/config").len(),
+            1,
+            "{tag}: the second launch asked the gateway again"
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(2000),
+            "{tag}: the second launch waited on the gateway"
+        );
+    }
 }

@@ -72,7 +72,13 @@ fn a_saved_grok_session_does_not_replace_the_anyrouter_key() {
         .env("ANYROUTER_API_KEY", KEY)
         .env_remove("GROK_HOME")
         .env("XAI_API_KEY", "xai-parent-shell-key")
-        .args(["grok", "--model", "deepseek/deepseek-v4-flash", "--yes"])
+        .args([
+            "grok",
+            "--model",
+            "deepseek/deepseek-v4-flash",
+            "--yes",
+            "--no-mcp",
+        ])
         .args(["--base-url", &base, "--command-path"])
         .arg(&agent)
         .stdout(Stdio::piped())

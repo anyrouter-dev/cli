@@ -187,6 +187,7 @@ pub(crate) fn launch(
         base: &base,
         key: &key,
         cache_dir: path.parent(),
+        dry_run: parsed.flag_true("dry-run"),
     });
     let mcp = crate::mcp_wiring::apply(
         &crate::mcp_wiring::ApplyInput {
