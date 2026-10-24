@@ -183,6 +183,11 @@ pub(crate) fn launch(
         .or_else(|| env_command_path(tool_name, env))
         .unwrap_or_else(|| tool.command.clone());
     if parsed.flag_true("dry-run") {
+        if tool_name == "opencode" {
+            if let Some(path) = crate::install::resolve_executable(&command) {
+                args = opencode_standalone_args(&args, opencode_major_version(&path));
+            }
+        }
         println!("{}", render_dry_run(&command, &args, &env_map));
         return Ok(0);
     }

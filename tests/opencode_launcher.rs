@@ -85,3 +85,44 @@ fn opencode_2_run_reaches_the_anyrouter_provider() {
 fn opencode_1_run_reaches_the_anyrouter_provider() {
     assert_hits_anyrouter("1.4.3", "v1");
 }
+
+fn dry_run_args(version: &str, tag: &str) -> String {
+    let dir = std::env::temp_dir().join(format!("anyr-opencode-dry-{tag}-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let script = dir.join("fake-opencode.sh");
+    std::fs::write(&script, FAKE).unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_anyr"))
+        .env("ANYR_NO_UPDATE", "1")
+        .env("ANYR_NO_CATALOG", "1")
+        .env("NO_COLOR", "1")
+        .env("ANYROUTER_HOME", &dir)
+        .env("ANYROUTER_OPENCODE_PATH", &script)
+        .env("FAKE_OC_VERSION", version)
+        .args([
+            "opencode",
+            "--base-url",
+            "http://127.0.0.1:1/api",
+            "--key",
+            KEY,
+        ])
+        .args([
+            "--model",
+            "deepseek/deepseek-v4-flash",
+            "--yes",
+            "--dry-run",
+            "--",
+            "run",
+            "hi",
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+#[test]
+fn dry_run_shows_standalone_for_opencode_2_only() {
+    assert!(dry_run_args("opencode v2.0.24", "v2").contains(r#"args: ["run","--standalone","hi"]"#));
+    assert!(dry_run_args("1.4.3", "v1").contains(r#"args: ["run","hi"]"#));
+}
