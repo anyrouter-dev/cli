@@ -141,6 +141,7 @@ CORE COMMANDS
   models:     List catalog and set the default (`--pick` to choose)
   usage:      Credits remaining
   logs:       Recent requests and failures
+  generation: Cost, provider and timing of one call (alias: gen)
   embed:      Embed text (args, --file or stdin)
   transactions: Credit ledger (purchases, usage, refunds)
   artifact:   Publish a file or folder to a shareable URL
@@ -204,6 +205,7 @@ pub fn command_help(command: &str) -> Option<String> {
         "setup" => "login",
         "implement" => "impl",
         "decisions" | "systemone" => "decision",
+        "gen" => "generation",
         other => other,
     };
     Some(match canonical {
@@ -216,6 +218,7 @@ pub fn command_help(command: &str) -> Option<String> {
         "whoami" => fill(&bin, WHOAMI),
         "account" => fill(&bin, ACCOUNT),
         "logs" => fill(&bin, LOGS),
+        "generation" => fill(&bin, GENERATION),
         "models" => fill(&bin, MODELS),
         "config" => fill(&bin, CONFIG),
         "chat" => fill(&bin, CHAT),
@@ -654,6 +657,27 @@ Options:
 Examples:
   {bin} logs --status error --limit 50
   {bin} logs --json --status error | jq '.data | length'
+";
+
+const GENERATION: &str = "{bin} generation — cost, provider and timing of one call
+
+Usage:
+  {bin} generation <id>            Model, provider, status, tokens, cost, latency
+  {bin} gen <id>                   Same, short alias
+
+The id is the response `id` or the `x-anyrouter-generation-id` header
+(`{bin} chat --json` prints it too).
+
+Options:
+  --json            Print the raw API body
+  --key <key>       Use this API key (or $ANYROUTER_API_KEY, or the saved login)
+  --profile <name>  Use another account
+
+Examples:
+  {bin} generation gen_abc123
+  {bin} gen gen_abc123 --json | jq .total_cost
+
+Exit codes: 0 ok, 1 error or unknown id, 2 usage.
 ";
 
 const TRANSACTIONS: &str = "{bin} transactions — your credit ledger

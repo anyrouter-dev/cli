@@ -15,6 +15,7 @@ use crate::cmd::dispatch::{
     should_open_launcher, stub, suggest_command, tui_wants_dump, usage_exit, wants_help, USAGE,
 };
 use crate::cmd::embed::run_embed;
+use crate::cmd::generation::run_generation;
 use crate::cmd::keys::run_keys;
 use crate::cmd::launch::run_launch;
 use crate::cmd::login::run_login;
@@ -222,6 +223,7 @@ fn dispatch(
         "keys" => run_keys(parsed, env),
         "byok" => run_byok(parsed, env),
         "logs" => run_logs(parsed, env),
+        "generation" => run_generation(parsed, env),
         "embed" => run_embed(parsed, env),
         "transactions" => run_transactions(parsed, env),
         "menu" => run_menu(parsed, env),

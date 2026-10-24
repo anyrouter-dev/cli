@@ -215,7 +215,9 @@ pub(crate) fn cmd_kind(command: &str) -> Option<CmdKind> {
         | "status" | "logout" | "account" | "usage" | "claude" | "codex" | "grok" | "opencode"
         | "pool" | "pi" | "upgrade" | "onboard" | "impl" | "plan" | "fix" | "deploy" | "cp"
         | "relay" | "decision" | "commands" | "api" | "completion" | "byok" | "publish"
-        | "apps" | "artifact" | "chat" | "logs" | "transactions" | "embed" => CmdKind::Implemented,
+        | "apps" | "artifact" | "chat" | "logs" | "transactions" | "embed" | "generation" => {
+            CmdKind::Implemented
+        }
         "cursor" | "cline" | "windsurf" => CmdKind::HelpOnly,
         "task" | "delegate" | "audit" | "skills" | "prompt" => CmdKind::Stub,
         _ => return None,
@@ -232,6 +234,7 @@ pub(crate) fn canonical_command(command: &str) -> &str {
         "implement" => "impl",
         "decisions" | "systemone" => "decision",
         "model" => "models",
+        "gen" => "generation",
         other => canonical_tool(other),
     }
 }
@@ -268,6 +271,8 @@ pub(crate) const COMMANDS: &[(&str, &str)] = &[
     ("model", "Alias of models"),
     ("usage", "Credits remaining"),
     ("logs", "Recent requests, failures and sessions"),
+    ("generation", "Cost, provider and timing of one call"),
+    ("gen", "Alias of generation"),
     ("transactions", "Credit ledger: purchases, usage, refunds"),
     ("embed", "Embed text: args, --file or stdin"),
     ("keys", "Manage API keys"),
@@ -396,6 +401,7 @@ pub(crate) fn allowed_flags(command: &str) -> Option<&'static [&'static str]> {
         "logs" => &[
             "profile", "base-url", "config", "json", "key", "limit", "model", "status",
         ],
+        "generation" => &["profile", "base-url", "config", "json", "key"],
         "transactions" => &[
             "profile", "base-url", "config", "json", "key", "limit", "type",
         ],
@@ -551,6 +557,7 @@ pub(crate) fn help_topic(parsed: &ParsedArgs) -> String {
             .cloned()
             .unwrap_or_else(|| "auth".into()),
         "model" => "models".into(),
+        "gen" => "generation".into(),
         other => other.to_string(),
     }
 }
