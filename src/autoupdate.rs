@@ -14,6 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Map, Value};
 
+use crate::channel::Channel;
 use crate::config::resolve_config_path;
 use crate::key::load_config_if_present;
 use crate::parse::{get_string_flag, ParsedArgs};
@@ -115,7 +116,18 @@ impl UpdateState {
             "{}\n",
             serde_json::to_string_pretty(&self.to_json()).unwrap_or_default()
         );
-        let _ = crate::config::write_private(&dir.join(STATE_FILE), body.as_bytes());
+        let path = dir.join(STATE_FILE);
+        // Temp file + rename: a reader never sees a half-written file, and a
+        // crash mid-write leaves the previous state intact.
+        let tmp = dir.join(format!("{STATE_FILE}.tmp.{}", std::process::id()));
+        let _ = fs::remove_file(&tmp);
+        let written = crate::config::open_private(&tmp, true).and_then(|mut f| {
+            use std::io::Write;
+            f.write_all(body.as_bytes())
+        });
+        if written.is_err() || fs::rename(&tmp, &path).is_err() {
+            let _ = fs::remove_file(&tmp);
+        }
     }
 
     pub fn clear_pending(&mut self) {
@@ -188,18 +200,6 @@ pub fn auto_update_enabled(env: &BTreeMap<String, String>) -> bool {
         .unwrap_or(true)
 }
 
-/// Machine output or a non-interactive caller. Matches the agent-mode rule
-/// (`--json`, `ANYR_OUTPUT=json`, `--quiet`, `ANYR_QUIET`).
-fn machine_output(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> bool {
-    parsed.flag_true("json")
-        || parsed.flag_true("quiet")
-        || get_string_flag(&parsed.flags, "output").is_some_and(|v| v == "json")
-        || env
-            .get("ANYR_OUTPUT")
-            .is_some_and(|v| v.trim().eq_ignore_ascii_case("json"))
-        || env_flag(env, "ANYR_QUIET") == Some(true)
-}
-
 /// Facts about this run that decide whether auto-update may touch anything.
 #[derive(Debug, Clone, Copy)]
 pub struct RunContext {
@@ -248,7 +248,9 @@ pub fn skip_reason(
     if !auto_update_enabled(env) {
         return Some("disabled");
     }
-    if machine_output(parsed, env) {
+    if crate::term::machine_output(parsed, env)
+        || get_string_flag(&parsed.flags, "output").as_deref() == Some("json")
+    {
         return Some("agent mode");
     }
     // A pipe or an agent shell: stay quiet unless explicitly allowed.
@@ -348,6 +350,42 @@ fn clear_slot(path: &Path) {
     let _ = fs::rename(path, sibling(path, &format!("trash-{}", now_secs())));
 }
 
+/// Delete `.trash-*` files left by `clear_slot` (Windows renames a running
+/// exe out of the way because it cannot delete it). One still running stays
+/// until a later sweep.
+pub fn clean_trash(dest: &Path) {
+    let Some(name) = dest.file_name().map(|s| s.to_string_lossy().into_owned()) else {
+        return;
+    };
+    let prefix = format!("..{name}.");
+    let Ok(entries) = fs::read_dir(dest.parent().unwrap_or(Path::new("."))) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let file = entry.file_name().to_string_lossy().into_owned();
+        if file.starts_with(&prefix) && file.contains(".trash-") {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+}
+
+/// Delete `.anyr.download.<pid>` files a killed stager left behind. Only call
+/// while holding the update lock, when no live process owns one.
+pub fn clear_stale_downloads(dest: &Path) {
+    let Some(name) = dest.file_name().map(|s| s.to_string_lossy().into_owned()) else {
+        return;
+    };
+    let prefix = format!(".{name}.download");
+    let Ok(entries) = fs::read_dir(dest.parent().unwrap_or(Path::new("."))) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if entry.file_name().to_string_lossy().starts_with(&prefix) {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+}
+
 /// Put `.anyr.prev` back. The build being replaced becomes the new prev, so
 /// a second rollback undoes the first.
 pub fn rollback(dest: &Path) -> Result<(), String> {
@@ -367,9 +405,15 @@ pub fn rollback(dest: &Path) -> Result<(), String> {
 }
 
 /// Swap in a verified pending build. Returns the version now installed.
-/// The staged file is re-hashed, and a build not newer than this one is
-/// discarded, so a stale or tampered pending file can never land.
-pub fn apply_pending(dest: &Path, state: &mut UpdateState) -> Result<Option<String>, String> {
+/// The staged file is re-hashed, and a build not newer than this one, from
+/// another channel, or a prerelease on stable is discarded, so a stale or
+/// tampered pending file can never land. A failed swap discards the build
+/// too, so the next command does not re-hash and retry it.
+pub fn apply_pending(
+    dest: &Path,
+    state: &mut UpdateState,
+    channel: Channel,
+) -> Result<Option<String>, String> {
     let (Some(path), Some(version), Some(sha)) = (
         state.pending_path.clone(),
         state.pending_version.clone(),
@@ -390,6 +434,14 @@ pub fn apply_pending(dest: &Path, state: &mut UpdateState) -> Result<Option<Stri
         discard(state, &path);
         return Ok(None);
     }
+    let prerelease =
+        crate::channel::parse_version(&version).is_some_and(|v| v.prerelease.is_some());
+    if state.channel.as_deref() != Some(channel.as_str())
+        || (prerelease && channel == Channel::Stable)
+    {
+        discard(state, &path);
+        return Ok(None);
+    }
     let actual = crate::upgrade::sha256_hex_file(&path)?;
     if !actual.eq_ignore_ascii_case(sha.trim()) {
         discard(state, &path);
@@ -397,7 +449,11 @@ pub fn apply_pending(dest: &Path, state: &mut UpdateState) -> Result<Option<Stri
             "pending {version} changed on disk since it was verified; discarded"
         ));
     }
-    swap_in(&path, dest)?;
+    if let Err(err) = swap_in(&path, dest) {
+        discard(state, &path);
+        state.hint = Some(format!("sudo {} update", crate::help::invoked_bin()));
+        return Err(err);
+    }
     state.clear_pending();
     state.last_error = None;
     Ok(Some(version))
@@ -425,7 +481,10 @@ pub fn on_startup(command: &str, parsed: &ParsedArgs, env: &BTreeMap<String, Str
         if let Some(_lock) = crate::upgrade::try_lock(env) {
             // Reload under the lock: the checker may have just written it.
             state = UpdateState::load(env);
-            match crate::upgrade::install_dest().and_then(|d| apply_pending(&d, &mut state)) {
+            let channel = crate::upgrade::configured_channel(env);
+            match crate::upgrade::install_dest()
+                .and_then(|d| apply_pending(&d, &mut state, channel))
+            {
                 Ok(Some(to)) => note(&format!("anyr updated {VERSION} → {to}")),
                 Ok(None) => {}
                 Err(err) => state.last_error = Some(err),
@@ -439,14 +498,29 @@ pub fn on_startup(command: &str, parsed: &ParsedArgs, env: &BTreeMap<String, Str
         if crate::upgrade::needs_upgrade(VERSION, &latest)
             && state.notified.as_deref() != Some(&latest)
         {
-            note(&format!("anyr {latest} is available: run `{hint}`"));
-            state.notified = Some(latest);
-            state.save(env);
+            notify_once(env, &mut state, &hint, &latest);
         }
     }
     if !checked_recently(&state, env) {
         spawn_detached_check(env);
     }
+}
+
+/// Print the package-manager hint once per version. The stager may have
+/// written `pending_*` since this run loaded the state, so reload under the
+/// lock before saving `notified`; without the lock, skip and print next run.
+#[cfg(feature = "native")]
+fn notify_once(env: &BTreeMap<String, String>, state: &mut UpdateState, hint: &str, latest: &str) {
+    let Some(_lock) = crate::upgrade::try_lock(env) else {
+        return;
+    };
+    *state = UpdateState::load(env);
+    if state.notified.as_deref() == Some(latest) {
+        return;
+    }
+    note(&format!("anyr {latest} is available: run `{hint}`"));
+    state.notified = Some(latest.to_string());
+    state.save(env);
 }
 
 /// Fire-and-forget `anyr update --auto`. Its own process group, no stdio, so
@@ -482,7 +556,19 @@ fn spawn_detached_check(env: &BTreeMap<String, String>) {
     }
     #[cfg(windows)]
     let _guard = NoStdInherit::new();
-    let _ = cmd.spawn();
+    if let Ok(child) = cmd.spawn() {
+        reap_in_background(child);
+    }
+}
+
+/// Wait on the detached checker from a throwaway thread so a long-lived
+/// parent (the launcher menu) does not keep a zombie. A short-lived parent
+/// exits first and init adopts the child.
+#[cfg(feature = "native")]
+fn reap_in_background(mut child: std::process::Child) {
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
 }
 
 /// Windows hands every inheritable handle to a child, including the pipes
@@ -745,6 +831,7 @@ mod tests {
             pending_path: Some(pending.to_string_lossy().into_owned()),
             pending_version: Some(version.into()),
             pending_sha256: Some(crate::upgrade::sha256_hex_file(&pending).unwrap()),
+            channel: Some("stable".into()),
             ..UpdateState::default()
         }
     }
@@ -756,7 +843,9 @@ mod tests {
         fs::write(&dest, "current").unwrap();
         let mut state = pending_state(&dest, "next", "999.0.0");
         assert_eq!(
-            apply_pending(&dest, &mut state).unwrap().as_deref(),
+            apply_pending(&dest, &mut state, Channel::Stable)
+                .unwrap()
+                .as_deref(),
             Some("999.0.0")
         );
         assert_eq!(fs::read_to_string(&dest).unwrap(), "next");
@@ -772,13 +861,168 @@ mod tests {
         fs::write(&dest, "current").unwrap();
         let mut state = pending_state(&dest, "next", "999.0.0");
         fs::write(sibling(&dest, "pending"), "evil").unwrap();
-        assert!(apply_pending(&dest, &mut state).is_err());
+        assert!(apply_pending(&dest, &mut state, Channel::Stable).is_err());
         assert_eq!(fs::read_to_string(&dest).unwrap(), "current");
         assert!(!sibling(&dest, "pending").exists());
 
         let mut older = pending_state(&dest, "old", "0.0.1");
-        assert_eq!(apply_pending(&dest, &mut older).unwrap(), None);
+        assert_eq!(
+            apply_pending(&dest, &mut older, Channel::Stable).unwrap(),
+            None
+        );
         assert_eq!(fs::read_to_string(&dest).unwrap(), "current");
         assert_eq!(older.pending_path, None);
+    }
+
+    #[test]
+    fn apply_pending_drops_a_build_from_another_channel() {
+        // WHY: a beta staged before `update --stable` must never install
+        // afterwards, even if the pending record survived the switch.
+        let dir = tmp_dir("chan");
+        let dest = dir.join("anyr");
+        fs::write(&dest, "current").unwrap();
+
+        let mut beta = pending_state(&dest, "next", "999.0.0-beta.1");
+        beta.channel = Some("beta".into());
+        assert_eq!(
+            apply_pending(&dest, &mut beta, Channel::Stable).unwrap(),
+            None
+        );
+        assert_eq!(fs::read_to_string(&dest).unwrap(), "current");
+        assert_eq!(beta.pending_path, None);
+        assert!(!sibling(&dest, "pending").exists());
+
+        let mut pre_on_stable = pending_state(&dest, "next", "999.0.0-beta.1");
+        assert_eq!(
+            apply_pending(&dest, &mut pre_on_stable, Channel::Stable).unwrap(),
+            None,
+            "a prerelease never lands on stable"
+        );
+        assert_eq!(fs::read_to_string(&dest).unwrap(), "current");
+
+        let mut ok = pending_state(&dest, "next", "999.0.0-beta.1");
+        ok.channel = Some("beta".into());
+        assert_eq!(
+            apply_pending(&dest, &mut ok, Channel::Beta)
+                .unwrap()
+                .as_deref(),
+            Some("999.0.0-beta.1")
+        );
+    }
+
+    #[test]
+    fn failed_swap_discards_pending_and_points_at_sudo() {
+        // WHY: a pending build that cannot be swapped in was retried and
+        // re-hashed on every command. It must be dropped once.
+        let dir = tmp_dir("swapfail");
+        let dest = dir.join("anyr"); // never created: the swap cannot keep a prev
+        let mut state = pending_state(&dest, "next", "999.0.0");
+        assert!(apply_pending(&dest, &mut state, Channel::Stable).is_err());
+        assert_eq!(state.pending_path, None);
+        assert_eq!(state.pending_sha256, None);
+        assert!(!sibling(&dest, "pending").exists());
+        assert!(state.hint.as_deref().unwrap_or_default().contains("update"));
+    }
+
+    #[test]
+    fn state_save_is_atomic() {
+        // WHY: the stager, the applier and `update` all write this file; a
+        // reader must never see it truncated or half written.
+        let dir = tmp_dir("atomic");
+        let env = home_env(&dir);
+        let state = UpdateState {
+            last_check: 1,
+            last_error: Some("x".repeat(512 * 1024)),
+            ..UpdateState::default()
+        };
+        state.save(&env);
+        let path = UpdateState::path(&env);
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let reader = {
+            let (path, stop) = (path.clone(), stop.clone());
+            std::thread::spawn(move || {
+                let mut bad = 0;
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    let raw = fs::read_to_string(&path).unwrap_or_default();
+                    if serde_json::from_str::<Value>(&raw).is_err() {
+                        bad += 1;
+                    }
+                }
+                bad
+            })
+        };
+        for _ in 0..200 {
+            state.save(&env);
+        }
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(reader.join().unwrap(), 0, "reader saw a partial state file");
+        let leftovers: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().contains(".tmp."))
+            .collect();
+        assert!(leftovers.is_empty(), "temp file left behind");
+    }
+
+    #[test]
+    fn notified_save_keeps_a_concurrently_staged_build() {
+        // WHY: this run loaded its state before the stager recorded a pending
+        // build; saving `notified` from that copy erased the pending fields.
+        let dir = tmp_dir("notify");
+        let env = home_env(&dir);
+        let stale = UpdateState {
+            latest_seen: Some("999.0.0".into()),
+            hint: Some("brew upgrade anyr".into()),
+            ..UpdateState::default()
+        };
+        stale.save(&env);
+        let mut staged = stale.clone();
+        staged.pending_path = Some("/x/.anyr.pending".into());
+        staged.pending_version = Some("999.0.0".into());
+        staged.pending_sha256 = Some("ab".into());
+        staged.save(&env);
+
+        let mut in_memory = stale;
+        notify_once(&env, &mut in_memory, "brew upgrade anyr", "999.0.0");
+
+        let disk = UpdateState::load(&env);
+        assert_eq!(disk.notified.as_deref(), Some("999.0.0"));
+        assert_eq!(disk.pending_version.as_deref(), Some("999.0.0"));
+        assert_eq!(disk.pending_sha256.as_deref(), Some("ab"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn detached_child_is_reaped_not_left_a_zombie() {
+        // WHY: the launcher menu is long-lived; an unwaited child stays <defunct>.
+        let child = std::process::Command::new("true").spawn().unwrap();
+        let pid = child.id();
+        reap_in_background(child);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while Path::new(&format!("/proc/{pid}")).exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "pid {pid} still exists: zombie"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn trash_and_stale_downloads_are_swept() {
+        let dir = tmp_dir("trash");
+        let dest = dir.join("anyr.exe");
+        fs::write(&dest, "bin").unwrap();
+        let prev = sibling(&dest, "prev");
+        fs::write(&prev, "prev").unwrap();
+        let trash = sibling(&prev, "trash-123");
+        fs::write(&trash, "old").unwrap();
+        let dl = sibling(&dest, "download.4242");
+        fs::write(&dl, "partial").unwrap();
+        clean_trash(&dest);
+        clear_stale_downloads(&dest);
+        assert!(!trash.exists());
+        assert!(!dl.exists());
+        assert!(dest.exists() && prev.exists(), "live files must stay");
     }
 }

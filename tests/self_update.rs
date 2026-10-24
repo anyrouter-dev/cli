@@ -456,3 +456,162 @@ fn read_only_install_gets_a_hint_and_no_download() {
     );
     assert_eq!(fs::read(&install.bin).unwrap(), install.original);
 }
+
+#[test]
+fn manual_update_refuses_while_the_stager_holds_the_lock() {
+    // WHY: `anyr update` and the background stager shared one staging file;
+    // running together they could swap a half-written download in.
+    let mock = serve(vec![Release::good("v999.0.0", false)], Duration::ZERO);
+    let install = Install::new();
+    fs::write(install.home().join("update.lock"), "1\n").unwrap();
+    let out = install.run(&mock, &["update"], &[]);
+    assert!(!out.status.success(), "update ran while the lock was held");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("another anyr update is running"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(fs::read(&install.bin).unwrap(), install.original);
+    assert!(
+        install.home().join("update.lock").exists(),
+        "lock is not ours to remove"
+    );
+}
+
+#[test]
+fn manual_update_installs_and_uses_a_per_process_staging_file() {
+    let mock = serve(vec![Release::good("v999.0.0", false)], Duration::ZERO);
+    let install = Install::new();
+    let out = install.run(&mock, &["update"], &[]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(fs::read(&install.bin).unwrap(), NEW_BUILD);
+    assert_eq!(fs::read(install.sibling("prev")).unwrap(), install.original);
+    assert_no_download_files(&install);
+    assert!(
+        !install.home().join("update.lock").exists(),
+        "lock released"
+    );
+}
+
+fn assert_no_download_files(install: &Install) {
+    let left: Vec<_> = fs::read_dir(install.bin.parent().unwrap())
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.contains(".download"))
+        .collect();
+    assert!(left.is_empty(), "staging files left behind: {left:?}");
+}
+
+#[test]
+fn staged_beta_is_dropped_when_switching_to_stable() {
+    // WHY: a beta found on the beta channel must not install after the user
+    // moved to stable.
+    let mock = serve(
+        vec![
+            Release::good("v999.0.0-beta.1", true),
+            Release::good("v0.0.1", false),
+        ],
+        Duration::ZERO,
+    );
+    let install = Install::new();
+    install.write_config("active_profile: default\nchannel: beta\n");
+    install.run(&mock, &["config"], &[]);
+    let state = install.wait_checked();
+    assert_eq!(state["pending_version"], "999.0.0-beta.1", "{state}");
+    assert!(install.sibling("pending").exists());
+
+    let out = install.run(&mock, &["update", "--stable"], &[]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let state = install.state();
+    assert!(state["pending_path"].is_null(), "{state}");
+    assert!(!install.sibling("pending").exists());
+
+    install.run(&mock, &["config"], &[]);
+    install.wait_checked();
+    assert_eq!(
+        fs::read(&install.bin).unwrap(),
+        install.original,
+        "the beta must not install on stable"
+    );
+}
+
+#[test]
+fn last_check_is_saved_before_the_slow_network_work() {
+    // WHY: a stager that hangs or dies mid-run must not be respawned by every
+    // command; the check is recorded under the lock before it starts.
+    let mock = serve(
+        vec![Release::good("v999.0.0", false)],
+        Duration::from_secs(3),
+    );
+    let install = Install::new();
+    install.run(&mock, &["config"], &[]);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while install.state()["last_check"].as_u64().unwrap_or(0) == 0 {
+        assert!(Instant::now() < deadline, "no last_check recorded");
+        thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        install.home().join("update.lock").exists(),
+        "last_check only appeared after the check finished"
+    );
+    install.wait_checked();
+}
+
+#[test]
+fn background_check_gives_up_after_its_deadline() {
+    // WHY: the stager must end well inside the lock's staleness window.
+    let mock = serve(
+        vec![Release::good("v999.0.0", false)],
+        Duration::from_secs(2),
+    );
+    let install = Install::new();
+    install.run(&mock, &["config"], &[("ANYR_UPDATE_DEADLINE_SECS", "1")]);
+    let state = install.wait_checked();
+    assert!(
+        state["last_error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("timed out"),
+        "{state}"
+    );
+    assert!(state["pending_path"].is_null(), "{state}");
+}
+
+#[test]
+fn background_stager_tries_at_most_two_releases() {
+    // WHY: a bad run of releases must not make the stager download the whole
+    // history in the background.
+    let broken = |tag| {
+        let mut r = Release::good(tag, false);
+        r.body = None;
+        r
+    };
+    let mock = serve(
+        vec![broken("v999.0.0"), broken("v998.0.0"), broken("v997.0.0")],
+        Duration::ZERO,
+    );
+    let install = Install::new();
+    install.run(&mock, &["config"], &[]);
+    install.wait_checked();
+    let hits = mock.hits.load(Ordering::SeqCst);
+    assert_eq!(hits, 3, "one listing + two asset attempts, got {hits}");
+}
+
+#[test]
+fn staged_hash_matches_the_verified_build() {
+    let mock = serve(vec![Release::good("v999.0.0", false)], Duration::ZERO);
+    let install = Install::new();
+    install.run(&mock, &["config"], &[]);
+    let state = install.wait_checked();
+    assert_eq!(state["pending_sha256"], sha_hex(NEW_BUILD), "{state}");
+    assert_no_download_files(&install);
+}
