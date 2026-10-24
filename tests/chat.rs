@@ -165,7 +165,7 @@ mod stream {
         (base, release_tx, seen_rx)
     }
 
-    fn spawn(base: &str, stdout: Stdio, extra: &[&str]) -> Child {
+    fn spawn(base: &str, stdout: Stdio, stderr: Stdio, extra: &[&str]) -> Child {
         Command::new(env!("CARGO_BIN_EXE_anyr"))
             .env("ANYR_NO_UPDATE", "1")
             .env("NO_COLOR", "1")
@@ -178,7 +178,7 @@ mod stream {
             .args(extra)
             .args(["--base-url", base])
             .stdout(stdout)
-            .stderr(Stdio::piped())
+            .stderr(stderr)
             .stdin(Stdio::null())
             .spawn()
             .unwrap()
@@ -187,7 +187,7 @@ mod stream {
     #[test]
     fn deltas_reach_a_pipe_before_the_stream_ends_and_no_footer_is_added() {
         let (base, release, seen) = serve_sse();
-        let mut child = spawn(&base, Stdio::piped(), &[]);
+        let mut child = spawn(&base, Stdio::piped(), Stdio::piped(), &[]);
         let body: Value = serde_json::from_str(&seen.recv().unwrap()).unwrap();
         // WHY: usage only arrives on a stream when the request asks for it.
         assert_eq!(body["stream_options"]["include_usage"], true);
@@ -219,7 +219,13 @@ mod stream {
         let (base, release, _seen) = serve_sse();
         release.send(()).unwrap();
         let (master, slave) = pty();
-        let mut child = spawn(&base, Stdio::from(slave), &[]);
+        // The footer needs both stdout and stderr on the terminal.
+        let mut child = spawn(
+            &base,
+            Stdio::from(slave.try_clone().unwrap()),
+            Stdio::from(slave),
+            &[],
+        );
         let mut text = String::new();
         let mut f = std::fs::File::from(master);
         let _ = f.read_to_string(&mut text);
@@ -245,11 +251,167 @@ mod stream {
         let (base, release, _seen) = serve_sse();
         release.send(()).unwrap();
         let (master, slave) = pty();
-        let mut child = spawn(&base, Stdio::from(slave), &["--quiet"]);
+        let mut child = spawn(&base, Stdio::from(slave), Stdio::piped(), &["--quiet"]);
         let mut text = String::new();
         let _ = std::fs::File::from(master).read_to_string(&mut text);
         assert!(child.wait().unwrap().success());
         assert_eq!(text.trim_end(), "AAABBB");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_narrow_terminal_gets_a_footer_that_fits_one_row() {
+        let (base, release, _seen) = serve_sse();
+        release.send(()).unwrap();
+        let (master, slave) = pty();
+        resize(&master, 30);
+        let mut child = spawn(
+            &base,
+            Stdio::from(slave.try_clone().unwrap()),
+            Stdio::from(slave),
+            &[],
+        );
+        let mut text = String::new();
+        let _ = std::fs::File::from(master).read_to_string(&mut text);
+        assert!(child.wait().unwrap().success());
+        let lines: Vec<&str> = text.lines().collect();
+        // WHY: a wrapped footer would take two rows, and the erase removes one.
+        assert_eq!(lines.len(), 2, "{text:?}");
+        assert!(lines[1].chars().count() <= 29, "{:?}", lines[1]);
+        assert!(lines[1].starts_with("cohere/x"), "{:?}", lines[1]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stdout_on_a_terminal_with_stderr_redirected_gets_no_footer() {
+        let (base, release, _seen) = serve_sse();
+        release.send(()).unwrap();
+        let (master, slave) = pty();
+        let mut child = spawn(&base, Stdio::from(slave), Stdio::piped(), &[]);
+        let mut text = String::new();
+        let _ = std::fs::File::from(master).read_to_string(&mut text);
+        assert!(child.wait().unwrap().success());
+        assert_eq!(text.trim_end(), "AAABBB");
+    }
+
+    /// An interactive session on one pty: stdin, stdout and stderr are the
+    /// terminal. Everything the child writes is collected for inspection.
+    #[cfg(unix)]
+    struct Repl {
+        child: Child,
+        input: std::fs::File,
+        output: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+    }
+
+    #[cfg(unix)]
+    impl Repl {
+        fn start(base: &str) -> Repl {
+            let (master, slave) = pty();
+            resize(&master, 120);
+            let child = Command::new(env!("CARGO_BIN_EXE_anyr"))
+                .env("ANYR_NO_UPDATE", "1")
+                .env("NO_COLOR", "1")
+                .env("ANYROUTER_API_KEY", KEY)
+                .env(
+                    "ANYROUTER_HOME",
+                    std::env::temp_dir().join("anyr-common-test-empty"),
+                )
+                .args(["chat", "--model", "z-ai/glm-4.7-flash"])
+                .args(["--base-url", base])
+                .stdin(Stdio::from(slave.try_clone().unwrap()))
+                .stdout(Stdio::from(slave.try_clone().unwrap()))
+                .stderr(Stdio::from(slave))
+                .spawn()
+                .unwrap();
+            let input = std::fs::File::from(master);
+            let mut reader = input.try_clone().unwrap();
+            let output = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let sink = output.clone();
+            std::thread::spawn(move || {
+                let mut buf = [0u8; 4096];
+                while let Ok(n @ 1..) = reader.read(&mut buf) {
+                    sink.lock().unwrap().extend_from_slice(&buf[..n]);
+                }
+            });
+            Repl {
+                child,
+                input,
+                output,
+            }
+        }
+
+        fn text(&self) -> String {
+            String::from_utf8_lossy(&self.output.lock().unwrap()).into_owned()
+        }
+
+        fn send(&mut self, s: &str) {
+            self.input.write_all(s.as_bytes()).unwrap();
+        }
+
+        /// Wait until `needle` shows up after byte `from`; returns the index
+        /// just past it.
+        fn wait_for(&self, needle: &str, from: usize) -> usize {
+            for _ in 0..200 {
+                let t = self.text();
+                if let Some(i) = t.get(from..).and_then(|rest| rest.find(needle)) {
+                    return from + i + needle.len();
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            panic!("never saw {needle:?} in {:?}", self.text());
+        }
+    }
+
+    const ERASE_LINE: &str = "\x1b[M";
+
+    #[cfg(unix)]
+    #[test]
+    fn typing_ahead_during_a_reply_keeps_the_footer_instead_of_erasing() {
+        let (base, release, _seen) = serve_sse();
+        let mut repl = Repl::start(&base);
+        let at = repl.wait_for("> ", 0);
+        repl.send("hi\n");
+        repl.wait_for("AAA", at);
+        // Typed while the reply is still streaming; its echo is on screen.
+        repl.send("next\n/exit\n");
+        release.send(()).unwrap();
+        assert!(repl.child.wait().unwrap().success());
+        let text = repl.text();
+        // The echo of the typed lines lands inside the reply, untouched.
+        assert!(text.contains("AAAnext\r\n/exit\r\nBBB"), "{text:?}");
+        assert!(text.contains("req_abcdef01"), "{text:?}");
+        // WHY: erasing now would delete a line of the reply or the typed text.
+        assert!(!text.contains(ERASE_LINE), "{text:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_footer_is_erased_when_the_next_prompt_is_typed_after_the_reply() {
+        let (base, release, _seen) = serve_sse();
+        release.send(()).unwrap();
+        let mut repl = Repl::start(&base);
+        let at = repl.wait_for("> ", 0);
+        repl.send("hi\n");
+        let at = repl.wait_for("req_abcdef01", at);
+        // Only type once the next prompt is up, so nothing is queued.
+        let at = repl.wait_for("> ", at);
+        let _ = at;
+        repl.send("/exit\n");
+        assert!(repl.child.wait().unwrap().success());
+        assert!(repl.text().contains(ERASE_LINE), "{:?}", repl.text());
+    }
+
+    #[cfg(unix)]
+    fn resize(master: &std::os::fd::OwnedFd, cols: u16) {
+        use std::os::fd::AsRawFd;
+        let ws = libc::winsize {
+            ws_row: 24,
+            ws_col: cols,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
+        let rc = unsafe { libc::ioctl(master.as_raw_fd(), libc::TIOCSWINSZ, &ws) };
+        assert_eq!(rc, 0);
     }
 
     #[cfg(unix)]

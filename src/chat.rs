@@ -256,20 +256,30 @@ extern "C" fn on_sigint(_: libc::c_int) {
 }
 
 /// While alive, Ctrl-C sets `CANCEL` instead of killing the process, so a
-/// reply can be stopped and the session kept. Dropping restores the default.
-struct CancelOnCtrlC;
+/// reply can be stopped and the session kept. Dropping puts back whatever
+/// handler was there before (a shell that started us with SIGINT ignored
+/// keeps it ignored).
+struct CancelOnCtrlC {
+    /// `None` when installing the handler failed, so there is nothing to undo.
+    prev: Option<libc::sighandler_t>,
+}
 
 impl CancelOnCtrlC {
     fn arm() -> Self {
         CANCEL.store(false, Ordering::SeqCst);
-        unsafe { libc::signal(libc::SIGINT, on_sigint as *const () as libc::sighandler_t) };
-        CancelOnCtrlC
+        let prev =
+            unsafe { libc::signal(libc::SIGINT, on_sigint as *const () as libc::sighandler_t) };
+        CancelOnCtrlC {
+            prev: (prev != libc::SIG_ERR).then_some(prev),
+        }
     }
 }
 
 impl Drop for CancelOnCtrlC {
     fn drop(&mut self) {
-        unsafe { libc::signal(libc::SIGINT, libc::SIG_DFL) };
+        if let Some(prev) = self.prev {
+            unsafe { libc::signal(libc::SIGINT, prev) };
+        }
     }
 }
 
@@ -407,8 +417,9 @@ impl Session {
     }
 
     /// Send one user turn, stream the answer to stdout, remember both sides.
-    /// `Ok(true)` when a footer was printed under the reply.
-    fn turn(&mut self, user: &str) -> Result<bool, String> {
+    /// `Ok(Some(mark))` when a footer was printed under the reply and can be
+    /// erased later (see `erase_rows`).
+    fn turn(&mut self, user: &str) -> Result<Option<FooterMark>, String> {
         self.messages.push(json!({"role": "user", "content": user}));
         let body = json!({
             "model": self.model,
@@ -450,29 +461,101 @@ impl Session {
         if streamed.cancelled {
             self.messages.pop();
             println!("{}", term::dim("(stopped)"));
-            return Ok(false);
+            return Ok(None);
         }
         self.messages
             .push(json!({"role": "assistant", "content": streamed.reply}));
         if !self.footer {
-            return Ok(false);
+            return Ok(None);
         }
         let stats = TurnStats::new(&headers, streamed.meta, streamed.ttft, start.elapsed());
-        println!("{}", term::dim(&stats.footer()));
-        Ok(true)
+        Ok(print_footer(&stats.footer()))
     }
 }
 
-/// Remove the footer line printed above the prompt the user just submitted.
-/// The cursor sits below the echoed input (`rows` lines, wrapped at the
-/// terminal width) and the footer is the line right above it.
-fn erase_footer(submitted: &str) {
-    let cols = crossterm::terminal::size()
-        .ok()
-        .map(|(c, _)| usize::from(c))
-        .filter(|c| *c > 0)
-        .unwrap_or(80);
-    let rows = (2 + submitted.chars().count()).div_ceil(cols).max(1);
+/// Terminal size (columns, rows) when a footer was printed.
+type FooterMark = (u16, u16);
+
+fn terminal_size() -> Option<FooterMark> {
+    crossterm::terminal::size().ok().filter(|(c, _)| *c > 0)
+}
+
+/// Display width of `c`; anything outside ASCII (bar the two footer
+/// separators) counts double, so a line is never cut too late.
+fn char_width(c: char) -> usize {
+    if c.is_ascii() || matches!(c, '→' | '·') {
+        1
+    } else {
+        2
+    }
+}
+
+/// `line` without control characters, cut to at most `cols - 1` columns so it
+/// can never wrap onto a second row.
+fn fit_to_width(line: &str, cols: usize) -> String {
+    let max = cols.saturating_sub(1);
+    let mut used = 0;
+    let mut out = String::new();
+    for c in line.chars().filter(|c| !c.is_control()) {
+        used += char_width(c);
+        if used > max {
+            break;
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Print the dim footer line. Returns the terminal size to erase it by, or
+/// `None` when the size is unknown (the line is then left alone for good).
+fn print_footer(footer: &str) -> Option<FooterMark> {
+    let size = terminal_size();
+    let line = match size {
+        Some((cols, _)) => fit_to_width(footer, usize::from(cols)),
+        None => footer.chars().filter(|c| !c.is_control()).collect(),
+    };
+    println!("{}", term::dim(&line));
+    size
+}
+
+/// True when stdin already holds input (or cannot be asked). That input was
+/// typed while the reply streamed and its echo is already on screen, so the
+/// screen no longer matches what the erase assumes. Never flushes it.
+#[cfg(unix)]
+fn stdin_has_pending() -> bool {
+    let mut fd = libc::pollfd {
+        fd: 0,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    unsafe { libc::poll(&mut fd, 1, 0) != 0 }
+}
+
+#[cfg(not(unix))]
+fn stdin_has_pending() -> bool {
+    true
+}
+
+/// How many input rows to step over to erase the footer above the prompt the
+/// user just submitted, or `None` when erasing is not certain. A stale dim
+/// line is fine; deleting reply text or typing never is.
+fn erase_rows(
+    mark: FooterMark,
+    now: Option<FooterMark>,
+    submitted: &str,
+    pending: bool,
+) -> Option<usize> {
+    let printable = submitted.bytes().all(|b| (0x20..0x7f).contains(&b));
+    if pending || now != Some(mark) || !printable {
+        return None;
+    }
+    // "> " prompt plus the echoed input, wrapped at the terminal width.
+    Some((2 + submitted.len()).div_ceil(usize::from(mark.0)).max(1))
+}
+
+/// The cursor sits below the echoed input (`rows` lines); the footer is the
+/// line right above that.
+fn erase_footer(rows: usize) {
     print!("\x1b[{}A\r\x1b[M\x1b[{}B", rows + 1, rows);
     let _ = io::stdout().flush();
 }
@@ -497,7 +580,9 @@ pub(crate) fn run_chat(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> R
         key,
         model: catalog_model_id(&model),
         messages,
-        footer: io::stdout().is_terminal() && !term::machine_output(parsed, env),
+        footer: io::stdout().is_terminal()
+            && io::stderr().is_terminal()
+            && !term::machine_output(parsed, env),
         cancellable: false,
     };
 
@@ -544,8 +629,9 @@ pub(crate) fn run_chat(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> R
         ))
     );
     session.cancellable = true;
-    let mut footer_up = false;
+    let mut footer_up: Option<FooterMark> = None;
     loop {
+        let pending = footer_up.is_some() && stdin_has_pending();
         eprint!("{} ", term::accent(">"));
         let _ = io::stderr().flush();
         let mut line = String::new();
@@ -553,9 +639,11 @@ pub(crate) fn run_chat(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> R
             eprintln!();
             return Ok(0);
         }
-        if footer_up {
-            erase_footer(line.trim_end_matches(['\r', '\n']));
-            footer_up = false;
+        if let Some(mark) = footer_up.take() {
+            let submitted = line.trim_end_matches(['\r', '\n']);
+            if let Some(rows) = erase_rows(mark, terminal_size(), submitted, pending) {
+                erase_footer(rows);
+            }
         }
         let line = line.trim();
         if line.is_empty() {
@@ -566,7 +654,7 @@ pub(crate) fn run_chat(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> R
         }
         // A failed turn must not end the session.
         match session.turn(line) {
-            Ok(shown) => footer_up = shown,
+            Ok(mark) => footer_up = mark,
             Err(e) => eprintln!(
                 "{} {}",
                 term::err("error:"),
@@ -740,6 +828,50 @@ mod tests {
         assert!(s.ttft.is_some());
         assert_eq!(s.meta.usage, Some((2, 36)));
         assert!(!s.cancelled);
+    }
+
+    #[test]
+    fn the_footer_is_cut_to_one_row_and_stripped_of_control_chars() {
+        let cut = fit_to_width("cohere/x · 7→11 tokens · 1.4s", 12);
+        assert_eq!(cut, "cohere/x · ");
+        assert!(cut.chars().count() < 12, "leave the last column free");
+        // WHY: a model name comes from the server; an escape must not run.
+        assert_eq!(fit_to_width("a\x1b[2Jb", 80), "a[2Jb");
+        // Wide characters count double, so the line stops early, never late.
+        assert_eq!(fit_to_width("日本語日本語", 8), "日本語");
+    }
+
+    #[test]
+    fn erase_only_when_the_screen_is_the_one_we_drew() {
+        let mark = (80, 24);
+        fn ok(now: Option<FooterMark>, line: &str, pending: bool) -> Option<usize> {
+            erase_rows((80, 24), now, line, pending)
+        }
+        assert_eq!(ok(Some(mark), "hello", false), Some(1));
+        // 2 + 100 columns of echo wrap onto a second row.
+        assert_eq!(ok(Some(mark), &"a".repeat(100), false), Some(2));
+        // Typed ahead: its echo is already on screen.
+        assert_eq!(ok(Some(mark), "hello", true), None);
+        // Resized (reflow moved the footer) or size unknown.
+        assert_eq!(ok(Some((60, 24)), "hello", false), None);
+        assert_eq!(ok(Some((80, 30)), "hello", false), None);
+        assert_eq!(ok(None, "hello", false), None);
+        // Non-ASCII or control input may wrap unpredictably.
+        assert_eq!(ok(Some(mark), "héllo", false), None);
+        assert_eq!(ok(Some(mark), "a\tb", false), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ctrl_c_handler_is_put_back_as_it_was() {
+        let sig = |h| unsafe { libc::signal(libc::SIGINT, h) };
+        // A parent that ignores SIGINT must still be ignoring it afterwards.
+        sig(libc::SIG_IGN);
+        drop(CancelOnCtrlC::arm());
+        assert_eq!(sig(libc::SIG_DFL), libc::SIG_IGN);
+        // And a default disposition comes back as the default.
+        drop(CancelOnCtrlC::arm());
+        assert_eq!(sig(libc::SIG_DFL), libc::SIG_DFL);
     }
 
     #[test]

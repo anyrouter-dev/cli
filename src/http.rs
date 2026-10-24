@@ -134,6 +134,8 @@ pub fn http_post_stream_headers(
 ) -> Result<StreamReply, String> {
     let stream_agent = ureq::AgentBuilder::new()
         .timeout_connect(std::time::Duration::from_secs(15))
+        // Per read, so a reader thread left behind by a cancel gives up.
+        .timeout_read(std::time::Duration::from_secs(300))
         .user_agent(&format!("anyr-cli/{VERSION}"))
         .build();
     let req = with_auth(stream_agent.post(url), Some(api_key))
