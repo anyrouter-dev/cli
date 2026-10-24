@@ -604,6 +604,8 @@ Start options:
   --url <wss://…>        relay websocket URL
   --name <device>        device name (default: this Mac's name, else a random one;
                          saved after the first start)
+                         One config file = one device: machines sharing it (synced
+                         dotfiles) or two relays under one HOME replace each other.
   --max-concurrency <n>  concurrent requests advertised to the pool
   --quiet                print errors only
   --verbose              show relay transport diagnostics

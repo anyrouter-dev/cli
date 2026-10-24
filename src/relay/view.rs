@@ -47,6 +47,13 @@ pub(super) fn duration(secs: u64) -> String {
     }
 }
 
+/// Requests answered without error. `requests` counts every request frame
+/// received, so failed and in-flight ones come off it: a device whose local
+/// server is down must not look like it served anything.
+fn served(requests: u64, in_flight: u64, errors: u64) -> u64 {
+    requests.saturating_sub(in_flight.saturating_add(errors))
+}
+
 /// `1234567` -> `1,234,567`.
 pub(super) fn thousands(n: u64) -> String {
     let s = n.to_string();
@@ -135,7 +142,7 @@ pub(super) fn render_running(s: &Snapshot, now: u64, p: Paint) -> String {
         "Requests",
         &format!(
             "{} served · {} in flight · {errors}",
-            thousands(s.requests),
+            thousands(served(s.requests, s.in_flight, s.errors)),
             s.in_flight
         ),
     );
@@ -319,6 +326,14 @@ mod tests {
     const NO: Paint = Paint(false);
 
     #[test]
+    fn served_leaves_out_failed_and_in_flight_requests() {
+        // Live: 1 answered + 3 failed showed "4 served · 3 errors".
+        assert_eq!(served(4, 0, 3), 1);
+        assert_eq!(served(5, 2, 0), 3);
+        assert_eq!(served(1, 1, 1), 0);
+    }
+
+    #[test]
     fn running_status_snapshot() {
         let s = sample_snapshot();
         assert_eq!(
@@ -328,7 +343,7 @@ AnyRouter relay  ● connected
   Device      Desk Mac  pid 4242, up 3m 20s, background
   Models      foundation-model, pplx-decider-flash-v1.2
   Endpoints   fm serve (Apple Foundation Models)  http://127.0.0.1:1976/v1
-  Requests    12 served · 1 in flight · 0 errors
+  Requests    11 served · 1 in flight · 0 errors
   Tokens      3,456
   Pool        on: idle capacity serves the shared pool and earns credits
 "
@@ -353,7 +368,7 @@ AnyRouter relay  ○ reconnecting in 4s (attempt 3)
   Device      Desk Mac  pid 4242, up 3m 20s, background
   Models      foundation-model, pplx-decider-flash-v1.2
   Endpoints   fm serve (Apple Foundation Models)  http://127.0.0.1:1976/v1
-  Requests    12 served · 1 in flight · 2 errors
+  Requests    9 served · 1 in flight · 2 errors
   Tokens      —
   Pool        off: only your own account uses this device
   Last error  could not connect to relay: refused

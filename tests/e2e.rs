@@ -619,3 +619,125 @@ fn relay_start_detach_serves_a_cloud_request_then_stop_ends_it() {
         "relay still running after stop:\n{out}"
     );
 }
+
+/// Runs a foreground relay whose config cannot be rewritten against a cloud
+/// that names a new device on each of the first two sockets, and returns the
+/// handshake URIs of all three connections.
+#[cfg(unix)]
+fn relay_handshakes_with_unwritable_config(seed: Option<&str>) -> Vec<String> {
+    use std::time::Instant;
+    use tungstenite::Message;
+
+    let target = Mock::start(|_| {
+        (
+            200,
+            "application/json",
+            r#"{"data":[{"id":"stub-model"}]}"#.into(),
+        )
+    });
+    let target_url = target.base.trim_end_matches("/api").to_string();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let ws_url = format!(
+        "ws://{}/api/v1/relay/connect",
+        listener.local_addr().unwrap()
+    );
+    let uris: Arc<Mutex<Vec<String>>> = Arc::default();
+    let uris_in = Arc::clone(&uris);
+    std::thread::spawn(move || {
+        for announce in [Some("dev-1"), Some("dev-2"), None] {
+            let Ok((stream, _)) = listener.accept() else {
+                return;
+            };
+            let uris_h = Arc::clone(&uris_in);
+            #[allow(clippy::result_large_err)]
+            let on_handshake =
+                move |req: &tungstenite::handshake::server::Request,
+                      resp: tungstenite::handshake::server::Response| {
+                    uris_h.lock().unwrap().push(req.uri().to_string());
+                    Ok(resp)
+                };
+            let Ok(mut ws) = tungstenite::accept_hdr(stream, on_handshake) else {
+                return;
+            };
+            let _ = ws.get_ref().set_read_timeout(Some(Duration::from_secs(20)));
+            if ws.read().is_err() {
+                return;
+            }
+            if let Some(id) = announce {
+                let _ = ws.send(Message::text(
+                    serde_json::json!({"type":"device","id":id,"name":"Desk"}).to_string(),
+                ));
+                std::thread::sleep(Duration::from_millis(300));
+                let _ = ws.close(None);
+                let _ = ws.flush();
+            } else {
+                while ws.read().is_ok() {}
+            }
+        }
+    });
+
+    let home = temp_home("relay-unwritable");
+    if let Some(id) = seed {
+        std::fs::write(
+            home.join("config.yaml"),
+            format!("active_profile: default\nprofiles:\n  default:\n    relay_device_id: {id}\n"),
+        )
+        .unwrap();
+    }
+    // A non-empty directory squats on the temp path the config writer uses,
+    // so every attempt to save the device id fails.
+    let squat = home.join("config.yaml.tmp");
+    std::fs::create_dir_all(&squat).unwrap();
+    std::fs::write(squat.join("keep"), "").unwrap();
+
+    let mut child = anyr(&home)
+        .args([
+            "relay",
+            "start",
+            "--no-pool",
+            "--no-launch",
+            "--url",
+            &ws_url,
+            "--target",
+            &target_url,
+            "--key",
+            KEY,
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn relay");
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while uris.lock().unwrap().len() < 3 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    let seen = uris.lock().unwrap().clone();
+    assert_eq!(seen.len(), 3, "relay did not reconnect twice: {seen:?}");
+    seen
+}
+
+/// WHY: the device id from the cloud's `device` frame is only cached in the
+/// config file. When that write fails, every reconnect used to send
+/// `fresh=1` and the cloud minted a new device row each time until the
+/// 5-device cap blocked the relay.
+#[cfg(unix)]
+#[test]
+fn relay_keeps_the_device_id_in_memory_when_the_config_is_unwritable() {
+    let seen = relay_handshakes_with_unwritable_config(None);
+    assert!(seen[0].contains("fresh=1"), "{}", seen[0]);
+    assert!(seen[1].contains("device=dev-1"), "{}", seen[1]);
+    assert!(!seen[1].contains("fresh=1"), "{}", seen[1]);
+}
+
+/// WHY: a stale cached id must give way to the one the cloud just named even
+/// when the cache cannot be overwritten.
+#[cfg(unix)]
+#[test]
+fn relay_prefers_the_new_device_id_over_a_stale_cached_one() {
+    let seen = relay_handshakes_with_unwritable_config(Some("stale-0"));
+    assert!(seen[0].contains("device=stale-0"), "{}", seen[0]);
+    assert!(seen[1].contains("device=dev-1"), "{}", seen[1]);
+    assert!(seen[2].contains("device=dev-2"), "{}", seen[2]);
+}
