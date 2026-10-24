@@ -185,8 +185,9 @@ impl Install {
     /// Run the installed copy. Auto-update is allowed off a TTY (tests have
     /// none) unless `extra` turns it off.
     fn run(&self, mock: &MockRelease, args: &[&str], extra: &[(&str, &str)]) -> Output {
+        let home = self.home();
         let mut env: BTreeMap<&str, &str> = BTreeMap::from([
-            ("ANYROUTER_HOME", self.home().to_str().unwrap()),
+            ("ANYROUTER_HOME", home.to_str().unwrap()),
             ("ANYR_UPDATE_BASE_URL", mock.base.as_str()),
             ("ANYR_AUTO_UPDATE", "1"),
             ("NO_COLOR", "1"),
@@ -364,7 +365,8 @@ fn failed_download_leaves_the_binary_intact() {
 fn opt_outs_never_touch_the_network() {
     // WHY: no update traffic or swap in CI, for agents parsing --json, or
     // when the user turned it off.
-    let cases: &[(&[&str], &[(&str, &str)])] = &[
+    type Case<'a> = (&'a [&'a str], &'a [(&'a str, &'a str)]);
+    let cases: &[Case] = &[
         (&["config"], &[("CI", "true")]),
         (&["config"], &[("ANYR_NO_AUTO_UPDATE", "1")]),
         (&["config", "--json"], &[]),

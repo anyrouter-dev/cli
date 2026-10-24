@@ -1093,10 +1093,9 @@ fn upgrade_help_mentions_channel_stable_beta() {
         stdout.contains("Run anyr to start using the new version."),
         "upgrade help should show the post-update hint, got:\n{stdout}"
     );
-    assert!(
-        stdout.contains("Ctrl+G") && stdout.contains("restart and resume"),
-        "upgrade help should mention Ctrl+G restart/resume after auto-upgrade:\n{stdout}"
-    );
+    // Nothing handles Ctrl+G; the old hint sent users to a key that did nothing.
+    assert!(!stdout.contains("Ctrl+G"), "{stdout}");
+    assert!(stdout.contains("--rollback"), "{stdout}");
 }
 
 #[test]
@@ -1744,9 +1743,12 @@ fn upgrade_auto_with_fixture_would_update() {
         !format!("{stdout}{stderr}").contains("Unknown flag"),
         "{stdout}{stderr}"
     );
+    // The detached checker prints nothing; it records what it saw.
+    assert!(stdout.trim().is_empty(), "{stdout}");
+    let state = std::fs::read_to_string(home.join("update-state.json")).unwrap_or_default();
     assert!(
-        stdout.contains("would update") && stdout.contains("0.1.99"),
-        "auto-update should install a newer GitHub release, got:\n{stdout}"
+        state.contains("\"latest_seen\": \"0.1.99\""),
+        "auto-update should see the newer GitHub release, got:\n{state}"
     );
 }
 

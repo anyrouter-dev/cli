@@ -281,7 +281,7 @@ pub fn is_cargo_target_build(exe: &Path) -> bool {
 /// when anyr installed it and may replace it.
 pub fn package_manager_hint(exe: &Path, beta: bool) -> Option<String> {
     let p = exe.to_string_lossy().replace('\\', "/");
-    if p.contains("/Cellar/") || p.contains("/homebrew/") || p.contains("/linuxbrew/") {
+    if p.contains("/Cellar/") || p.contains("/homebrew/") || p.contains("linuxbrew/") {
         return Some("brew upgrade anyr".into());
     }
     if p.contains("/node_modules/") || p.contains("/.anyrouter/binaries/") {
