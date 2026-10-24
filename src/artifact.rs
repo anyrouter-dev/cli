@@ -418,7 +418,11 @@ fn remove(ctx: &Ctx, parsed: &ParsedArgs, id: &str) -> Res<()> {
     )
     .map_err(|e| Fail::new(2, strip_usage(&e)))?;
     call(ctx, "DELETE", &format!("/v1/artifacts/{id}"), None)?;
-    eprintln!("{} deleted {id}", term::ok("✓"));
+    if ctx.json {
+        println!("{}", json!({ "id": id, "deleted": true }));
+    } else {
+        eprintln!("{} deleted {id}", term::ok("✓"));
+    }
     Ok(())
 }
 

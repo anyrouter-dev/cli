@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  # release-please dispatches this on its PR branch (#157).
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -191,6 +193,28 @@ jobs:
         with:
           name: bench-anyr.wasm
           path: bench/anyr.wasm.json
+
+  # Live e2e against https://anyrouter.dev: models, one free chat, and a
+  # private artifact publish + delete. Runs on main, on release-please PRs and
+  # on manual dispatch; skipped on other PRs (forks have no secret).
+  live-e2e:
+    needs: lint
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.event.pull_request.head.repo.full_name == github.repository &&
+       startsWith(github.head_ref, 'release-please--'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: cargo test --test e2e_live
+        env:
+          ANYROUTER_E2E_API_KEY: ${{ secrets.ANYROUTER_E2E_API_KEY }}
+          ANYR_E2E_REQUIRED: "1"
+        run: cargo test --locked --test e2e_live -- --test-threads=1 --nocapture
 
   report:
     needs: [build, wasm]
