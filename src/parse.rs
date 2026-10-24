@@ -103,6 +103,7 @@ where
         &tokens[1..]
     };
 
+    let launcher_owned = crate::cmd::dispatch::launch_flags(&command);
     let mut flags = HashMap::new();
     let mut passthrough = Vec::new();
     let mut after_separator = false;
@@ -120,7 +121,7 @@ where
             i += 1;
             continue;
         }
-        if !arg.starts_with("--") {
+        if !arg.starts_with("--") || launcher_owned.is_some_and(|owned| !owns(owned, arg)) {
             passthrough.push(arg.clone());
             i += 1;
             continue;
@@ -164,6 +165,13 @@ where
         flags,
         passthrough,
     })
+}
+
+/// Does a launcher keep `--name` / `--name=value` for itself? The global
+/// flags (`--help`, `--json`, `--quiet`) are always anyr's.
+fn owns(owned: &[&str], arg: &str) -> bool {
+    let name = arg[2..].split('=').next().unwrap_or_default();
+    owned.contains(&name) || matches!(name, "help" | "json" | "quiet")
 }
 
 /// `--target` may repeat (relay with several local endpoints), and so may

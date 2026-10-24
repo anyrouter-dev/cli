@@ -20,7 +20,7 @@ use crate::spawn::{
 use crate::term;
 
 use crate::cmd::decision::{chat_model_error, is_systemone_model};
-use crate::cmd::dispatch::{catalog_lookup_enabled, config_path};
+use crate::cmd::dispatch::{catalog_lookup_enabled, config_path, yolo_args};
 use crate::cmd::login::persist_login;
 use crate::cmd::models::apply_claude_alias_flags;
 
@@ -174,10 +174,24 @@ pub(crate) fn launch(
         model_mode,
         resolved.context_window,
     ));
-    // --yolo is shorthand for Claude Code's full-permission flag; other tools
-    // don't have an equivalent, so it only maps there.
-    if tool_name == "claude" && (parsed.flag_true("yolo") || tool.extra_flag("yolo")) {
-        args.push("--dangerously-skip-permissions".into());
+    if parsed.flag_true("yolo") || tool.extra_flag("yolo") {
+        let native = yolo_args(tool_name);
+        match native.first() {
+            None if !term::machine_output(parsed, env) => eprintln!(
+                "{} {tool_name} has no flag to skip permission prompts; --yolo ignored.",
+                term::dim("note:")
+            ),
+            None => {}
+            Some(first) => {
+                let already = parsed
+                    .passthrough
+                    .iter()
+                    .any(|a| a == first || a.starts_with(&format!("{first}=")));
+                if !already {
+                    args.extend(native.iter().map(|a| a.to_string()));
+                }
+            }
+        }
     }
     // Wire the AnyRouter MCP gateway in when the workspace asks for it.
     let mcp_decision = crate::mcp_wiring::decide(&crate::mcp_wiring::DecideInput {
