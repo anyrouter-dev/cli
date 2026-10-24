@@ -83,7 +83,7 @@ pub fn run(argv: Vec<String>, env: HashMap<String, String>) -> i32 {
     // opens the launcher without a TTY (`ANYR_TUI_DUMP=1`).
     if should_open_launcher(&raw, term::is_interactive(), tui_wants_dump(&parsed, &env)) {
         #[cfg(feature = "native")]
-        crate::upgrade::on_startup("menu", &parsed, &env);
+        crate::autoupdate::on_startup("menu", &parsed, &env);
         let empty = ParsedArgs {
             command: "menu".into(),
             flags: parsed.flags.clone(),
@@ -98,9 +98,7 @@ pub fn run(argv: Vec<String>, env: HashMap<String, String>) -> i32 {
     // Update notices and the background update check stay out of agent and
     // scripted runs (`--json`, `--quiet`, no TTY).
     #[cfg(feature = "native")]
-    if !term::agent_mode(&parsed, &env) {
-        crate::upgrade::on_startup(command, &parsed, &env);
-    }
+    crate::autoupdate::on_startup(command, &parsed, &env);
 
     if raw.is_empty() || command == "help" || command == "--help" || command == "-h" {
         if let Some(bad) = unknown_help_topic(&parsed.passthrough) {

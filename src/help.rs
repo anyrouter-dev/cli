@@ -525,8 +525,10 @@ const UPGRADE: &str = "\
 {bin} upgrade — install the latest CLI from GitHub Releases
 
 Usage:
-  {bin} upgrade [--check] [--beta|--stable] [--channel stable|beta] [--dry-run]
-  {bin} update  [--beta|--stable]   (alias)
+  {bin} update [--check] [--beta|--stable] [--channel stable|beta] [--dry-run] [--json]
+  {bin} update --status [--json]   what the background updater last did
+  {bin} update --rollback          put the previous build back
+  {bin} upgrade ...                (alias)
 
 Bare `{bin} update` / `{bin} update --check` keep the config channel.
 Only `--beta` or `--stable` switch the channel and persist it.
@@ -535,14 +537,21 @@ Switch channel and update:
   {bin} update --beta     follow GitHub prereleases (persist + install)
   {bin} update --stable   follow latest non-prerelease (persist + install)
 
-Auto-update is on by default. On startup a background process checks
-GitHub Releases, and while a coding agent is running it rechecks every
-few hours, then installs in place. The next `{bin}` uses the new build.
-Press Ctrl+G in the agent to restart and resume after an auto-upgrade.
+Auto-update never makes a command wait. At most once a day a command starts
+a background check that downloads the new build beside the binary and
+verifies it against the release checksums. The next `{bin}` run swaps it in
+and prints `anyr updated A → B`. A running agent keeps its build until you
+start it again. A beta build stays on beta; nothing is ever downgraded.
 
-  auto_update: false     in ~/.anyrouter/config.yaml to turn it off
+It stays off in CI, when output is not a terminal, with --json, and inside
+agents {bin} launches. Homebrew and npm installs get the upgrade command to
+run instead. Failures are silent; `{bin} update --status` shows them.
+
+  update:
+    auto: false          in ~/.anyrouter/config.yaml to turn it off
   channel: beta          follow main (GitHub prereleases)
-  ANYR_AUTO_UPDATE=0     disable auto-update for this process
+  ANYR_NO_AUTO_UPDATE=1  turn it off for this process
+  ANYR_AUTO_UPDATE=1     allow it when output is not a terminal
   ANYR_CHANNEL=beta      same as channel: in the config file
 
 Channels:
@@ -557,7 +566,7 @@ While installing, a spinner ticks with the from → to versions and channel:
   ⠋ Updating v0.1.11 -> v0.1.99 (stable channel)
   ✔ Updated to v0.1.99
 
-  Run anyr to start using the new version. Press Ctrl+G in the agent to restart and resume.
+  Run anyr to start using the new version.
 
 --check reports current vs latest without installing.
 --fixture <path> / ANYR_RELEASES_JSON skips the network (tests / dry-run).
