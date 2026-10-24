@@ -663,6 +663,7 @@ pub(crate) fn allowed_flags(command: &str) -> Option<&'static [&'static str]> {
         "onboard" | "impl" | "plan" | "fix" | "deploy" | "cp" => &["json", "copy"],
         "upgrade" => &[
             "check", "channel", "fixture", "dry-run", "yes", "auto", "force", "beta", "stable",
+            "status", "rollback", "json",
         ],
         "claude" | "codex" | "grok" | "opencode" | "pi" | "pool" => return launch_flags(canonical),
         "cursor" | "cline" | "windsurf" => &["profile", "key", "base-url", "config", "yes"],

@@ -190,6 +190,8 @@ pub(crate) fn launch(
         model_map: None,
     });
     apply_routing_env(&mut env_map, &routing, tool_name);
+    // An `anyr` the agent runs itself must not update or print mid-session.
+    env_map.insert(crate::autoupdate::ENV_LAUNCHER_CHILD.into(), "1".into());
     if tool_name == "pi" {
         let catalog = fetch_models(&base, Some(&key)).unwrap_or_default();
         prepare_pi_wrapper(&mut env_map, &path, &profile, &tool, &model, &catalog)?;
@@ -315,7 +317,6 @@ pub(crate) fn launch(
         cfg.prune_empty_agents();
     }
     let _ = write_config(&cfg, &path);
-    let _updater = crate::upgrade::start_session_checker(env);
     if tool_name == "opencode" {
         args = opencode_standalone_args(&args, opencode_major_version(&resolved));
     }

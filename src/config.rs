@@ -680,7 +680,13 @@ pub fn parse_config(source: &str) -> Config {
     if let Some(s) = root.get("last_tool").and_then(|v| v.as_str()) {
         config.last_tool = Some(s.to_string());
     }
-    if let Some(v) = root.get("auto_update") {
+    // `update: { auto: false }`; the flat `auto_update:` older builds wrote
+    // still reads.
+    let nested = root
+        .get("update")
+        .and_then(|v| v.as_map())
+        .and_then(|m| m.get("auto"));
+    if let Some(v) = nested.or_else(|| root.get("auto_update")) {
         config.auto_update = yaml_bool(v);
     }
     if let Some(v) = root
@@ -742,7 +748,8 @@ pub fn serialize_config(config: &Config) -> String {
         lines.push(format!("last_tool: {}", yaml_scalar(tool)));
     }
     if let Some(v) = config.auto_update {
-        lines.push(format!("auto_update: {v}"));
+        lines.push("update:".into());
+        lines.push(format!("  auto: {v}"));
     }
     if let Some(ch) = &config.channel {
         lines.push(format!("channel: {}", yaml_scalar(ch)));
@@ -1193,6 +1200,19 @@ tools:
         assert!(!off.auto_update());
         let again = parse_config(&serialize_config(&off));
         assert_eq!(again.auto_update, Some(false));
+    }
+
+    #[test]
+    fn nested_update_auto_survives_a_rewrite() {
+        // WHY: every launch rewrites the config; an opt-out it drops would
+        // silently turn auto-update back on.
+        let off = parse_config(
+            "active_profile: default\nupdate:\n  auto: false\nprofiles:\n  default:\n    api_key: x\n",
+        );
+        assert_eq!(off.auto_update, Some(false));
+        let written = serialize_config(&off);
+        assert!(written.contains("update:\n  auto: false"), "{written}");
+        assert_eq!(parse_config(&written).auto_update, Some(false));
     }
 
     #[test]
