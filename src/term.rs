@@ -355,6 +355,15 @@ pub fn agent_mode(
     parsed: &crate::parse::ParsedArgs,
     env: &std::collections::BTreeMap<String, String>,
 ) -> bool {
+    machine_output(parsed, env) || !is_interactive()
+}
+
+/// `agent_mode` without the TTY check: the run asked for machine output
+/// (`--json`, `--quiet`, `ANYR_OUTPUT=json`, `ANYR_QUIET=1`).
+pub fn machine_output(
+    parsed: &crate::parse::ParsedArgs,
+    env: &std::collections::BTreeMap<String, String>,
+) -> bool {
     let on = |k: &str| {
         env.get(k)
             .is_some_and(|v| !matches!(v.trim(), "" | "0" | "false"))
@@ -365,7 +374,6 @@ pub fn agent_mode(
             .get("ANYR_OUTPUT")
             .is_some_and(|v| v.trim().eq_ignore_ascii_case("json"))
         || on("ANYR_QUIET")
-        || !is_interactive()
 }
 
 pub fn prompt(label: &str) -> Result<String, String> {
