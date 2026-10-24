@@ -306,6 +306,9 @@ pub struct Config {
     pub auto_update: Option<bool>,
     /// Upgrade channel: `stable` (default) or `beta`. Not shown in `ar config`.
     pub channel: Option<String>,
+    /// `mcp.auto`: `None` follows the workspace setting; `false` never wires the
+    /// AnyRouter MCP gateway into a launched agent on this machine.
+    pub mcp_auto: Option<bool>,
     pub profiles: BTreeMap<String, Profile>,
     /// Per-agent model / account / key. Keys are canonical tool ids (`claude`, …).
     pub agents: BTreeMap<String, AgentBinding>,
@@ -319,6 +322,7 @@ impl Default for Config {
             last_tool: None,
             auto_update: None,
             channel: None,
+            mcp_auto: None,
             profiles: BTreeMap::new(),
             agents: BTreeMap::new(),
             tools: create_default_tools(),
@@ -655,6 +659,18 @@ fn parse_require_params(value: &YamlValue) -> Vec<String> {
     }
 }
 
+fn yaml_bool(v: &YamlValue) -> Option<bool> {
+    match v {
+        YamlValue::Bool(b) => Some(*b),
+        YamlValue::String(s) => match s.trim().to_ascii_lowercase().as_str() {
+            "true" | "1" | "on" | "yes" => Some(true),
+            "false" | "0" | "off" | "no" => Some(false),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 pub fn parse_config(source: &str) -> Config {
     let root = parse_yaml_map(source);
     let mut config = Config::default();
@@ -665,15 +681,14 @@ pub fn parse_config(source: &str) -> Config {
         config.last_tool = Some(s.to_string());
     }
     if let Some(v) = root.get("auto_update") {
-        config.auto_update = match v {
-            YamlValue::Bool(b) => Some(*b),
-            YamlValue::String(s) => match s.trim().to_ascii_lowercase().as_str() {
-                "true" | "1" | "on" | "yes" => Some(true),
-                "false" | "0" | "off" | "no" => Some(false),
-                _ => None,
-            },
-            _ => None,
-        };
+        config.auto_update = yaml_bool(v);
+    }
+    if let Some(v) = root
+        .get("mcp")
+        .and_then(|v| v.as_map())
+        .and_then(|m| m.get("auto"))
+    {
+        config.mcp_auto = yaml_bool(v);
     }
     if let Some(s) = root
         .get("channel")
@@ -731,6 +746,10 @@ pub fn serialize_config(config: &Config) -> String {
     }
     if let Some(ch) = &config.channel {
         lines.push(format!("channel: {}", yaml_scalar(ch)));
+    }
+    if let Some(v) = config.mcp_auto {
+        lines.push("mcp:".into());
+        lines.push(format!("  auto: {v}"));
     }
     lines.push("profiles:".into());
     for (name, profile) in &config.profiles {
@@ -1142,6 +1161,22 @@ tools:
     fn set_active_profile_rejects_unknown() {
         let cfg = parse_config("active_profile: default\nprofiles:\n  default:\n    api_key: x\n");
         assert!(set_active_profile(cfg, "missing").is_err());
+    }
+
+    #[test]
+    fn mcp_auto_follows_the_workspace_by_default_and_roundtrips_off() {
+        let missing =
+            parse_config("active_profile: default\nprofiles:\n  default:\n    api_key: x\n");
+        assert_eq!(missing.mcp_auto, None);
+        assert!(!serialize_config(&missing).contains("mcp:"));
+        let off = parse_config(
+            "active_profile: default\nmcp:\n  auto: false\nprofiles:\n  default:\n    api_key: x\n",
+        );
+        assert_eq!(off.mcp_auto, Some(false));
+        // Every launch rewrites the config, so the opt-out must survive it.
+        let again = parse_config(&serialize_config(&off));
+        assert_eq!(again.mcp_auto, Some(false));
+        assert_eq!(again.profiles["default"].api_key.as_deref(), Some("x"));
     }
 
     #[test]

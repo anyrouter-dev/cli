@@ -57,6 +57,16 @@ pub fn http_get(url: &str, api_key: Option<&str>) -> Result<(u16, String), Strin
     into_status_body(with_auth(agent().get(url), api_key).call())
 }
 
+/// GET with its own overall timeout, for optional lookups a launch must not wait on.
+#[cfg(feature = "native")]
+pub fn http_get_timeout(
+    url: &str,
+    api_key: Option<&str>,
+    timeout: std::time::Duration,
+) -> Result<(u16, String), String> {
+    into_status_body(with_auth(agent().get(url).timeout(timeout), api_key).call())
+}
+
 #[cfg(feature = "native")]
 fn into_status_body_labeled(
     result: Result<ureq::Response, ureq::Error>,
@@ -274,6 +284,15 @@ fn no_network() -> Result<(u16, String), String> {
 #[cfg(not(feature = "native"))]
 pub fn http_get(_url: &str, _api_key: Option<&str>) -> Result<(u16, String), String> {
     no_network()
+}
+
+#[cfg(not(feature = "native"))]
+pub fn http_get_timeout(
+    _url: &str,
+    _api_key: Option<&str>,
+    _timeout: std::time::Duration,
+) -> Result<(u16, String), String> {
+    Err("HTTP is not available in the browser demo".into())
 }
 
 #[cfg(not(feature = "native"))]

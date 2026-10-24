@@ -54,6 +54,7 @@ fn run_opencode(
             "--model",
             "deepseek/deepseek-v4-flash",
             "--yes",
+            "--no-mcp",
             "--",
             "run",
             "say hi",

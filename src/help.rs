@@ -28,6 +28,8 @@ are min-context floors on auto (not catalog SKUs).
   --install             Install a missing agent without prompting (implied on a TTY)
   --config <path>       Override the config file path
   --dry-run             Print the child command and env (secrets redacted)
+  --no-mcp              Don't connect the AnyRouter MCP gateway this launch
+                        (`{bin} mcp auto off` turns it off on this machine)
   --device              Force the device-code flow (headless / SSH)
   --device-code         Alias of --device
   --paste               Force the paste-a-key flow, skipping auto-detection
