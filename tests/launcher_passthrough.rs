@@ -311,9 +311,9 @@ fn opencode_top_level_yolo_leads_the_args() {
 fn skills_off_and_tools_off_map_to_pi_native_flags() {
     let got = dry_run("pi", &["--skills-off", "--tools-off"]);
     assert_eq!(got.code, 0, "{}", got.stderr);
-    let n = got.args.len();
+    let base = dry_run("pi", &[]).args;
     assert_eq!(
-        &got.args[n - 2..],
+        &got.args[..got.args.len() - base.len()],
         ["--no-skills", "--no-tools"],
         "{:?}",
         got.args
@@ -325,6 +325,22 @@ fn skills_off_and_tools_off_map_to_pi_native_flags() {
     );
     let native = dry_run("pi", &["--no-skills"]);
     assert_eq!(native.args.last().map(String::as_str), Some("--no-skills"));
+}
+
+#[test]
+fn skills_off_leads_a_claude_subcommand_and_a_literal_separator() {
+    let base = dry_run("claude", &[]).args;
+    let sub = dry_run("claude", &["--skills-off", "mcp", "list"]);
+    assert_eq!(sub.code, 0, "{}", sub.stderr);
+    let mut want = strs(&["--disable-slash-commands"]);
+    want.extend(base.clone());
+    want.extend(strs(&["mcp", "list"]));
+    assert_eq!(sub.args, want);
+    let sep = dry_run("claude", &["--skills-off", "--", "-p", "hi"]);
+    let mut want = strs(&["--disable-slash-commands"]);
+    want.extend(base);
+    want.extend(strs(&["--", "-p", "hi"]));
+    assert_eq!(sep.args, want, "{:?}", sep.args);
 }
 
 #[test]
@@ -344,7 +360,7 @@ fn skills_off_is_dropped_with_a_note_where_the_agent_has_no_switch() {
     );
     let claude = dry_run("claude", &["--skills-off"]);
     assert_eq!(
-        claude.args.last().map(String::as_str),
+        claude.args.first().map(String::as_str),
         Some("--disable-slash-commands")
     );
 }
@@ -363,7 +379,7 @@ fn skills_off_after_separator_stays_raw() {
 fn skills_off_equals_true_maps_and_never_rewrites_a_value() {
     let got = dry_run("pi", &["--skills-off=true"]);
     assert_eq!(got.code, 0, "{}", got.stderr);
-    assert_eq!(got.args.last().map(String::as_str), Some("--no-skills"));
+    assert_eq!(got.args.first().map(String::as_str), Some("--no-skills"));
     let value = dry_run("pi", &["-p", "--", "--skills-off"]);
     assert_eq!(value.args.last().map(String::as_str), Some("--skills-off"));
 }

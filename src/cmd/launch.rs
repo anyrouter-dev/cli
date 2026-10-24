@@ -273,16 +273,15 @@ pub(crate) fn launch(
         &mut env_map,
     );
     let agent_args_at = args.len();
+    // Native switches lead the agent's args: after a subcommand or a literal
+    // `--` they would be rejected or become positionals.
+    let portable = map_portable_flags(tool_name, parsed, term::machine_output(parsed, env));
+    args.splice(agent_args_at..agent_args_at, portable);
     if let Some(h) = &headless {
         args.extend(h.args.clone());
         env_map.extend(h.extra_env.iter().cloned());
     }
     args.extend(parsed.passthrough.iter().cloned());
-    args.extend(map_portable_flags(
-        tool_name,
-        parsed,
-        term::machine_output(parsed, env),
-    ));
     if parsed.flag_true("yolo") || tool.extra_flag("yolo") {
         add_yolo(
             tool_name,
