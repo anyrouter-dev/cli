@@ -10,6 +10,29 @@ GitHub Releases use this file as the release notes (full history through that ta
 
 * **cli:** add `anyr decision` for typed `POST /api/v1/decisions` requests with flag or stdin JSON input. Known Decisions models are refused by chat-agent launchers. ([duyet/anyrouter#3550](https://github.com/duyet/anyrouter/issues/3550))
 
+## [0.1.29](https://github.com/anyrouter-dev/cli/compare/v0.1.28...v0.1.29) (2026-10-24)
+
+
+### Features
+
+* **artifact:** --show-author / --no-show-author on publish and visibility ([#166](https://github.com/anyrouter-dev/cli/issues/166)) ([e80babf](https://github.com/anyrouter-dev/cli/commit/e80babfcf6c604cfd6e9aa514a62199ec3f5b9f5))
+* **cli:** add anyr generation &lt;id&gt; (alias gen) ([#162](https://github.com/anyrouter-dev/cli/issues/162)) ([d29a606](https://github.com/anyrouter-dev/cli/commit/d29a6061a70016b8af5bc0ee75663a7fc4408fb8))
+* **cli:** add anyr pool stats|providers|free|relay ([#163](https://github.com/anyrouter-dev/cli/issues/163)) ([473b9d8](https://github.com/anyrouter-dev/cli/commit/473b9d87e3bb6913d71c4a27b5596f4077595ccf))
+* **delegate:** hand a task to another coding agent ([#172](https://github.com/anyrouter-dev/cli/issues/172)) ([f868961](https://github.com/anyrouter-dev/cli/commit/f868961b86ca3762ac02298a4f27f92bad298e8f))
+* **eval:** add anyr eval to compare one prompt across models ([#169](https://github.com/anyrouter-dev/cli/issues/169)) ([09371ac](https://github.com/anyrouter-dev/cli/commit/09371ace88e2e3d69f93377cb2eb9aa46f0df6b6))
+* **mcp:** add anyr mcp url, add and connections ([#167](https://github.com/anyrouter-dev/cli/issues/167)) ([aa24e4e](https://github.com/anyrouter-dev/cli/commit/aa24e4eaa169c7c8d33cc369ce46794144edb7ef))
+* **presets:** add anyr presets and --preset on launch ([#165](https://github.com/anyrouter-dev/cli/issues/165)) ([cb4ba73](https://github.com/anyrouter-dev/cli/commit/cb4ba730da4e4cd2a4ca872c090cefa33ba1342f))
+* **publish:** upload an .html or .svg page with its light build ([#168](https://github.com/anyrouter-dev/cli/issues/168)) ([9b15deb](https://github.com/anyrouter-dev/cli/commit/9b15deb4c30ef57abe807c3715674bfd5fe77ad5))
+* **relay:** add devices list/rename/pool/rm and models --devices ([#164](https://github.com/anyrouter-dev/cli/issues/164)) ([9eca1a8](https://github.com/anyrouter-dev/cli/commit/9eca1a8e79cef607502309350bb600b5f12ef6f7))
+* **task:** plan with one model, implement with another ([#171](https://github.com/anyrouter-dev/cli/issues/171)) ([549944f](https://github.com/anyrouter-dev/cli/commit/549944fc42615b2c9bcd128bdef7add12cefedaf))
+
+
+### Bug Fixes
+
+* **artifact:** page through ls and fail clearly when a file changes mid-publish ([#170](https://github.com/anyrouter-dev/cli/issues/170)) ([61e8ad6](https://github.com/anyrouter-dev/cli/commit/61e8ad621ae4d60e9b110f19e8e541b9b678045a))
+* **artifact:** say a private link is not shareable and how to share it ([#161](https://github.com/anyrouter-dev/cli/issues/161)) ([cfd9065](https://github.com/anyrouter-dev/cli/commit/cfd9065a522745a1d33f9b1c3f50ce4d7400f06e))
+* **ci:** scope pull-requests write to the report job ([#158](https://github.com/anyrouter-dev/cli/issues/158)) ([8e7e90b](https://github.com/anyrouter-dev/cli/commit/8e7e90bc1fb25870d037ed62486cdf7bfcc67c43)), closes [#157](https://github.com/anyrouter-dev/cli/issues/157)
+
 ## [0.1.28](https://github.com/anyrouter-dev/cli/compare/v0.1.27...v0.1.28) (2026-10-23)
 
 
