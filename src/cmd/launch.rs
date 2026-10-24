@@ -13,8 +13,8 @@ use crate::spawn::{
     apply_model_id_routing, apply_routing_env, build_tool_env, catalog_context_window,
     catalog_model_id, default_profile_for_env, display_model_id, effort_args_for, env_command_path,
     is_auto_model, is_user_preset, is_virtual_preset, model_args_for, normalize_effort,
-    prepare_pi_wrapper, provider_args_for, render_dry_run, resolve_tool, spawn_child,
-    BuildToolEnvInput,
+    opencode_major_version, opencode_standalone_args, prepare_pi_wrapper, provider_args_for,
+    render_dry_run, resolve_tool, spawn_child, BuildToolEnvInput,
 };
 use crate::term;
 
@@ -183,6 +183,11 @@ pub(crate) fn launch(
         .or_else(|| env_command_path(tool_name, env))
         .unwrap_or_else(|| tool.command.clone());
     if parsed.flag_true("dry-run") {
+        if tool_name == "opencode" {
+            if let Some(path) = crate::install::resolve_executable(&command) {
+                args = opencode_standalone_args(&args, opencode_major_version(&path));
+            }
+        }
         println!("{}", render_dry_run(&command, &args, &env_map));
         return Ok(0);
     }
@@ -194,6 +199,9 @@ pub(crate) fn launch(
             ),
         )?;
         let resolved = ensure_tool_installed(tool_name, &command, false)?;
+        if tool_name == "opencode" {
+            args = opencode_standalone_args(&args, opencode_major_version(&resolved));
+        }
         return Ok(spawn_child(&resolved, &args, &env_map));
     }
     let resolved = ensure_tool_installed(
@@ -238,5 +246,8 @@ pub(crate) fn launch(
     }
     let _ = write_config(&cfg, &path);
     let _updater = crate::upgrade::start_session_checker(env);
+    if tool_name == "opencode" {
+        args = opencode_standalone_args(&args, opencode_major_version(&resolved));
+    }
     Ok(spawn_child(&resolved, &args, &env_map))
 }
