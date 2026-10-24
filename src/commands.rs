@@ -22,6 +22,7 @@ use crate::cmd::login::run_login;
 use crate::cmd::logs::run_logs;
 use crate::cmd::menu::run_menu;
 use crate::cmd::models::run_models_cli;
+use crate::cmd::pool::{is_pool_subcommand, run_pool};
 use crate::cmd::transactions::run_transactions;
 use crate::cmd::usage::{run_usage, run_whoami};
 
@@ -231,6 +232,7 @@ fn dispatch(
             print!("{}", commands_help());
             Ok(0)
         }
+        "pool" if is_pool_subcommand(parsed) => run_pool(parsed, env),
         "claude" | "codex" | "grok" | "opencode" | "pool" | "pi" => {
             run_launch(command, parsed, env)
         }
