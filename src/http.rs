@@ -273,7 +273,9 @@ pub fn http_put_file(
     let req = with_auth(agent().put(url), api_key)
         .set("Content-Type", "application/octet-stream")
         .set("Content-Length", &len.to_string());
-    into_status_body(req.send(file))
+    // Send exactly the bytes promised: a file that grows mid-upload would
+    // otherwise run past Content-Length into the connection.
+    into_status_body(req.send(std::io::Read::take(file, len)))
 }
 
 /// POST the native Decisions envelope and return the structured response.

@@ -72,13 +72,7 @@ const USER_FILES: &[(&str, &str, &str)] = &[
 ];
 
 fn temp_dir(tag: &str) -> PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!("anyr-more-{tag}-{}-{nanos}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+    common::unique_temp_dir(&format!("anyr-more-{tag}"))
 }
 
 fn plant_user_files(home: &Path, agent: &str) {

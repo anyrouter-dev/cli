@@ -259,18 +259,21 @@ impl Install {
         }
     }
 
-    /// Wait for the detached checker to finish (it records `last_check`).
+    /// Wait for the detached checker to finish. It records `last_check` and
+    /// its result while holding `update.lock`, so see the check start, then
+    /// the lock free, and only then read the result. A state read before
+    /// the lock probe can predate the checker's final save.
     fn wait_checked(&self) -> serde_json::Value {
         let deadline = Instant::now() + Duration::from_secs(20);
         loop {
-            let state = self.state();
-            let done = state["last_check"].as_u64().unwrap_or(0) > 0 && !self.lock_held();
-            if done {
-                return state;
+            let started = self.state()["last_check"].as_u64().unwrap_or(0) > 0;
+            if started && !self.lock_held() {
+                return self.state();
             }
             assert!(
                 Instant::now() < deadline,
-                "background check never finished: {state}"
+                "background check never finished: {}",
+                self.state()
             );
             thread::sleep(Duration::from_millis(50));
         }

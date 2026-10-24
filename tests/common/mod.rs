@@ -3,7 +3,9 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 
 pub const KEY: &str = "sk-ar-v1-testkey0123456789";
@@ -58,8 +60,10 @@ pub fn serve(replies: Vec<(u16, String)>) -> (String, mpsc::Receiver<Seen>) {
                 "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                 body.len()
             );
+            // Record the request before answering: once the client has its
+            // reply, a test reading `seen` must find it there.
+            let _ = tx.send(seen);
             stream.write_all(resp.as_bytes()).unwrap();
-            tx.send(seen).unwrap();
         }
     });
     (base, rx)
@@ -96,4 +100,20 @@ pub fn run(base: &str, args: &[&str], input: Option<&str>) -> (i32, String, Stri
         String::from_utf8_lossy(&out.stdout).into_owned(),
         String::from_utf8_lossy(&out.stderr).into_owned(),
     )
+}
+
+/// A new, empty directory under the system temp dir. Tests run as parallel
+/// threads of one process, and a clock-based name collides: macOS reads the
+/// clock in microseconds, so two tests could share one ANYROUTER_HOME. The
+/// counter keeps every call in this process apart.
+pub fn unique_temp_dir(prefix: &str) -> PathBuf {
+    static N: AtomicU64 = AtomicU64::new(0);
+    let dir = std::env::temp_dir().join(format!(
+        "{prefix}-{}-{}",
+        std::process::id(),
+        N.fetch_add(1, Ordering::SeqCst)
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
 }

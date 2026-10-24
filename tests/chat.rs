@@ -301,6 +301,7 @@ mod stream {
         child: Child,
         input: std::fs::File,
         output: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+        drained: mpsc::Receiver<()>,
     }
 
     #[cfg(unix)]
@@ -327,17 +328,31 @@ mod stream {
             let mut reader = input.try_clone().unwrap();
             let output = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
             let sink = output.clone();
+            let (drained_tx, drained) = mpsc::channel();
             std::thread::spawn(move || {
                 let mut buf = [0u8; 4096];
                 while let Ok(n @ 1..) = reader.read(&mut buf) {
                     sink.lock().unwrap().extend_from_slice(&buf[..n]);
                 }
+                let _ = drained_tx.send(());
             });
             Repl {
                 child,
                 input,
                 output,
+                drained,
             }
+        }
+
+        /// Wait for the child to exit, then for the reader to drain the pty.
+        /// The child's last writes can still sit in the pty buffer after it
+        /// exits, so reading the text before EOF can miss the footer.
+        fn finish(&mut self) -> std::process::ExitStatus {
+            let status = self.child.wait().unwrap();
+            if self.drained.recv_timeout(Duration::from_secs(10)).is_err() {
+                panic!("pty never reached EOF: {:?}", self.text());
+            }
+            status
         }
 
         fn text(&self) -> String {
@@ -372,11 +387,12 @@ mod stream {
         let mut repl = Repl::start(&base);
         let at = repl.wait_for("> ", 0);
         repl.send("hi\n");
-        repl.wait_for("AAA", at);
+        let at = repl.wait_for("AAA", at);
         // Typed while the reply is still streaming; its echo is on screen.
         repl.send("next\n/exit\n");
+        repl.wait_for("next\r\n/exit\r\n", at);
         release.send(()).unwrap();
-        assert!(repl.child.wait().unwrap().success());
+        assert!(repl.finish().success());
         let text = repl.text();
         // The echo of the typed lines lands inside the reply, untouched.
         assert!(text.contains("AAAnext\r\n/exit\r\nBBB"), "{text:?}");
@@ -398,7 +414,7 @@ mod stream {
         let at = repl.wait_for("> ", at);
         let _ = at;
         repl.send("/exit\n");
-        assert!(repl.child.wait().unwrap().success());
+        assert!(repl.finish().success());
         assert!(repl.text().contains(ERASE_LINE), "{:?}", repl.text());
     }
 
@@ -429,6 +445,15 @@ mod stream {
             )
         };
         assert_eq!(rc, 0);
+        // openpty does not set close-on-exec. Without it, an `anyr` spawned
+        // by a parallel test inherits this pty and holds it open, so the
+        // master would not see EOF when this test's child exits.
+        for fd in [m, s] {
+            assert_ne!(
+                unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) },
+                -1
+            );
+        }
         unsafe {
             (
                 std::os::fd::OwnedFd::from_raw_fd(m),

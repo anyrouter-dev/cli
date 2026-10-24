@@ -9,7 +9,7 @@ use std::io::{Read, Write};
 use std::os::fd::{FromRawFd, OwnedFd};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// A base URL nothing listens on: any request fails at once.
@@ -54,6 +54,7 @@ fn wait(child: &mut Child, limit: Duration) -> Option<i32> {
 struct Pty {
     master: File,
     output: Arc<Mutex<String>>,
+    drained: mpsc::Receiver<()>,
 }
 
 fn spawn_on_pty(mut cmd: Command) -> (Child, Pty) {
@@ -68,6 +69,14 @@ fn spawn_on_pty(mut cmd: Command) -> (Child, Pty) {
         )
     };
     assert_eq!(rc, 0, "openpty");
+    // openpty does not set close-on-exec. Without it, a child spawned by a
+    // parallel test inherits this pty and the master never sees EOF.
+    for fd in [master, slave] {
+        assert_ne!(
+            unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) },
+            -1
+        );
+    }
     let slave = unsafe { OwnedFd::from_raw_fd(slave) };
     let master = unsafe { File::from_raw_fd(master) };
     cmd.stdin(Stdio::from(slave.try_clone().unwrap()))
@@ -76,6 +85,7 @@ fn spawn_on_pty(mut cmd: Command) -> (Child, Pty) {
     let child = cmd.spawn().expect("spawn anyr on a pty");
     let output = Arc::new(Mutex::new(String::new()));
     let (mut reader, sink) = (master.try_clone().unwrap(), output.clone());
+    let (drained_tx, drained) = mpsc::channel();
     std::thread::spawn(move || {
         let mut buf = [0u8; 4096];
         while let Ok(n) = reader.read(&mut buf) {
@@ -86,13 +96,30 @@ fn spawn_on_pty(mut cmd: Command) -> (Child, Pty) {
                 .unwrap()
                 .push_str(&String::from_utf8_lossy(&buf[..n]));
         }
+        let _ = drained_tx.send(());
     });
-    (child, Pty { master, output })
+    (
+        child,
+        Pty {
+            master,
+            output,
+            drained,
+        },
+    )
 }
 
 impl Pty {
     fn text(&self) -> String {
         self.output.lock().unwrap().clone()
+    }
+
+    /// Everything the child wrote, once the reader has drained the pty. Call
+    /// after the child exited: its last lines can still sit in the buffer.
+    fn final_text(&self) -> String {
+        if self.drained.recv_timeout(Duration::from_secs(10)).is_err() {
+            panic!("pty never reached EOF: {:?}", self.text());
+        }
+        self.text()
     }
 
     fn wait_for(&self, needle: &str, limit: Duration) -> bool {
@@ -115,7 +142,7 @@ fn json_mode_on_a_tty_fails_with_the_key_hint_instead_of_logging_in() {
         .args(["codex", "--base-url", DEAD]);
     let (mut child, pty) = spawn_on_pty(cmd);
     let code = wait(&mut child, Duration::from_secs(15));
-    let out = pty.text();
+    let out = pty.final_text();
     assert_eq!(code, Some(4), "exit 4 (auth), not a login flow:\n{out}");
     assert!(out.contains("ANYROUTER_API_KEY"), "names the fix:\n{out}");
     assert!(!out.contains("Paste your AnyRouter API key"), "{out}");
@@ -139,7 +166,7 @@ fn a_person_is_asked_before_a_missing_agent_is_installed() {
     let asked = pty.wait_for("Install it now?", Duration::from_secs(15));
     let _ = pty.master.write_all(b"n\n");
     let code = wait(&mut child, Duration::from_secs(15));
-    let out = pty.text();
+    let out = pty.final_text();
     assert!(asked, "asks y/N first:\n{out}");
     assert!(
         !out.contains("Installing"),

@@ -1,3 +1,5 @@
+mod common;
+
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::process::{Command, Stdio};
@@ -14,16 +16,7 @@ fn anyr() -> Command {
 /// Fresh empty ANYROUTER_HOME so launch tests assert on built-in defaults
 /// instead of whatever happens to live in the developer's real config.
 fn temp_home() -> std::path::PathBuf {
-    let home = std::env::temp_dir().join(format!(
-        "anyr-cli-test-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&home).expect("create temp home");
-    home
+    common::unique_temp_dir("anyr-cli-test")
 }
 
 fn run(args: &[&str]) -> (i32, String, String) {
@@ -91,15 +84,7 @@ fn decision_server() -> (String, thread::JoinHandle<(String, String)>) {
 /// (claude-style flags break bare `cmd` on Windows). Returns the path to pass
 /// as ANYROUTER_CLAUDE_PATH; the file lives in its own temp dir.
 fn exit_zero_stub() -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "anyr-stub-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&dir).expect("create stub dir");
+    let dir = common::unique_temp_dir("anyr-stub");
     #[cfg(windows)]
     let path = dir.join("stub.cmd");
     #[cfg(not(windows))]
