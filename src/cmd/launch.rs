@@ -92,6 +92,47 @@ fn add_yolo(tool_name: &str, args: &mut Vec<String>, agent_args_at: usize, quiet
     args.splice(at..at, yolo.args.iter().map(|a| a.to_string()));
 }
 
+/// Portable switches and each agent's own spelling, from its `--help`.
+/// Empty: the agent has none, so the flag is dropped with a notice.
+type PortableFlag = (
+    &'static str,
+    &'static str,
+    &'static [(&'static str, &'static str)],
+);
+
+const PORTABLE_FLAGS: &[PortableFlag] = &[
+    (
+        "--skills-off",
+        "skills",
+        &[
+            ("pi", "--no-skills"),
+            ("claude", "--disable-slash-commands"),
+        ],
+    ),
+    ("--tools-off", "tools", &[("pi", "--no-tools")]),
+];
+
+/// The agent's native flag for each `--skills-off` / `--tools-off` anyr
+/// owns (registered in the launch flags like `--yolo`), or one stderr line
+/// when the agent has none. Args after `--` never reach here.
+/// Note: claude's `--disable-slash-commands` also disables slash commands.
+fn map_portable_flags(tool_name: &str, parsed: &ParsedArgs, quiet: bool) -> Vec<String> {
+    PORTABLE_FLAGS
+        .iter()
+        .filter(|(flag, _, _)| parsed.flag_true(&flag[2..]))
+        .filter_map(|(flag, what, map)| {
+            let native = map.iter().find(|(t, _)| *t == tool_name).map(|(_, n)| *n);
+            if native.is_none() && !quiet {
+                eprintln!(
+                    "{} {tool_name} has no {what} switch; ignoring {flag}",
+                    term::dim("note:")
+                );
+            }
+            native.map(str::to_string)
+        })
+        .collect()
+}
+
 pub(crate) fn run_launch(
     tool_name: &str,
     parsed: &ParsedArgs,
@@ -232,11 +273,15 @@ pub(crate) fn launch(
         &mut env_map,
     );
     let agent_args_at = args.len();
+    // Native switches lead the agent's args: after a subcommand or a literal
+    // `--` they would be rejected or become positionals.
+    let portable = map_portable_flags(tool_name, parsed, term::machine_output(parsed, env));
+    args.splice(agent_args_at..agent_args_at, portable);
     if let Some(h) = &headless {
         args.extend(h.args.clone());
         env_map.extend(h.extra_env.iter().cloned());
     }
-    args.extend(parsed.passthrough.clone());
+    args.extend(parsed.passthrough.iter().cloned());
     if parsed.flag_true("yolo") || tool.extra_flag("yolo") {
         add_yolo(
             tool_name,
