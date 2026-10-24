@@ -10,6 +10,13 @@ GitHub Releases use this file as the release notes (full history through that ta
 
 * **cli:** add `anyr decision` for typed `POST /api/v1/decisions` requests with flag or stdin JSON input. Known Decisions models are refused by chat-agent launchers. ([duyet/anyrouter#3550](https://github.com/duyet/anyrouter/issues/3550))
 
+## [0.1.32](https://github.com/anyrouter-dev/cli/compare/v0.1.31...v0.1.32) (2026-10-24)
+
+
+### Features
+
+* **launch:** pass unknown flags to the agent; --yolo maps per agent ([#200](https://github.com/anyrouter-dev/cli/issues/200)) ([d36b0ab](https://github.com/anyrouter-dev/cli/commit/d36b0ab08b8a1d1fe5ed0fd908c60f433e88960d))
+
 ## [0.1.31](https://github.com/anyrouter-dev/cli/compare/v0.1.30...v0.1.31) (2026-10-24)
 
 
