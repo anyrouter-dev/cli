@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  # release-please dispatches this on its PR branch (#157).
+  workflow_dispatch:
 
 permissions:
   contents: read

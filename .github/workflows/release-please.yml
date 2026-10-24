@@ -38,6 +38,14 @@ jobs:
             git push
           fi
 
+      # A PR pushed with GITHUB_TOKEN gets its pull_request runs parked as
+      # action_required (#157), so dispatch ci on the release branch. Its
+      # check runs land on the PR head commit and gate the merge.
+      - if: steps.rp.outputs.pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run ci.yml -R ${{ github.repository }} --ref ${{ fromJSON(steps.rp.outputs.pr).headBranchName }}
+
       # Releases created with GITHUB_TOKEN do not fire `release: published`,
       # so start the binary build explicitly.
       - if: steps.rp.outputs.release_created
