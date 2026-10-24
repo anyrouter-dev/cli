@@ -435,3 +435,111 @@ fn no_app_is_named_in_the_rust_source_outside_help_examples() {
     );
     assert!(hits.is_empty(), "{hits:#?}");
 }
+
+const UPLOAD_SCHEMA: &str = r#"{"app":"demo","version":"1","json_schema":{"type":"object","required":["title"]},"upload":{"max_bytes":64,"json_schema":{"type":"object","required":["format","content"],"additionalProperties":false,"properties":{"format":{"type":"string","enum":["kit-html","kit-svg"]},"content":{"type":"string","minLength":1},"content_light":{"type":"string","minLength":1}}}}}"#;
+
+fn page_dir(name: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("anyr-publish-page-{name}"));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+#[test]
+fn html_page_uploads_with_its_light_sibling_in_the_apps_format() {
+    // WHY: an agent's page (fig.html + fig-light.html) is not JSON; before this,
+    // publish refused it as "not valid JSON" and the only route was hand-built jq.
+    let dir = page_dir("sibling");
+    let page = dir.join("fig.html");
+    std::fs::write(&page, "<p>dark</p>").unwrap();
+    std::fs::write(dir.join("fig-light.html"), "<p>light</p>").unwrap();
+    let (base, rx) = serve(vec![(200, UPLOAD_SCHEMA), (201, CREATED)]);
+    let (code, out, err) = run(cli(&base, &["publish", "demo", page.to_str().unwrap()]));
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out.trim(), "https://anyrouter.dev/apps/demo/s/k3f9a2");
+    assert!(
+        err.contains("fig-light.html"),
+        "names the light build it sent: {err}"
+    );
+    rx.recv().unwrap();
+    let post = rx.recv().unwrap();
+    assert!(
+        post.ends_with(
+            r#"{"payload":{"content":"<p>dark</p>","content_light":"<p>light</p>","format":"kit-html"}}"#
+        ),
+        "{post}"
+    );
+    assert!(!idem(&post).is_empty(), "uploads stay idempotent: {post}");
+}
+
+#[test]
+fn svg_picks_the_svg_format_and_light_flag_names_the_light_file() {
+    let dir = page_dir("svg");
+    let page = dir.join("fig.svg");
+    let other = dir.join("paper.svg");
+    std::fs::write(&page, "<svg/>").unwrap();
+    std::fs::write(&other, "<svg id=l/>").unwrap();
+    let (base, rx) = serve(vec![(200, UPLOAD_SCHEMA), (200, r#"{"valid":true}"#)]);
+    let cmd = cli(
+        &base,
+        &[
+            "publish",
+            "demo",
+            page.to_str().unwrap(),
+            "--light",
+            other.to_str().unwrap(),
+            "--dry-run",
+        ],
+    );
+    let (code, out, err) = run(cmd);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.starts_with("ok: valid against demo v1"), "{out}");
+    rx.recv().unwrap();
+    let check = rx.recv().unwrap();
+    assert!(check.starts_with("POST /api/v1/apps/demo/submissions?validate_only=1"));
+    assert!(
+        check.ends_with(
+            r#"{"payload":{"content":"<svg/>","content_light":"<svg id=l/>","format":"kit-svg"}}"#
+        ),
+        "{check}"
+    );
+}
+
+#[test]
+fn a_page_over_the_apps_upload_limit_is_refused_before_upload() {
+    let dir = page_dir("big");
+    let page = dir.join("fig.html");
+    std::fs::write(&page, "x".repeat(65)).unwrap();
+    let (base, rx) = serve(vec![(200, UPLOAD_SCHEMA)]);
+    let (code, _, err) = run(cli(&base, &["publish", "demo", page.to_str().unwrap()]));
+    assert_eq!(code, 2, "{err}");
+    assert!(err.contains("over the 0.1 KiB upload limit"), "{err}");
+    rx.recv().unwrap();
+    assert!(rx.try_recv().is_err(), "nothing uploaded");
+}
+
+#[test]
+fn a_page_for_an_app_without_uploads_says_it_takes_json() {
+    let dir = page_dir("noupload");
+    let page = dir.join("fig.html");
+    std::fs::write(&page, "<p>x</p>").unwrap();
+    let (base, _rx) = serve(vec![(200, SCHEMA)]);
+    let (code, _, err) = run(cli(&base, &["publish", "demo", page.to_str().unwrap()]));
+    assert_eq!(code, 2, "{err}");
+    assert!(
+        err.contains("takes JSON documents, not .html pages"),
+        "{err}"
+    );
+}
+
+#[test]
+fn light_without_a_page_is_a_usage_error() {
+    let (base, _rx) = serve(vec![]);
+    let cmd = cli(&base, &["publish", "demo", "-", "--light", "x.html"]);
+    let (code, _, err) = run_with_stdin(cmd, r#"{"title":"Lock"}"#);
+    assert_eq!(code, 2);
+    assert!(
+        err.contains("--light goes with an .html or .svg page"),
+        "{err}"
+    );
+}
