@@ -294,7 +294,7 @@ pub fn http_post_json_headers(
     _api_key: &str,
     _json_body: &str,
 ) -> Result<HttpReply, String> {
-    no_network()
+    Err("network is not available in the browser demo".into())
 }
 
 #[cfg(not(feature = "native"))]
