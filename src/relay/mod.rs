@@ -111,6 +111,7 @@ fn ulog(msg: &str) {
 // ---------------------------------------------------------------------------
 
 /// Cloud → device: execute a chat completion against the local target.
+#[derive(Debug, PartialEq, Eq)]
 struct RequestFrame {
     id: String,
     path: String,
@@ -141,6 +142,9 @@ enum ClientFrame {
     Hello {
         models: Vec<String>,
         max_concurrency: Option<u32>,
+        /// Pool sharing for this device, set in the same write as the
+        /// models, so `--no-pool` holds before any request can arrive.
+        pool: bool,
     },
 }
 
@@ -165,8 +169,9 @@ impl ClientFrame {
             Self::Hello {
                 models,
                 max_concurrency,
+                pool,
             } => {
-                let mut v = json!({ "type": "hello", "id": "", "models": models });
+                let mut v = json!({ "type": "hello", "id": "", "models": models, "pool": pool });
                 if let Some(n) = max_concurrency {
                     v["maxConcurrency"] = json!(n);
                 }
@@ -176,30 +181,46 @@ impl ClientFrame {
     }
 }
 
+/// Cloud → device frames the relay acts on.
+#[derive(Debug, PartialEq, Eq)]
+enum ServerFrame {
+    Request(RequestFrame),
+    Cancel(String),
+    /// Sent once right after connect: the device row this connection is bound
+    /// to. Implicit (sk-ar) pairing never told the client its id, so pool
+    /// changes had to guess between several devices.
+    Device {
+        id: String,
+        name: String,
+    },
+}
+
 /// Parse a raw WS text message into a server frame, mirroring
 /// parseRelayServerFrame() in packages/contracts/src/local-relay/index.ts:
 /// malformed JSON, missing `{type,id}`, or unknown types yield None (ignored
-/// rather than fatal). `Some(Ok(..))` is a request; `Some(Err(id))` a cancel.
-fn parse_server_frame(raw: &str) -> Option<Result<RequestFrame, String>> {
+/// rather than fatal).
+fn parse_server_frame(raw: &str) -> Option<ServerFrame> {
     let parsed: serde_json::Value = serde_json::from_str(raw).ok()?;
     let obj = parsed.as_object()?;
     let ty = obj.get("type")?.as_str()?;
     let id = obj.get("id")?.as_str()?;
+    let text = |key: &str| {
+        obj.get(key)
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string()
+    };
     match ty {
-        "request" => Some(Ok(RequestFrame {
+        "request" => Some(ServerFrame::Request(RequestFrame {
             id: id.to_string(),
-            path: obj
-                .get("path")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_string(),
-            body: obj
-                .get("body")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_string(),
+            path: text("path"),
+            body: text("body"),
         })),
-        "cancel" => Some(Err(id.to_string())),
+        "cancel" => Some(ServerFrame::Cancel(id.to_string())),
+        "device" if !id.trim().is_empty() => Some(ServerFrame::Device {
+            id: id.to_string(),
+            name: text("name"),
+        }),
         _ => None,
     }
 }
@@ -1160,18 +1181,8 @@ fn resolve_relay_device_id(
     parsed: &crate::parse::ParsedArgs,
     env: &BTreeMap<String, String>,
 ) -> Result<String, String> {
-    let path = crate::config::resolve_config_path(None, env);
-    if let Some(cfg) = crate::key::load_config_if_present(&path) {
-        if let Some(p) = cfg.profiles.get(&cfg.active_profile) {
-            if let Some(id) = p
-                .relay_device_id
-                .as_deref()
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-            {
-                return Ok(id.to_string());
-            }
-        }
+    if let Some(id) = cached_relay_device_id(env) {
+        return Ok(id);
     }
     let bin = crate::help::invoked_bin();
     let api_key = resolve_sk_ar_key(parsed, env).ok_or_else(|| {
@@ -1213,6 +1224,20 @@ fn resolve_relay_device_id(
     let id = active_ids[0].to_string();
     write_profile_field(RELAY_DEVICE_ID_FIELD, &id, env)?;
     Ok(id)
+}
+
+/// The device id this config last connected as: the cloud's `device` frame,
+/// or `relay pair`.
+fn cached_relay_device_id(env: &BTreeMap<String, String>) -> Option<String> {
+    let path = crate::config::resolve_config_path(None, env);
+    let cfg = crate::key::load_config_if_present(&path)?;
+    cfg.profiles
+        .get(&cfg.active_profile)?
+        .relay_device_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
 }
 
 /// PATCH /relay/devices/:id { pool_enabled } with the resolved sk-ar key.
@@ -1277,23 +1302,31 @@ impl From<String> for ConnectError {
     }
 }
 
-/// Append the device `?name=` the cloud uses to label an implicitly paired
-/// device. A URL that already carries a query is left alone. The credential
-/// never goes in the URL (it lands in access logs): it rides the header.
-fn relay_url_with_name(url: &str, name: &str) -> String {
+/// Append the query the cloud uses for implicit (sk-ar) pairing: `name=`
+/// labels a new device, and `device=<id>` reconnects as the device this
+/// config was bound to, or `fresh=1` asks for this machine's own device
+/// instead of reusing another machine's. A URL that already carries a query
+/// is left alone. The credential never goes in the URL (it lands in access
+/// logs): it rides the header.
+fn relay_url_with_name(url: &str, name: &str, device_id: Option<&str>) -> String {
     if url.contains('?') {
         return url.to_string();
     }
-    let encoded: String = name
-        .bytes()
-        .map(|b| match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
-                (b as char).to_string()
-            }
-            _ => format!("%{b:02X}"),
-        })
-        .collect();
-    format!("{url}?name={encoded}")
+    let encode = |s: &str| -> String {
+        s.bytes()
+            .map(|b| match b {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                    (b as char).to_string()
+                }
+                _ => format!("%{b:02X}"),
+            })
+            .collect()
+    };
+    let bind = match device_id {
+        Some(id) => format!("device={}", encode(id)),
+        None => "fresh=1".to_string(),
+    };
+    format!("{url}?name={}&{bind}", encode(name))
 }
 
 fn connect_ws(url: &str, token: &str) -> Result<Ws, ConnectError> {
@@ -1331,8 +1364,31 @@ use /api/v1/relay/connect, or pass --token.",
                 resp.status().as_u16()
             )))
         }
+        // Every device slot is taken by a connected device: retrying cannot
+        // free one, so stop and say how to remove a device.
+        Err(tungstenite::HandshakeError::Failure(tungstenite::Error::Http(resp)))
+            if resp.status().as_u16() == 409 =>
+        {
+            Err(ConnectError::Refused(device_limit_message(
+                resp.body().as_deref(),
+            )))
+        }
         Err(e) => Err(ConnectError::Transient(e.to_string())),
     }
+}
+
+/// The cloud's `relay_device_limit` message, or a fallback when the body is
+/// missing or not JSON.
+fn device_limit_message(body: Option<&[u8]>) -> String {
+    body.and_then(|b| serde_json::from_slice::<serde_json::Value>(b).ok())
+        .and_then(|v| {
+            v.pointer("/error/message")
+                .and_then(|m| m.as_str())
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| {
+            format!("this account has no free device slot. Remove one at {DEVICES_URL}")
+        })
 }
 
 const WS_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
@@ -1397,6 +1453,7 @@ fn serve_connection(
     router: &Router,
     state: &ConnState,
     max_concurrency: Option<u32>,
+    on_device: &dyn Fn(&str),
 ) -> ConnEnd {
     vlog("connected");
 
@@ -1408,6 +1465,7 @@ fn serve_connection(
         &ClientFrame::Hello {
             models: models.clone(),
             max_concurrency,
+            pool: state.stats.pool.load(Ordering::Relaxed),
         },
     );
     vlog(&format!(
@@ -1469,7 +1527,7 @@ fn serve_connection(
         //    (read timeout) is not fatal — just loop back to the queue drain.
         match ws.read() {
             Ok(tungstenite::Message::Text(text)) => match parse_server_frame(&text) {
-                Some(Ok(frame)) => {
+                Some(ServerFrame::Request(frame)) => {
                     state.stats.requests.fetch_add(1, Ordering::Relaxed);
                     match router
                         .route(&frame.path, &frame.body)
@@ -1493,7 +1551,11 @@ fn serve_connection(
                         }
                     }
                 }
-                Some(Err(id)) => {
+                Some(ServerFrame::Device { id, name }) => {
+                    vlog(&format!("bound to device {id} (\"{name}\")"));
+                    on_device(&id);
+                }
+                Some(ServerFrame::Cancel(id)) => {
                     if let Some(flag) = lock_in_flight(&state.in_flight).remove(&id) {
                         flag.store(true, Ordering::SeqCst);
                         tokens.remove(&id);
@@ -1862,15 +1924,12 @@ fn run_foreground(f: Foreground<'_>) -> Result<i32, String> {
     let live_screen =
         live::wants_live_screen(f.quiet, f.detached, f.env.get("TERM").map(String::as_str));
 
-    let url = relay_url_with_name(
-        f.args
-            .url
-            .as_deref()
-            .filter(|s| !s.trim().is_empty())
-            .unwrap_or(DEFAULT_WS_URL),
-        &f.args.device,
-    );
-    vlog(&format!("relay url={url}"));
+    let ws_base = f
+        .args
+        .url
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or(DEFAULT_WS_URL);
 
     // Find or start the on-device servers before the first discovery, so it
     // sees them. Explicit --target URLs are the user's own servers.
@@ -1946,14 +2005,42 @@ fn run_foreground(f: Foreground<'_>) -> Result<i32, String> {
     );
     let conn = ConnState::new(Arc::clone(&stats));
 
+    // Pool is synced once per run: at connect when the device id is already
+    // known, else when the cloud's `device` frame names it.
+    let pool_synced = std::cell::Cell::new(false);
+    let sync_pool_once = || {
+        if !pool_synced.replace(true) {
+            sync_pool_in_background(
+                stats.pool.load(Ordering::Relaxed),
+                f.parsed.clone(),
+                f.env.clone(),
+            );
+        }
+    };
+    let on_device = |id: &str| {
+        if cached_relay_device_id(f.env).as_deref() != Some(id) {
+            if let Err(e) = write_profile_field(RELAY_DEVICE_ID_FIELD, id, f.env) {
+                ulog(&format!("could not save this device's id: {e}"));
+                return;
+            }
+        }
+        sync_pool_once();
+    };
     let mut attempt: u32 = 0;
-    let mut pool_synced = false;
     let mut last_err = String::new();
     let mut refused = None;
     loop {
         if live::stop_requested() != 0 {
             break;
         }
+        // Rebuilt per attempt: the first connect's `device` frame turns
+        // `fresh=1` into this device's own id for every reconnect.
+        let url = relay_url_with_name(
+            ws_base,
+            &f.args.device,
+            cached_relay_device_id(f.env).as_deref(),
+        );
+        vlog(&format!("relay url={url}"));
         match connect_ws(&url, f.token) {
             Ok(mut ws) => {
                 attempt = 0;
@@ -1961,18 +2048,12 @@ fn run_foreground(f: Foreground<'_>) -> Result<i32, String> {
                 stats.set_conn(Conn::Connected);
                 stats.set_error(None);
                 ulog(&format!("connected as \"{}\"", f.args.device));
-                // After the first connect the cloud has paired this device,
-                // so its id resolves even on a brand-new Mac.
-                if !pool_synced {
-                    pool_synced = true;
-                    sync_pool_in_background(
-                        stats.pool.load(Ordering::Relaxed),
-                        f.parsed.clone(),
-                        f.env.clone(),
-                    );
+                if cached_relay_device_id(f.env).is_some() {
+                    sync_pool_once();
                 }
                 set_read_timeouts(&ws, Duration::from_millis(SOCKET_POLL_MS));
-                let end = serve_connection(&mut ws, &router, &conn, f.args.max_concurrency);
+                let end =
+                    serve_connection(&mut ws, &router, &conn, f.args.max_concurrency, &on_device);
                 abort_in_flight(&conn.in_flight);
                 stats.in_flight.store(0, Ordering::Relaxed);
                 match end {
@@ -2755,9 +2836,10 @@ mod tests {
     use super::*;
 
     fn request_frame(raw: &str) -> RequestFrame {
-        parse_server_frame(raw)
-            .expect("should parse")
-            .expect("should be a request")
+        match parse_server_frame(raw).expect("should parse") {
+            ServerFrame::Request(f) => f,
+            other => panic!("should be a request, got {other:?}"),
+        }
     }
 
     #[test]
@@ -2781,7 +2863,20 @@ mod tests {
     #[test]
     fn cancel_frame_maps_to_err_with_id() {
         let parsed = parse_server_frame(r#"{"type":"cancel","id":"req-7"}"#).unwrap();
-        assert_eq!(parsed.err().unwrap(), "req-7");
+        assert_eq!(parsed, ServerFrame::Cancel("req-7".into()));
+    }
+
+    #[test]
+    fn device_frame_names_the_device_this_connection_is_bound_to() {
+        assert_eq!(
+            parse_server_frame(r#"{"type":"device","id":"dev-1","name":"Desk"}"#),
+            Some(ServerFrame::Device {
+                id: "dev-1".into(),
+                name: "Desk".into()
+            })
+        );
+        // No id, no binding: never cache an empty device id.
+        assert!(parse_server_frame(r#"{"type":"device","id":" "}"#).is_none());
     }
 
     #[test]
@@ -2814,6 +2909,7 @@ mod tests {
         let without = ClientFrame::Hello {
             models: vec!["foundation-model".into()],
             max_concurrency: None,
+            pool: false,
         }
         .to_json();
         let v: serde_json::Value = serde_json::from_str(&without).unwrap();
@@ -2824,10 +2920,27 @@ mod tests {
         let with = ClientFrame::Hello {
             models: vec![],
             max_concurrency: Some(3),
+            pool: true,
         }
         .to_json();
         let v: serde_json::Value = serde_json::from_str(&with).unwrap();
         assert_eq!(v["maxConcurrency"], 3);
+    }
+
+    #[test]
+    fn hello_frame_always_states_pool_so_no_pool_holds_from_the_first_frame() {
+        // --no-pool must reach the cloud with the model list, not in a later
+        // PATCH that can fail and leave an old pool_enabled=true in place.
+        for pool in [false, true] {
+            let json = ClientFrame::Hello {
+                models: vec!["foundation-model".into()],
+                max_concurrency: None,
+                pool,
+            }
+            .to_json();
+            let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+            assert_eq!(v["pool"], pool);
+        }
     }
 
     #[test]
@@ -3535,17 +3648,27 @@ profiles:
     #[test]
     fn relay_url_gets_an_encoded_device_name_and_never_a_key() {
         assert_eq!(
-            relay_url_with_name("wss://x.test/api/v1/relay/connect", "My Mac"),
-            "wss://x.test/api/v1/relay/connect?name=My%20Mac"
+            relay_url_with_name("wss://x.test/api/v1/relay/connect", "My Mac", None),
+            "wss://x.test/api/v1/relay/connect?name=My%20Mac&fresh=1"
         );
         assert_eq!(
-            relay_url_with_name("wss://x.test/c", "Büro&x"),
-            "wss://x.test/c?name=B%C3%BCro%26x"
+            relay_url_with_name("wss://x.test/c", "Büro&x", None),
+            "wss://x.test/c?name=B%C3%BCro%26x&fresh=1"
         );
         // An explicit --url query is the caller's; leave it alone.
         assert_eq!(
-            relay_url_with_name("ws://127.0.0.1:1/c?name=Fixed", "My Mac"),
+            relay_url_with_name("ws://127.0.0.1:1/c?name=Fixed", "My Mac", Some("d1")),
             "ws://127.0.0.1:1/c?name=Fixed"
+        );
+    }
+
+    #[test]
+    fn relay_url_reconnects_as_its_own_device_once_the_id_is_known() {
+        // Without this, two machines on one key were bound to the same device
+        // and kicked each other off every few seconds.
+        assert_eq!(
+            relay_url_with_name("wss://x.test/c", "Desk", Some("6f1c-ab")),
+            "wss://x.test/c?name=Desk&device=6f1c-ab"
         );
     }
 
@@ -3602,13 +3725,16 @@ profiles:
             let _ = ws.close(None);
             let _ = ws.flush();
         });
-        let url = relay_url_with_name(&url, "Desk");
+        let url = relay_url_with_name(&url, "Desk", None);
         assert!(connect_ws(&url, "sk-ar-v1-secret").is_ok());
         let _ = join.join();
         let seen = seen.lock().unwrap();
         let (uri, auth) = &seen[0];
         assert_eq!(auth, "Bearer sk-ar-v1-secret");
-        assert!(uri.ends_with("/api/v1/relay/connect?name=Desk"), "{uri}");
+        assert!(
+            uri.ends_with("/api/v1/relay/connect?name=Desk&fresh=1"),
+            "{uri}"
+        );
         assert!(!uri.contains("sk-ar"), "key leaked into the URL: {uri}");
     }
 
@@ -3625,6 +3751,19 @@ profiles:
             }
             let _ = join.join();
         }
+        // Every device slot taken: stop, and pass the cloud's message on.
+        let (url, _seen, join) = spawn_mock_cloud(Some(409), |_| {});
+        match connect_ws(&url, "sk-ar-v1-k") {
+            Err(ConnectError::Refused(msg)) => assert!(msg.contains("device slot"), "{msg}"),
+            other => panic!("expected Refused for 409, got {other:?}"),
+        }
+        let _ = join.join();
+        assert_eq!(
+            device_limit_message(Some(
+                br#"{"error":{"code":"relay_device_limit","message":"Device limit reached (5)."}}"#
+            )),
+            "Device limit reached (5)."
+        );
         // 5xx is the cloud's problem, not the credential's: keep retrying.
         let (url, _seen, join) = spawn_mock_cloud(Some(500), |_| {});
         assert!(matches!(
@@ -3703,7 +3842,7 @@ profiles:
         let state = ConnState::new(Arc::default());
         let (done_tx, done_rx) = mpsc::channel();
         std::thread::spawn(move || {
-            let end = serve_connection(&mut ws, &router, &state, None);
+            let end = serve_connection(&mut ws, &router, &state, None, &|_| {});
             let _ = done_tx.send(end);
         });
         let end = done_rx
@@ -3833,8 +3972,35 @@ profiles:
         let mut ws = connect_ws(&url, "sk-ar-v1-test").expect("connect");
         set_read_timeouts(&ws, Duration::from_millis(20));
         let state = ConnState::new(Arc::default());
-        serve_connection(&mut ws, &r, &state, None);
+        serve_connection(&mut ws, &r, &state, None, &|_| {});
         cloud_join.join().expect("mock cloud assertions");
+    }
+
+    #[test]
+    fn serve_connection_sends_pool_in_hello_and_reports_the_bound_device() {
+        let r = Router::new(vec![t("only", TargetKind::Chat, &["m"])]);
+        let (url, _seen, cloud_join) = spawn_mock_cloud(None, |ws| {
+            let hello: serde_json::Value =
+                serde_json::from_str(ws.read().unwrap().to_text().unwrap()).unwrap();
+            assert_eq!(hello["type"], "hello");
+            assert_eq!(hello["pool"], false);
+            ws.send(tungstenite::Message::Text(
+                r#"{"type":"device","id":"dev-42","name":"Desk"}"#.into(),
+            ))
+            .unwrap();
+            std::thread::sleep(Duration::from_millis(200));
+            let _ = ws.close(None);
+            let _ = ws.flush();
+        });
+        let mut ws = connect_ws(&url, "sk-ar-v1-test").expect("connect");
+        set_read_timeouts(&ws, Duration::from_millis(20));
+        let state = ConnState::new(Arc::default());
+        let bound = Mutex::new(Vec::new());
+        serve_connection(&mut ws, &r, &state, None, &|id| {
+            bound.lock().unwrap().push(id.to_string())
+        });
+        cloud_join.join().expect("mock cloud assertions");
+        assert_eq!(*bound.lock().unwrap(), vec!["dev-42".to_string()]);
     }
 
     #[test]
@@ -4074,7 +4240,7 @@ profiles:
         let mut ws = connect_ws(&url, "sk-ar-v1-test").expect("connect");
         set_read_timeouts(&ws, Duration::from_millis(20));
         let state = ConnState::new(Arc::default());
-        serve_connection(&mut ws, &router, &state, None);
+        serve_connection(&mut ws, &router, &state, None, &|_| {});
         cloud_join.join().expect("mock cloud assertions");
     }
 
