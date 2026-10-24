@@ -194,6 +194,21 @@ Columns: time (local), model, provider, status (error code inline), tokens in
 and out, cost, latency. `--json` prints the raw API body. A key without the
 needed scope exits 4 and names the scope.
 
+### Shared pool: `anyr pool`
+
+```bash
+anyr pool stats                      # providers, keys, donors, requests today, free coverage
+anyr pool providers                  # per provider: keys, donors, recent masked donors
+anyr pool free                       # backends the pool can serve for free right now
+anyr pool relay                      # on-device relay pool: online devices and models
+anyr pool providers --json | jq '.providers[].key_count'
+```
+
+All four read public endpoints, so no key is needed (one is sent if you have it).
+`--json` prints the raw body; `stats --json` prints the three bodies under
+`stats`, `providers` and `free_coverage`. `anyr pool` with no subcommand still
+launches Poolside. Per-key status and last success are not exposed by the API.
+
 ### One call: `anyr generation <id>`
 
 ```bash

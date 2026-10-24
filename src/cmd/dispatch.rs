@@ -201,6 +201,35 @@ pub(crate) const LAUNCH_FLAGS: &[&str] = &[
     "yolo",
 ];
 
+/// `anyr pool` launches Poolside or, with a subcommand, reads pool health (`--json`).
+pub(crate) const POOL_FLAGS: &[&str] = &[
+    "model",
+    "effort",
+    "haiku",
+    "sonnet",
+    "opus",
+    "fable",
+    "profile",
+    "preset",
+    "key",
+    "base-url",
+    "command-path",
+    "claude-path",
+    "config",
+    "timeout",
+    "plaintext",
+    "dry-run",
+    "yes",
+    "ok",
+    "device",
+    "device-code",
+    "paste",
+    "hub",
+    "install",
+    "yolo",
+    "json",
+];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CmdKind {
     Implemented,
@@ -491,7 +520,8 @@ pub(crate) fn allowed_flags(command: &str) -> Option<&'static [&'static str]> {
         "upgrade" => &[
             "check", "channel", "fixture", "dry-run", "yes", "auto", "force", "beta", "stable",
         ],
-        "claude" | "codex" | "grok" | "opencode" | "pool" | "pi" => LAUNCH_FLAGS,
+        "pool" => POOL_FLAGS,
+        "claude" | "codex" | "grok" | "opencode" | "pi" => LAUNCH_FLAGS,
         "cursor" | "cline" | "windsurf" => &["profile", "key", "base-url", "config", "yes"],
         "byok" => &[
             "profile",

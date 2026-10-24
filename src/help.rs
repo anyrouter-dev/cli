@@ -267,7 +267,11 @@ pub fn command_help(command: &str) -> Option<String> {
         "grok" => launch_help(&bin, "grok", "Grok Build"),
         "opencode" => launch_help(&bin, "opencode", "opencode"),
         "pi" => launch_help(&bin, "pi", "Pi"),
-        "pool" => launch_help(&bin, "pool", "Poolside"),
+        "pool" => format!(
+            "{}\n{}",
+            fill(&bin, POOL),
+            launch_help(&bin, "pool", "Poolside")
+        ),
         "cursor" | "cline" | "windsurf" => format!(
             "{bin} {canonical} — not a launch target yet.\n\
 Print a key with `{bin} auth token` and the base URL with `{bin} onboard impl`.\n"
@@ -658,6 +662,27 @@ Options:
 Examples:
   {bin} logs --status error --limit 50
   {bin} logs --json --status error | jq '.data | length'
+";
+
+const POOL: &str = "{bin} pool — shared-pool health (no key needed)
+
+Usage:
+  {bin} pool stats             Providers, keys, donors, requests today, free coverage
+  {bin} pool providers         Per provider: keys, donors, recent masked donors
+  {bin} pool free              Backends the pool can serve for free right now
+  {bin} pool relay             On-device relay pool: online devices and models
+
+Options:
+  --json            Print the raw API body (stats prints all three bodies in one object)
+  --profile <name>  Use another account
+  --base-url <url>  Use another API host
+
+Examples:
+  {bin} pool stats
+  {bin} pool providers --json | jq '.providers[].key_count'
+
+Exit codes: 0 ok, 1 error, 2 usage.
+Without a subcommand, `{bin} pool` launches Poolside (below).
 ";
 
 const GENERATION: &str = "{bin} generation — cost, provider and timing of one call

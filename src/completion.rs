@@ -60,6 +60,12 @@ pub fn subcommands(command: &str) -> &'static [(&'static str, &'static str)] {
             ("test", "Check a saved key (or --key-stdin before saving)"),
             ("providers", "Providers that accept BYOK, with your badge"),
         ],
+        "pool" => &[
+            ("stats", "Providers, keys, donors, free coverage"),
+            ("providers", "Per provider: keys and donors"),
+            ("free", "Backends the pool serves for free now"),
+            ("relay", "On-device relay pool availability"),
+        ],
         "relay" => &[
             ("start", "Serve local models (--detach for background)"),
             ("stop", "Stop the running relay"),
