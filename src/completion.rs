@@ -60,6 +60,11 @@ pub fn subcommands(command: &str) -> &'static [(&'static str, &'static str)] {
             ("test", "Check a saved key (or --key-stdin before saving)"),
             ("providers", "Providers that accept BYOK, with your badge"),
         ],
+        "mcp" => &[
+            ("url", "Print the MCP endpoint URL"),
+            ("add", "Wire it into claude, codex, opencode or cursor"),
+            ("connections", "List upstream MCP connections"),
+        ],
         "presets" => &[
             ("list", "List presets"),
             ("show", "Show one preset"),

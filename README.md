@@ -222,6 +222,20 @@ anyr claude --preset coding                    # launch with model @preset/codin
 
 `--model` lists models in order (first is primary, the rest are the fallback chain); `--fallback` also allows paid fallback; `--sort` is `price`, `throughput`, `latency` or `exacto`. Presets need a management key (`ak_…`, scopes `read:presets` and `write:presets`) from <https://anyrouter.dev/settings/management-keys>: set `ANYROUTER_MANAGEMENT_KEY` or pass `--key ak_…`. `--preset` on a launch command checks the preset exists first and starts nothing if it does not; it cannot be combined with `--model`.
 
+### MCP gateway: `anyr mcp`
+
+```sh
+anyr mcp url                 # https://anyrouter.dev/api/v1/mcp
+anyr mcp add claude          # runs: claude mcp add --transport http anyrouter <url> --header ...
+anyr mcp add codex           # edits ~/.codex/config.toml
+anyr mcp add opencode        # edits ~/.config/opencode/opencode.json
+anyr mcp add cursor          # edits ~/.cursor/mcp.json
+anyr mcp add claude --print  # show the command, change nothing
+anyr mcp connections         # upstream MCP connections (GET /v1/connections)
+```
+
+Config files keep their existing entries (JSON keys may be re-sorted), and a second run changes nothing. A commented `opencode.jsonc` or a config that is not plain JSON is left alone with an error; use `--print` and paste. The snippet and the written config read the key from `$ANYROUTER_API_KEY`; the key itself is only printed or written with `--show-key`. `add claude` without `--print` runs the `claude` binary (set `ANYROUTER_CLAUDE_PATH` to override) and stores the key in Claude Code's own config. An API key reaches the unscoped tools; pass a management key (`--key ak_…`) for key, credit and preset tools.
+
 ### One call: `anyr generation <id>`
 
 ```bash

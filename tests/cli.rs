@@ -377,6 +377,7 @@ fn documented_commands_are_known_not_unknown() {
         "generation",
         "gen",
         "presets",
+        "mcp",
         "audit",
         "logout",
         "transactions",

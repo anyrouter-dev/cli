@@ -20,6 +20,7 @@ use crate::cmd::keys::run_keys;
 use crate::cmd::launch::run_launch;
 use crate::cmd::login::run_login;
 use crate::cmd::logs::run_logs;
+use crate::cmd::mcp::run_mcp;
 use crate::cmd::menu::run_menu;
 use crate::cmd::models::run_models_cli;
 use crate::cmd::pool::{is_pool_subcommand, run_pool};
@@ -227,6 +228,7 @@ fn dispatch(
         "logs" => run_logs(parsed, env),
         "generation" => run_generation(parsed, env),
         "presets" => run_presets(parsed, env),
+        "mcp" => run_mcp(parsed, env),
         "embed" => run_embed(parsed, env),
         "transactions" => run_transactions(parsed, env),
         "menu" => run_menu(parsed, env),

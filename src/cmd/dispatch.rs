@@ -245,7 +245,7 @@ pub(crate) fn cmd_kind(command: &str) -> Option<CmdKind> {
         | "pool" | "pi" | "upgrade" | "onboard" | "impl" | "plan" | "fix" | "deploy" | "cp"
         | "relay" | "decision" | "commands" | "api" | "completion" | "byok" | "publish"
         | "apps" | "artifact" | "chat" | "logs" | "transactions" | "embed" | "generation"
-        | "presets" => CmdKind::Implemented,
+        | "presets" | "mcp" => CmdKind::Implemented,
         "cursor" | "cline" | "windsurf" => CmdKind::HelpOnly,
         "task" | "delegate" | "audit" | "skills" | "prompt" => CmdKind::Stub,
         _ => return None,
@@ -304,6 +304,10 @@ pub(crate) const COMMANDS: &[(&str, &str)] = &[
     (
         "presets",
         "Saved routing presets: list, show, create, edit, rm",
+    ),
+    (
+        "mcp",
+        "Wire the MCP gateway into an agent: url, add, connections",
     ),
     ("transactions", "Credit ledger: purchases, usage, refunds"),
     ("embed", "Embed text: args, --file or stdin"),
@@ -434,6 +438,9 @@ pub(crate) fn allowed_flags(command: &str) -> Option<&'static [&'static str]> {
             "profile", "base-url", "config", "json", "key", "limit", "model", "status",
         ],
         "generation" => &["profile", "base-url", "config", "json", "key"],
+        "mcp" => &[
+            "profile", "base-url", "config", "json", "key", "print", "show-key",
+        ],
         "presets" => &[
             "profile",
             "base-url",

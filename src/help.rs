@@ -145,6 +145,7 @@ CORE COMMANDS
   logs:       Recent requests and failures
   generation: Cost, provider and timing of one call (alias: gen)
   presets:    Saved routing presets (list, show, create, edit, rm)
+  mcp:        Wire the MCP gateway into an agent (url, add, connections)
   embed:      Embed text (args, --file or stdin)
   transactions: Credit ledger (purchases, usage, refunds)
   artifact:   Publish a file or folder to a shareable URL
@@ -223,6 +224,7 @@ pub fn command_help(command: &str) -> Option<String> {
         "logs" => fill(&bin, LOGS),
         "generation" => fill(&bin, GENERATION),
         "presets" => fill(&bin, PRESETS),
+        "mcp" => fill(&bin, MCP),
         "models" => fill(&bin, MODELS),
         "config" => fill(&bin, CONFIG),
         "chat" => fill(&bin, CHAT),
@@ -725,6 +727,40 @@ Examples:
   {bin} claude --preset coding
 
 Exit codes: 0 ok, 1 error or unknown preset, 2 usage.
+";
+
+const MCP: &str = "{bin} mcp — wire the AnyRouter MCP gateway into an agent
+
+Usage:
+  {bin} mcp url                      Print the endpoint (https://anyrouter.dev/api/v1/mcp)
+  {bin} mcp add <agent> [--print] [--show-key]
+                                     agent: claude, codex, opencode, cursor
+  {bin} mcp connections              Upstream MCP connections behind the gateway
+
+add claude runs `claude mcp add --transport http anyrouter <url> --header ...`.
+add codex edits ~/.codex/config.toml, add opencode edits
+~/.config/opencode/opencode.json, add cursor edits ~/.cursor/mcp.json. Existing
+content is kept and a second run changes nothing. --print shows the snippet and
+changes nothing.
+
+The snippet reads the key from $ANYROUTER_API_KEY; the key is only printed or
+written with --show-key. Running `add claude` without --print stores the key
+in Claude Code's own config, because that is where the header lives. An API key
+(sk-ar-v1-...) reaches the unscoped tools; use a management key (ak_...) via
+--key for key, credit and preset tools.
+
+Options:
+  --print           Show the snippet, change nothing
+  --show-key        Put the real key in the snippet or file
+  --json            Raw API body (connections) or a result object
+  --profile <name>  Use another account
+
+Examples:
+  {bin} mcp add claude --print
+  {bin} mcp add opencode
+  {bin} mcp connections --json
+
+Exit codes: 0 ok, 1 error, 2 usage.
 ";
 
 const GENERATION: &str = "{bin} generation — cost, provider and timing of one call
