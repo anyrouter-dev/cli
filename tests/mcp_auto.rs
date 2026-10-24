@@ -223,7 +223,7 @@ fn launch(gw: &Gateway, home: &Path, agent: &str, extra: &[&str]) -> String {
 
 #[test]
 fn every_auto_agent_lists_the_gateway_tools_with_the_launch_key() {
-    for agent in ["claude", "codex", "opencode", "grok"] {
+    for agent in ["claude", "codex", "opencode", "grok", "kilo", "crush"] {
         let gw = Gateway::start(true);
         let home = temp_home(agent);
         login(&home, &gw.base);
@@ -240,7 +240,7 @@ fn every_auto_agent_lists_the_gateway_tools_with_the_launch_key() {
 
 #[test]
 fn a_workspace_with_auto_connect_off_gets_nothing() {
-    for agent in ["claude", "codex", "opencode", "grok"] {
+    for agent in ["claude", "codex", "opencode", "grok", "kilo", "crush"] {
         let gw = Gateway::start(false);
         let home = temp_home(&format!("{agent}-off"));
         login(&home, &gw.base);

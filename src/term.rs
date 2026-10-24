@@ -336,6 +336,9 @@ pub fn tool_color(tool: &str) -> &'static str {
         "opencode" => BLUE,
         "pi" => TEAL,
         "pool" | "poolside" => MAGENTA,
+        "qwen" | "kilo" => BLUE,
+        "goose" | "aider" => SUCCESS,
+        "crush" => MAGENTA,
         _ => BRAND,
     }
 }

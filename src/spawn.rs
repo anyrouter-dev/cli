@@ -223,13 +223,58 @@ fn builtin(id: &str) -> Option<ToolConfig> {
             shadow_env: None,
             extra: BTreeMap::new(),
         },
+        // Qwen Code reads OPENAI_* ahead of its own settings.json.
+        "qwen" => ToolConfig {
+            command: "qwen".into(),
+            base_url_env: "OPENAI_BASE_URL".into(),
+            auth_env: "OPENAI_API_KEY".into(),
+            model_env: Some("OPENAI_MODEL".into()),
+            base_suffix: "/v1".into(),
+            ..ToolConfig::default()
+        },
+        // Goose splits the endpoint into OPENAI_HOST + OPENAI_BASE_PATH; see
+        // `build_tool_env`. Environment beats its config.yaml.
+        "goose" => ToolConfig {
+            command: "goose".into(),
+            base_url_env: "OPENAI_HOST".into(),
+            auth_env: "OPENAI_API_KEY".into(),
+            model_env: Some("GOOSE_MODEL".into()),
+            ..ToolConfig::default()
+        },
+        // AIDER_* outranks `.aider.conf.yml`; plain OPENAI_* does not.
+        "aider" => ToolConfig {
+            command: "aider".into(),
+            base_url_env: "AIDER_OPENAI_API_BASE".into(),
+            auth_env: "AIDER_OPENAI_API_KEY".into(),
+            model_env: Some("AIDER_MODEL".into()),
+            base_suffix: "/v1".into(),
+            ..ToolConfig::default()
+        },
+        // Crush gets a private CRUSH_GLOBAL_CONFIG (`prepare_crush_config`)
+        // whose provider reads `$ANYROUTER_API_KEY`.
+        "crush" => ToolConfig {
+            command: "crush".into(),
+            base_url_env: "ANYROUTER_BASE_URL".into(),
+            auth_env: "ANYROUTER_API_KEY".into(),
+            base_suffix: "/v1".into(),
+            ..ToolConfig::default()
+        },
+        // Kilo is an OpenCode fork: same inline config, its own variable.
+        "kilo" => ToolConfig {
+            command: "kilo".into(),
+            base_url_env: "OPENAI_BASE_URL".into(),
+            auth_env: "ANYROUTER_API_KEY".into(),
+            model_env: Some("OPENAI_MODEL".into()),
+            base_suffix: "/v1".into(),
+            ..ToolConfig::default()
+        },
         _ => return None,
     })
 }
 
 pub fn create_default_tools() -> BTreeMap<String, ToolConfig> {
-    ["claude", "codex", "grok", "opencode", "pool", "pi"]
-        .into_iter()
+    crate::registry::LAUNCHERS
+        .iter()
         .filter_map(|id| builtin(id).map(|t| (id.to_string(), t)))
         .collect()
 }
@@ -249,7 +294,10 @@ pub fn resolve_tool(
 ) -> Result<ToolConfig, String> {
     let id = canonical_tool(name);
     let fallback = builtin(id).ok_or_else(|| {
-        format!("Unknown tool \"{name}\". Known tools: claude, codex, grok, opencode, pool, pi.")
+        format!(
+            "Unknown tool \"{name}\". Known tools: {}.",
+            crate::registry::LAUNCHERS.join(", ")
+        )
     })?;
     if let Some(over) = config.and_then(|c| c.tools.get(id)) {
         // Parsed tools are already builtin + apply_yaml. Clone, don't merge a
@@ -379,7 +427,7 @@ pub fn build_tool_env(input: BuildToolEnvInput<'_>) -> BTreeMap<String, String> 
             );
         }
     }
-    if input.tool_name == "opencode" {
+    if let Some(content_env) = inline_config_env(input.tool_name) {
         env.remove(&input.tool.base_url_env);
         if let Some(m) = &input.tool.model_env {
             env.remove(m);
@@ -387,13 +435,18 @@ pub fn build_tool_env(input: BuildToolEnvInput<'_>) -> BTreeMap<String, String> 
         let mut provider = serde_json::json!({
             "npm": "@ai-sdk/openai-compatible",
             "name": "AnyRouter",
-            "options": { "baseURL": tool_base_url(input.profile, input.tool), "apiKey": "{env:OPENAI_API_KEY}" },
+            "options": {
+                "baseURL": tool_base_url(input.profile, input.tool),
+                "apiKey": format!("{{env:{}}}", input.tool.auth_env),
+            },
             "models": {}
         });
         let mut config = serde_json::json!({
-            "$schema": "https://opencode.ai/config.json",
             "provider": { "anyrouter": provider.clone() }
         });
+        if input.tool_name == "opencode" {
+            config["$schema"] = "https://opencode.ai/config.json".into();
+        }
         let catalog = catalog_model_id(input.model);
         if !catalog.is_empty() && !is_auto_model(&catalog) {
             provider["models"][&catalog] = serde_json::json!({ "name": catalog });
@@ -401,9 +454,32 @@ pub fn build_tool_env(input: BuildToolEnvInput<'_>) -> BTreeMap<String, String> 
             config["model"] = serde_json::json!(format!("anyrouter/{catalog}"));
         }
         env.insert(
-            "OPENCODE_CONFIG_CONTENT".into(),
+            content_env.into(),
             serde_json::to_string(&config).unwrap_or_else(|_| "{}".into()),
         );
+    }
+    if input.tool_name == "goose" {
+        // Goose wants the origin in OPENAI_HOST and the rest of the path,
+        // without a leading slash, in OPENAI_BASE_PATH.
+        let base = format!(
+            "{}/v1/chat/completions",
+            tool_base_url(input.profile, input.tool)
+        );
+        let (host, path) = split_origin(&base);
+        env.insert("OPENAI_HOST".into(), host.into());
+        env.insert(
+            "OPENAI_BASE_PATH".into(),
+            path.trim_start_matches('/').into(),
+        );
+        env.insert("GOOSE_PROVIDER".into(), "openai".into());
+    }
+    if input.tool_name == "aider" {
+        // Aider routes through LiteLLM, which needs the `openai/` prefix to
+        // send an unknown id to the OpenAI-compatible base.
+        let id = model_id_for_tool("aider", input.model, input.min_context);
+        env.insert("AIDER_MODEL".into(), format!("openai/{id}"));
+        // An id missing from LiteLLM's metadata otherwise warns on every start.
+        env.insert("AIDER_SHOW_MODEL_WARNINGS".into(), "false".into());
     }
     if input.tool_name == "claude" {
         let anthropic_model = model_id_for_tool("claude", input.model, input.min_context);
@@ -925,6 +1001,180 @@ fn link_grok_entries(src: &Path, dir: &Path) {
 #[cfg(all(feature = "native", not(unix)))]
 fn link_grok_entries(_src: &Path, _dir: &Path) {}
 
+/// The Crush config directory the user would get without `anyr`.
+pub fn crush_user_dir(env: &dyn Fn(&str) -> Option<String>) -> Option<PathBuf> {
+    let set = |k: &str| env(k).filter(|v| !v.is_empty());
+    set("CRUSH_GLOBAL_CONFIG")
+        .map(PathBuf::from)
+        .or_else(|| set("XDG_CONFIG_HOME").map(|x| Path::new(&x).join("crush")))
+        .or_else(|| set("HOME").map(|h| Path::new(&h).join(".config").join("crush")))
+}
+
+/// The user's `crush.json` with an `anyrouter` provider listing the catalog,
+/// both model slots on `model`, and the MCP gateway when `mcp_url` is set.
+/// Crush expands `$VAR` in `api_key` and headers, so no key is written.
+pub fn crush_config(
+    user: Option<serde_json::Value>,
+    base_url: &str,
+    key_env: &str,
+    model: &str,
+    catalog: &[crate::http::CatalogModel],
+    mcp_url: Option<&str>,
+) -> serde_json::Value {
+    let mut config = user
+        .filter(serde_json::Value::is_object)
+        .unwrap_or_else(|| serde_json::json!({}));
+    let selected = catalog_model_id(model);
+    let models: Vec<serde_json::Value> = pi_catalog_models(&selected, catalog)
+        .into_iter()
+        .map(|m| {
+            let mut entry = serde_json::json!({ "id": m.id, "name": m.id });
+            if let Some(n) = m.context_length.filter(|n| *n > 0) {
+                entry["context_window"] = n.into();
+            }
+            if let Some(n) = m.max_completion_tokens.filter(|n| *n > 0) {
+                entry["default_max_tokens"] = n.into();
+            }
+            entry
+        })
+        .collect();
+    let key_ref = format!("${key_env}");
+    let slot = serde_json::json!({ "provider": "anyrouter", "model": selected });
+    let set = |config: &mut serde_json::Value, table: &str, name: &str, v: serde_json::Value| {
+        if !config[table].is_object() {
+            config[table] = serde_json::json!({});
+        }
+        config[table][name] = v;
+    };
+    set(
+        &mut config,
+        "providers",
+        "anyrouter",
+        serde_json::json!({
+            "name": "AnyRouter",
+            "type": "openai-compat",
+            "base_url": base_url,
+            "api_key": key_ref,
+            "extra_headers": { "X-AnyRouter-App": "crush" },
+            "models": models,
+        }),
+    );
+    set(&mut config, "models", "large", slot.clone());
+    set(&mut config, "models", "small", slot);
+    if let Some(url) = mcp_url {
+        set(
+            &mut config,
+            "mcp",
+            "anyrouter",
+            serde_json::json!({
+                "type": "http",
+                "url": url,
+                "headers": { "Authorization": format!("Bearer ${}", crate::mcp_wiring::KEY_ENV) },
+            }),
+        );
+    }
+    config
+}
+
+pub fn crush_config_dir(config_path: &Path) -> PathBuf {
+    config_path
+        .parent()
+        .map(|p| p.join("crush"))
+        .unwrap_or_else(|| PathBuf::from("crush"))
+}
+
+/// Private stand-in for Crush's data directory, next to the private config.
+/// Crush keeps the picked model in `<data>/crush.json`, loads it after the
+/// config and rewrites it, so the user's own data directory must stay out.
+pub fn crush_data_dir(config_path: &Path) -> PathBuf {
+    config_path
+        .parent()
+        .map(|p| p.join("crush-data"))
+        .unwrap_or_else(|| PathBuf::from("crush-data"))
+}
+
+/// Point Crush at an AnyRouter-owned global config directory.
+///
+/// `CRUSH_GLOBAL_CONFIG` replaces the user's directory, so their `crush.json`
+/// is copied in (with the AnyRouter provider merged over it) and their
+/// `crushrc` copied verbatim. The user's directory is only read.
+#[allow(clippy::too_many_arguments)]
+pub fn prepare_crush_config(
+    env: &mut BTreeMap<String, String>,
+    config_path: &Path,
+    profile: &Profile,
+    tool: &ToolConfig,
+    model: &str,
+    catalog: &[crate::http::CatalogModel],
+    user_dir: Option<&Path>,
+    mcp_url: Option<&str>,
+) -> Result<(), String> {
+    let dir = crush_config_dir(config_path);
+    let user_dir = user_dir.filter(|d| *d != dir.as_path());
+    let user_json = user_dir
+        .and_then(|d| std::fs::read_to_string(d.join("crush.json")).ok())
+        .and_then(|s| serde_json::from_str(&s).ok());
+    let config = crush_config(
+        user_json,
+        &tool_base_url(profile, tool),
+        &tool.auth_env,
+        model,
+        catalog,
+        mcp_url,
+    );
+    write_crush_files(&dir, &config, user_dir)?;
+    let data = crush_data_dir(config_path);
+    #[cfg(feature = "native")]
+    crate::config::ensure_private_dir(&data).map_err(|e| {
+        format!(
+            "Could not create Crush data directory {}: {e}",
+            data.display()
+        )
+    })?;
+    env.insert(
+        "CRUSH_GLOBAL_DATA".into(),
+        data.to_string_lossy().into_owned(),
+    );
+    env.insert(
+        "CRUSH_GLOBAL_CONFIG".into(),
+        dir.to_string_lossy().into_owned(),
+    );
+    Ok(())
+}
+
+#[cfg(feature = "native")]
+fn write_crush_files(
+    dir: &Path,
+    config: &serde_json::Value,
+    user_dir: Option<&Path>,
+) -> Result<(), String> {
+    crate::config::ensure_private_dir(dir).map_err(|e| {
+        format!(
+            "Could not create Crush config directory {}: {e}",
+            dir.display()
+        )
+    })?;
+    let body = serde_json::to_vec_pretty(config).unwrap_or_else(|_| b"{}".to_vec());
+    crate::config::write_private(&dir.join("crush.json"), &body)
+        .map_err(|e| format!("Could not write Crush crush.json: {e}"))?;
+    let rc = dir.join("crushrc");
+    let _ = std::fs::remove_file(&rc);
+    if let Some(src) = user_dir.map(|d| d.join("crushrc")).filter(|p| p.is_file()) {
+        std::fs::copy(&src, &rc).map_err(|e| format!("Could not copy {}: {e}", src.display()))?;
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "native"))]
+fn write_crush_files(
+    dir: &Path,
+    config: &serde_json::Value,
+    user_dir: Option<&Path>,
+) -> Result<(), String> {
+    let _ = (dir, config, user_dir);
+    Ok(())
+}
+
 /// Build Pi `models.json` for the AnyRouter provider.
 ///
 /// Pi's `/model` picker only lists ids present under `providers.anyrouter.models`.
@@ -1098,6 +1348,15 @@ pub fn model_args_for(
         // AnyRouter does not serve.
         return vec!["-m".into(), catalog];
     }
+    if tool_name == "qwen" {
+        // A `model.name` in the user's settings.json beats OPENAI_MODEL.
+        return vec!["-m".into(), catalog];
+    }
+    if tool_name == "kilo" {
+        // On a fresh HOME kilo ignores the top-level `model` of its inline
+        // config and falls back to its own default.
+        return vec!["-m".into(), format!("anyrouter/{catalog}")];
+    }
     if tool_name != "codex" {
         return vec![];
     }
@@ -1108,6 +1367,24 @@ pub fn model_args_for(
         args.extend(["-c".into(), format!("model_context_window={n}")]);
     }
     args
+}
+
+/// The variable an OpenCode-style agent reads its inline JSON config from.
+pub fn inline_config_env(tool_name: &str) -> Option<&'static str> {
+    match tool_name {
+        "opencode" => Some("OPENCODE_CONFIG_CONTENT"),
+        "kilo" => Some("KILO_CONFIG_CONTENT"),
+        _ => None,
+    }
+}
+
+/// `https://host:port/a/b` -> (`https://host:port`, `/a/b`).
+fn split_origin(url: &str) -> (&str, &str) {
+    let after_scheme = url.find("://").map_or(0, |i| i + 3);
+    match url[after_scheme..].find('/') {
+        Some(i) => url.split_at(after_scheme + i),
+        None => (url, ""),
+    }
 }
 
 /// OpenCode 2.x runs `run` and the TUI against a long-lived background
@@ -1216,15 +1493,7 @@ pub fn render_dry_run(command: &str, args: &[String], env: &BTreeMap<String, Str
 }
 
 pub fn env_command_path(tool: &str, env: &BTreeMap<String, String>) -> Option<String> {
-    let key = match canonical_tool(tool) {
-        "claude" => "ANYROUTER_CLAUDE_PATH",
-        "codex" => "ANYROUTER_CODEX_PATH",
-        "grok" => "ANYROUTER_GROK_PATH",
-        "opencode" => "ANYROUTER_OPENCODE_PATH",
-        "pool" => "ANYROUTER_POOL_PATH",
-        "pi" => "ANYROUTER_PI_PATH",
-        _ => return None,
-    };
+    let key = crate::install::tool_hint(tool)?.env;
     env.get(key)
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())

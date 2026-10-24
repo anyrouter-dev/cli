@@ -311,9 +311,7 @@ fn dispatch(
             Ok(0)
         }
         "pool" if is_pool_subcommand(parsed) => run_pool(parsed, env),
-        "claude" | "codex" | "grok" | "opencode" | "pool" | "pi" => {
-            run_launch(command, parsed, env)
-        }
+        c if crate::registry::LAUNCHERS.contains(&c) => run_launch(command, parsed, env),
         "chat" => {
             #[cfg(feature = "native")]
             {

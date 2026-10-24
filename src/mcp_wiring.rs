@@ -36,8 +36,12 @@ pub(crate) enum Strategy {
     ClaudeInline,
     /// `codex -c mcp_servers.anyrouter.*=…`: this session only.
     CodexOverrides,
-    /// An `mcp` entry in the inline `OPENCODE_CONFIG_CONTENT`: this session only.
+    /// An `mcp` entry in the inline `OPENCODE_CONFIG_CONTENT` (Kilo:
+    /// `KILO_CONFIG_CONTENT`): this session only.
     OpencodeInline,
+    /// An `mcp` entry in the launch's private Crush config directory, written
+    /// by `spawn::prepare_crush_config`; the header reads `$ANYROUTER_API_KEY`.
+    CrushPrivate,
     /// Grok's config overlay drops `mcp_servers`, so anyr keeps one marked entry
     /// in the launch's private `$GROK_HOME/config.toml` that reads the key from
     /// `bearer_token_env_var`. Only `anyr mcp add grok` uses a token file.
@@ -56,6 +60,21 @@ pub(crate) const LAUNCHERS: &[(&str, Strategy)] = &[
         "pi",
         Strategy::Unsupported("Pi has no MCP support"),
     ),
+    ("kilo", Strategy::OpencodeInline),
+    ("crush", Strategy::CrushPrivate),
+    (
+        "qwen",
+        Strategy::Unsupported(
+            "Qwen Code only reads MCP servers from its settings.json; add one with `qwen mcp add`",
+        ),
+    ),
+    (
+        "goose",
+        Strategy::Unsupported(
+            "Goose takes MCP servers as extensions in its config.yaml; add one with `goose configure`",
+        ),
+    ),
+    ("aider", Strategy::Unsupported("Aider has no MCP support")),
     (
         "pool",
         Strategy::Unsupported(
@@ -456,16 +475,16 @@ pub(crate) fn apply(
             "-c mcp_servers.anyrouter"
         }
         Strategy::OpencodeInline => {
-            let current = child_env
-                .get("OPENCODE_CONFIG_CONTENT")
-                .map(String::as_str)
-                .unwrap_or("{}");
-            child_env.insert(
-                "OPENCODE_CONFIG_CONTENT".into(),
-                opencode_config(current, url),
-            );
-            "OPENCODE_CONFIG_CONTENT mcp"
+            let var = crate::spawn::inline_config_env(tool).unwrap_or("OPENCODE_CONFIG_CONTENT");
+            let current = child_env.get(var).map(String::as_str).unwrap_or("{}");
+            child_env.insert(var.into(), opencode_config(current, url));
+            if var == "KILO_CONFIG_CONTENT" {
+                "KILO_CONFIG_CONTENT mcp"
+            } else {
+                "OPENCODE_CONFIG_CONTENT mcp"
+            }
         }
+        Strategy::CrushPrivate => "anyr's private crush.json mcp",
         Strategy::GrokManaged | Strategy::Unsupported(_) => unreachable!(),
     };
     Wiring {
@@ -611,9 +630,8 @@ mod tests {
 
     #[test]
     fn every_launcher_in_help_has_a_strategy() {
-        for tool in [
-            "claude", "cc", "codex", "grok", "opencode", "pi", "pool", "poolside",
-        ] {
+        let aliases = ["cc", "poolside"];
+        for tool in crate::registry::LAUNCHERS.iter().chain(&aliases) {
             let id = crate::spawn::canonical_tool(tool);
             assert!(
                 LAUNCHERS.iter().any(|(n, _)| *n == id),

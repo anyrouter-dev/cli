@@ -99,10 +99,7 @@ pub(crate) fn apply_first_run_defaults(
 }
 
 pub(crate) fn is_launch_command(command: &str) -> bool {
-    matches!(
-        canonical_command(command),
-        "claude" | "codex" | "grok" | "opencode" | "pi" | "pool"
-    )
+    crate::registry::LAUNCHERS.contains(&canonical_command(command))
 }
 
 pub(crate) fn login_next_hint(command: &str) -> bool {

@@ -695,10 +695,8 @@ pub fn item_icon(label: &str) -> &'static str {
     let l = label.to_ascii_lowercase();
     let stem = l.trim_end_matches('…').trim();
     if label.starts_with("Launch")
-        || matches!(
-            stem,
-            "claude" | "codex" | "grok" | "opencode" | "pi" | "pool" | "agent"
-        )
+        || stem == "agent"
+        || crate::registry::LAUNCHERS.contains(&stem)
         || l.contains("claude")
         || l.contains("codex")
     {
