@@ -549,12 +549,16 @@ fn pi_dry_run_uses_anyrouter_provider() {
     assert!(stdout.contains("PI_CODING_AGENT_DIR"), "{stdout}");
     assert!(stdout.contains("ANYROUTER_API_KEY"), "{stdout}");
     assert!(stdout.contains("anyrouter.dev/api/v1"), "{stdout}");
-    assert!(!stdout.contains("$ANYROUTER_API_KEY"), "{stdout}");
     assert!(!stdout.contains(key), "full key leaked:\n{stdout}");
     let models = std::fs::read_to_string(dir.join("pi").join("models.json")).unwrap();
+    // Current Pi sends a bare `ANYROUTER_API_KEY` string as the key itself (401).
     assert!(
-        models.contains("\"apiKey\": \"ANYROUTER_API_KEY\""),
+        models.contains(r#""apiKey": "!printf %s \"$ANYROUTER_API_KEY\"""#),
         "{models}"
+    );
+    assert!(
+        !models.contains(key),
+        "full key written to models.json:\n{models}"
     );
     assert!(models.contains("z-ai/glm-4.7-flash"), "{models}");
     let settings = std::fs::read_to_string(dir.join("pi").join("settings.json")).unwrap();
