@@ -92,6 +92,47 @@ fn add_yolo(tool_name: &str, args: &mut Vec<String>, agent_args_at: usize, quiet
     args.splice(at..at, yolo.args.iter().map(|a| a.to_string()));
 }
 
+/// Portable switches and each agent's own spelling, from its `--help`.
+/// Empty: the agent has none, so the flag is dropped with a notice.
+type PortableFlag = (
+    &'static str,
+    &'static str,
+    &'static [(&'static str, &'static str)],
+);
+
+const PORTABLE_FLAGS: &[PortableFlag] = &[
+    (
+        "--skills-off",
+        "skills",
+        &[
+            ("pi", "--no-skills"),
+            ("claude", "--disable-slash-commands"),
+        ],
+    ),
+    ("--tools-off", "tools", &[("pi", "--no-tools")]),
+];
+
+/// Rewrite `--skills-off` / `--tools-off` in the passthrough args to the
+/// agent's native flag, or drop them with one stderr line.
+fn map_portable_flags(tool_name: &str, passthrough: &[String], quiet: bool) -> Vec<String> {
+    passthrough
+        .iter()
+        .filter_map(|a| {
+            let Some((flag, what, map)) = PORTABLE_FLAGS.iter().find(|(f, _, _)| a == f) else {
+                return Some(a.clone());
+            };
+            let native = map.iter().find(|(t, _)| *t == tool_name).map(|(_, n)| *n);
+            if native.is_none() && !quiet {
+                eprintln!(
+                    "{} {tool_name} has no {what} switch; ignoring {flag}",
+                    term::dim("note:")
+                );
+            }
+            native.map(str::to_string)
+        })
+        .collect()
+}
+
 pub(crate) fn run_launch(
     tool_name: &str,
     parsed: &ParsedArgs,
@@ -236,7 +277,11 @@ pub(crate) fn launch(
         args.extend(h.args.clone());
         env_map.extend(h.extra_env.iter().cloned());
     }
-    args.extend(parsed.passthrough.clone());
+    args.extend(map_portable_flags(
+        tool_name,
+        &parsed.passthrough,
+        term::machine_output(parsed, env),
+    ));
     if parsed.flag_true("yolo") || tool.extra_flag("yolo") {
         add_yolo(
             tool_name,

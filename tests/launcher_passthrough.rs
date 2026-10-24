@@ -306,3 +306,45 @@ fn opencode_top_level_yolo_leads_the_args() {
     want.extend(base);
     assert_eq!(got.args, want);
 }
+
+#[test]
+fn skills_off_and_tools_off_map_to_pi_native_flags() {
+    let got = dry_run("pi", &["--skills-off", "--tools-off"]);
+    assert_eq!(got.code, 0, "{}", got.stderr);
+    let n = got.args.len();
+    assert_eq!(
+        &got.args[n - 2..],
+        ["--no-skills", "--no-tools"],
+        "{:?}",
+        got.args
+    );
+    assert!(
+        !got.args.iter().any(|a| a.ends_with("-off")),
+        "{:?}",
+        got.args
+    );
+    let native = dry_run("pi", &["--no-skills"]);
+    assert_eq!(native.args.last().map(String::as_str), Some("--no-skills"));
+}
+
+#[test]
+fn skills_off_is_dropped_with_a_note_where_the_agent_has_no_switch() {
+    let got = dry_run("codex", &["--skills-off"]);
+    assert_eq!(got.code, 0, "{}", got.stderr);
+    assert!(
+        !got.args.iter().any(|a| a == "--skills-off"),
+        "{:?}",
+        got.args
+    );
+    assert!(
+        got.stderr
+            .contains("codex has no skills switch; ignoring --skills-off"),
+        "{}",
+        got.stderr
+    );
+    let claude = dry_run("claude", &["--skills-off"]);
+    assert_eq!(
+        claude.args.last().map(String::as_str),
+        Some("--disable-slash-commands")
+    );
+}
