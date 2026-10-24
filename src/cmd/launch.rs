@@ -12,9 +12,9 @@ use crate::spawn::{
     apply_model_id_routing, apply_routing_env, build_tool_env, catalog_context_window,
     catalog_model_id, crush_user_dir, default_profile_for_env, display_model_id, env_command_path,
     grok_user_home, is_auto_model, is_user_preset, is_virtual_preset, model_args_for,
-    normalize_effort, opencode_standalone_args, prepare_crush_config,
-    prepare_grok_home, prepare_pi_wrapper, provider_args_for, render_dry_run, resolve_tool,
-    spawn_child, BuildToolEnvInput, GROK_UNSET_ENV,
+    normalize_effort, opencode_standalone_args, prepare_crush_config, prepare_grok_home,
+    prepare_pi_wrapper, provider_args_for, render_dry_run, resolve_tool, spawn_child,
+    BuildToolEnvInput, GROK_UNSET_ENV,
 };
 use crate::term;
 

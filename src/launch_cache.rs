@@ -231,11 +231,25 @@ fn read_json(path: &Path) -> Option<Value> {
     serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
 }
 
+/// Write to a temp file unique to this process and call, then rename over
+/// the target, so a concurrent reader or writer never sees a torn file.
 fn write_json(path: &Path, value: &Value) {
+    use std::io::Write;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
     if let Some(dir) = path.parent() {
         let _ = crate::config::ensure_private_dir(dir);
     }
-    let _ = crate::config::write_private(path, value.to_string().as_bytes());
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+        return;
+    };
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    let tmp = path.with_file_name(format!("{name}.{}.{seq}.tmp", std::process::id()));
+    let written = crate::config::open_private(&tmp, true)
+        .and_then(|mut f| f.write_all(value.to_string().as_bytes()));
+    if written.is_err() || std::fs::rename(&tmp, path).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
 }
 
 #[cfg(test)]
@@ -351,6 +365,54 @@ mod tests {
         assert!(CatalogCache::new(&d, BASE, Some(KEY))
             .load(now_secs())
             .is_some());
+    }
+
+    #[test]
+    fn concurrent_saves_always_leave_valid_json() {
+        let d = dir("concurrent");
+        let path = d.join(CATALOG_FILE);
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let reader = {
+            let (path, stop) = (path.clone(), stop.clone());
+            std::thread::spawn(move || {
+                let mut reads = 0;
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    if let Ok(text) = std::fs::read_to_string(&path) {
+                        serde_json::from_str::<Value>(&text)
+                            .unwrap_or_else(|e| panic!("torn cache file ({e}): {text:?}"));
+                        reads += 1;
+                    }
+                }
+                reads
+            })
+        };
+        let writers: Vec<_> = (0..8)
+            .map(|t| {
+                let d = d.clone();
+                std::thread::spawn(move || {
+                    // Different keys and sizes, so an in-place write would tear.
+                    let cache = CatalogCache::new(&d, BASE, Some(&format!("{KEY}{t}")));
+                    for i in 0..40 {
+                        let models: Vec<_> = (0..(t * 7 + i % 5 + 1))
+                            .map(|n| model(&format!("m/{t}-{n}"), 1000))
+                            .collect();
+                        cache.save(&models, now_secs());
+                    }
+                })
+            })
+            .collect();
+        for w in writers {
+            w.join().unwrap();
+        }
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(reader.join().unwrap() > 0, "the reader saw the file");
+        serde_json::from_str::<Value>(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let leftovers: Vec<_> = std::fs::read_dir(&d)
+            .unwrap()
+            .filter_map(|e| e.ok()?.file_name().into_string().ok())
+            .filter(|n| n.ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
     }
 
     #[cfg(unix)]

@@ -95,6 +95,25 @@ fn per_agent_args_and_model_shape_the_launch() {
         out.contains("ANTHROPIC_MODEL=minimax/minimax-m3.1-flash"),
         "{out}"
     );
+    let ordered = anyr(
+        &h,
+        &[
+            "claude",
+            "--dry-run",
+            "--yolo",
+            "--key",
+            KEY,
+            "--",
+            "--resume",
+        ],
+    );
+    let out = stdout(&ordered);
+    assert!(
+        out.contains(
+            r#"args: ["--dangerously-skip-permissions","--verbose","--add-dir","/srv","--resume"]"#
+        ),
+        "portable switches, then saved args, then the user's own:\n{out}"
+    );
     let view = anyr(&h, &["config", "--json"]);
     let v: serde_json::Value = serde_json::from_str(&stdout(&view)).unwrap();
     let claude = &v["launcher"]["agents"]["claude"];
@@ -106,5 +125,35 @@ fn per_agent_args_and_model_shape_the_launch() {
     assert!(
         v.get("claude_haiku").is_none(),
         "tiers live under launcher.claude"
+    );
+}
+
+#[test]
+fn saved_args_come_before_a_delegated_task() {
+    let h = home("delegate");
+    anyr(
+        &h,
+        &["config", "set", "launcher.claude.args", "--", "--verbose"],
+    );
+    let out = anyr(
+        &h,
+        &[
+            "delegate",
+            "--to",
+            "claude",
+            "fix the bug",
+            "--dry-run",
+            "--yes",
+            "--base-url",
+            "http://127.0.0.1:9/api",
+            "--key",
+            KEY,
+        ],
+    );
+    let text = stdout(&out);
+    assert_eq!(out.status.code(), Some(0), "{text}");
+    assert!(
+        text.contains(r#"args: ["--verbose","-p","fix the bug"]"#),
+        "saved args, then the headless task:\n{text}"
     );
 }

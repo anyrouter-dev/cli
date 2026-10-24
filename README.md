@@ -550,6 +550,43 @@ keeps it in sync:
 Checked against each agent's `--help`: claude 2.1.310, codex 0.133.0, grok 1.0.52, opencode 2.0.24, pi 0.73.1, qwen 0.26.1, goose 1.56.0, aider 0.86.2, crush 0.98.2, kilo 7.8.17. † hidden from `--help`; the agent's parser accepts it. * from docs.poolside.ai (v1.0.16), not run. "no": the agent has no such flag, so anyr drops it with a one-line note. Goose takes these flags only on `goose session` or `goose run`, and its `--system` adds to the default prompt. Crush `-y` works on the interactive command only. Qwen's `-p` is deprecated but listed.
 <!-- portable-flags:end -->
 
+## Launcher settings: `anyr config`
+
+`anyr config` prints your settings, including the model each agent launches
+with. Read or change one setting by name:
+
+```bash
+anyr config get launcher.codex.model              # prints the value; exit 1 when unset
+anyr config set launcher.codex.model openai/gpt-5.5
+anyr config set launcher.claude.args -- --verbose  # values that start with `-` go after `--`
+anyr config unset launcher.claude.args
+anyr config get launcher.agent --json             # {"key":"launcher.agent","value":"codex"}
+```
+
+| Key | What it does |
+|-----|--------------|
+| `launcher.agent` | Agent a bare `anyr` starts. Order: `--tool`, then this, then the last agent you launched |
+| `launcher.<agent>.model` | Model that agent launches with (`auto` clears it) |
+| `launcher.<agent>.args` | Flags passed to that agent on every launch, space separated. They go after the portable switches and before your own flags, so yours win |
+| `launcher.<agent>.yolo` | `true`: always skip that agent's permission prompts |
+| `launcher.claude.{haiku,sonnet,opus,fable}` | Claude Code's model for each tier |
+| `launcher.mcp_auto` | `false`: never wire the MCP gateway into a launched agent |
+| `update.auto`, `update.channel` | Auto-update on or off; `stable` or `beta` |
+
+An unknown key or a bad value exits 2 and lists the valid choices. The values
+live in the same `~/.anyrouter/config.yaml` fields as before. The one new field
+is `agents.<id>.args`.
+
+`anyr config --json` has a `launcher` object: `agent`, `last_agent`,
+`mcp_auto`, `claude.{haiku,sonnet,opus,fable}`, and per agent `model`,
+`model_source` (`agent`, `account` or `default`), `args` and `yolo`.
+
+Migration: the top-level `claude_haiku`, `claude_sonnet` and `claude_opus`
+keys of `anyr config --json` moved to `launcher.claude.haiku`, `.sonnet` and
+`.opus`. A script that read `.claude_opus` now reads `.launcher.claude.opus`,
+or runs `anyr config get launcher.claude.opus`, which prints only a value you
+set yourself.
+
 ## Version lock (0.1.x)
 
 `Cargo.toml`, `package.json`, and `.release-please-manifest.json` stay on
