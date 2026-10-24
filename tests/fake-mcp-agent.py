@@ -48,12 +48,23 @@ def codex():
     return url, "Bearer " + os.environ[conf[f"mcp_servers.{NAME}.bearer_token_env_var"]]
 
 
-def opencode():
-    conf = json.loads(os.environ.get("OPENCODE_CONFIG_CONTENT", "{}"))
+def opencode(var="OPENCODE_CONFIG_CONTENT"):
+    conf = json.loads(os.environ.get(var, "{}"))
     s = conf.get("mcp", {}).get(NAME)
     if not s:
         return None
     auth = re.sub(r"\{env:(\w+)\}", lambda m: os.environ.get(m.group(1), ""),
+                  s["headers"]["Authorization"])
+    return s["url"], auth
+
+
+def crush():
+    path = os.path.join(os.environ["CRUSH_GLOBAL_CONFIG"], "crush.json")
+    s = json.load(open(path, encoding="utf-8")).get("mcp", {}).get(NAME)
+    if not s:
+        return None
+    # Crush expands $VAR in MCP headers from the environment.
+    auth = re.sub(r"\$(\w+)", lambda m: os.environ.get(m.group(1), ""),
                   s["headers"]["Authorization"])
     return s["url"], auth
 
@@ -89,7 +100,14 @@ def rpc(url, auth, method, rid):
 
 def main() -> int:
     agent = os.environ["FAKE_AGENT"]
-    server = {"claude": claude, "codex": codex, "opencode": opencode, "grok": grok}[agent]()
+    server = {
+        "claude": claude,
+        "codex": codex,
+        "opencode": opencode,
+        "kilo": lambda: opencode("KILO_CONFIG_CONTENT"),
+        "crush": crush,
+        "grok": grok,
+    }[agent]()
     if server is None:
         print("NO_MCP")
         return 0
