@@ -219,9 +219,21 @@ pub(crate) fn save_model_slot(
     slot: &str,
     id: &str,
 ) -> Result<i32, String> {
+    let name = existing.as_ref().map(|c| c.active_profile.clone());
+    save_profile_model_slot(existing, path, name.as_deref(), slot, id)
+}
+
+/// Save a model slot into the named profile (`None`: not signed in).
+pub(crate) fn save_profile_model_slot(
+    existing: Option<crate::config::Config>,
+    path: &Path,
+    profile: Option<&str>,
+    slot: &str,
+    id: &str,
+) -> Result<i32, String> {
     let mut cfg = existing.ok_or_else(no_key_error)?;
-    let name = cfg.active_profile.clone();
-    let Some(p) = cfg.profiles.get_mut(&name) else {
+    let name = profile.ok_or_else(no_key_error)?;
+    let Some(p) = cfg.profiles.get_mut(name) else {
         return Err(no_key_error());
     };
     set_model_slot(p, slot, id.to_string());

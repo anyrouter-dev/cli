@@ -26,8 +26,9 @@ use crate::cmd::menu::run_menu;
 use crate::cmd::models::run_models_cli;
 use crate::cmd::pool::{is_pool_subcommand, run_pool};
 use crate::cmd::presets::run_presets;
+use crate::cmd::status::run_whoami;
 use crate::cmd::transactions::run_transactions;
-use crate::cmd::usage::{run_usage, run_whoami};
+use crate::cmd::usage::run_usage;
 
 pub fn run(argv: Vec<String>, env: HashMap<String, String>) -> i32 {
     let raw = if argv.first().map(String::as_str) == Some("--") {
