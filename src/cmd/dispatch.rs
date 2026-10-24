@@ -199,6 +199,7 @@ pub(crate) const LAUNCH_FLAGS: &[&str] = &[
     "hub",
     "install",
     "yolo",
+    "no-mcp",
 ];
 
 /// `anyr pool` launches Poolside or, with a subcommand, reads pool health (`--json`).
@@ -227,6 +228,7 @@ pub(crate) const POOL_FLAGS: &[&str] = &[
     "hub",
     "install",
     "yolo",
+    "no-mcp",
     "json",
 ];
 

@@ -179,6 +179,27 @@ pub(crate) fn launch(
     if tool_name == "claude" && (parsed.flag_true("yolo") || tool.extra_flag("yolo")) {
         args.push("--dangerously-skip-permissions".into());
     }
+    // Wire the AnyRouter MCP gateway in when the workspace asks for it.
+    let mcp_decision = crate::mcp_wiring::decide(&crate::mcp_wiring::DecideInput {
+        tool: tool_name,
+        no_mcp_flag: parsed.flag_true("no-mcp"),
+        config: existing.as_ref(),
+        base: &base,
+        key: &key,
+        cache_dir: path.parent(),
+    });
+    let mcp = crate::mcp_wiring::apply(
+        &crate::mcp_wiring::ApplyInput {
+            tool: tool_name,
+            decision: &mcp_decision,
+            key: &key,
+            env,
+            config_path: &path,
+            dry_run: parsed.flag_true("dry-run"),
+        },
+        &mut args,
+        &mut env_map,
+    );
     if let Some(h) = &headless {
         args.extend(h.args.clone());
         env_map.extend(h.extra_env.iter().cloned());
@@ -199,6 +220,7 @@ pub(crate) fn launch(
             }
         }
         println!("{}", render_dry_run(&command, &args, &env_map));
+        println!("{}", mcp.summary);
         return Ok(0);
     }
     if headless.is_some() {

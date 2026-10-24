@@ -11,9 +11,9 @@ use crate::cmd::view::{print_json, print_table, text};
 use crate::http::join_api;
 use crate::parse::ParsedArgs;
 
-const SERVER_NAME: &str = "anyrouter";
+pub(crate) const SERVER_NAME: &str = "anyrouter";
 const KEY_ENV: &str = "ANYROUTER_API_KEY";
-const AGENTS: &[&str] = &["claude", "codex", "opencode", "cursor"];
+const AGENTS: &[&str] = &["claude", "codex", "opencode", "cursor", "grok"];
 
 /// How the bearer token appears in a snippet or config file.
 #[derive(Clone, Copy)]
@@ -40,10 +40,14 @@ pub(crate) fn run_mcp(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Re
             }
             Ok(0)
         }
+        ["add", "grok"] => grok(parsed, env, true),
         ["add", agent] => add(parsed, env, agent),
+        ["remove", "grok"] => grok(parsed, env, false),
+        ["auto"] => auto(parsed, env, None),
+        ["auto", v] => auto(parsed, env, Some(v)),
         ["connections"] => connections(parsed, env),
         _ => Err(crate::cmd::dispatch::hint(&format!(
-            "Usage: {{bin}} mcp url | add <{}> [--print] [--show-key] | connections",
+            "Usage: {{bin}} mcp url | add <{}> [--print] [--show-key] | remove grok | auto [on|off] | connections",
             AGENTS.join("|")
         ))),
     }
@@ -137,7 +141,7 @@ fn merge_json(
 }
 
 /// Replace (or append) the `[mcp_servers.anyrouter]` table, leaving other lines alone.
-fn merge_toml(existing: Option<&str>, block: &str) -> String {
+pub(crate) fn merge_toml(existing: Option<&str>, block: &str) -> String {
     let header = format!("[mcp_servers.{SERVER_NAME}]");
     let existing = existing.unwrap_or("");
     let lines: Vec<&str> = existing.lines().collect();
@@ -159,6 +163,31 @@ fn merge_toml(existing: Option<&str>, block: &str) -> String {
     }
     out.extend(lines[end..].iter().map(|s| s.to_string()));
     out.join("\n") + "\n"
+}
+
+/// Drop the `header` table (up to the next table) and the blank lines around it.
+pub(crate) fn remove_toml_table(existing: &str, header: &str) -> String {
+    let lines: Vec<&str> = existing.lines().collect();
+    let Some(start) = lines.iter().position(|l| l.trim() == header) else {
+        return existing.to_string();
+    };
+    let end = lines[start + 1..]
+        .iter()
+        .position(|l| l.trim_start().starts_with('['))
+        .map_or(lines.len(), |i| start + 1 + i);
+    let before = lines[..start].join("\n");
+    let after = lines[end..].join("\n");
+    let joined = match (before.trim_end().is_empty(), after.trim().is_empty()) {
+        (true, true) => String::new(),
+        (true, false) => after.trim_start().to_string(),
+        (false, true) => before.trim_end().to_string(),
+        (false, false) => format!("{}\n\n{}", before.trim_end(), after.trim_start()),
+    };
+    if joined.is_empty() {
+        joined
+    } else {
+        joined + "\n"
+    }
 }
 
 fn home(env: &BTreeMap<String, String>) -> Result<PathBuf, String> {
@@ -289,6 +318,74 @@ fn add(parsed: &ParsedArgs, env: &BTreeMap<String, String>, agent: &str) -> Resu
             "{} already has the {SERVER_NAME} MCP server; nothing changed.",
             path.display()
         );
+    }
+    Ok(0)
+}
+
+/// `mcp auto [on|off]`: the machine-wide opt-out (`mcp.auto` in the config).
+/// `on` clears the override so launches follow the workspace setting again.
+fn auto(
+    parsed: &ParsedArgs,
+    env: &BTreeMap<String, String>,
+    value: Option<&str>,
+) -> Result<i32, String> {
+    let path = crate::cmd::dispatch::config_path(parsed, env);
+    let mut cfg = crate::key::load_config_if_present(&path).unwrap_or_default();
+    if let Some(v) = value {
+        cfg.mcp_auto = match v {
+            "on" | "true" => None,
+            "off" | "false" => Some(false),
+            _ => return Err(crate::cmd::dispatch::hint("Usage: {bin} mcp auto [on|off]")),
+        };
+        crate::config::write_config(&cfg, &path)?;
+    }
+    let on = cfg.mcp_auto != Some(false);
+    if parsed.flag_true("json") {
+        print_json(&json!({ "auto": on }));
+    } else if on {
+        println!("MCP auto-connect: on (follows your workspace setting in the dashboard → MCP)");
+    } else {
+        println!(
+            "MCP auto-connect: off on this machine. `{} mcp auto on` turns it back on.",
+            crate::help::invoked_bin()
+        );
+    }
+    Ok(0)
+}
+
+/// `mcp add grok` / `mcp remove grok`: the anyr-managed entry in Grok's config.
+fn grok(parsed: &ParsedArgs, env: &BTreeMap<String, String>, add: bool) -> Result<i32, String> {
+    use crate::mcp_wiring::{grok_paths, sync_grok, GrokSync};
+    let ctx = context(parsed, env);
+    let path = crate::cmd::dispatch::config_path(parsed, env);
+    let paths = grok_paths(env, &path).ok_or("cannot find Grok's home (set GROK_HOME)")?;
+    let url = mcp_url(&ctx.base);
+    let key = if add {
+        ctx.key()?.to_string()
+    } else {
+        String::new()
+    };
+    let result = sync_grok(&paths, add.then_some(url.as_str()), &key)?;
+    let file = paths.config.display();
+    let msg = match result {
+        GrokSync::Written => format!("Wrote the {SERVER_NAME} MCP server to {file}"),
+        GrokSync::Unchanged => {
+            format!("{file} already has the {SERVER_NAME} MCP server; nothing changed.")
+        }
+        GrokSync::Removed => format!("Removed anyr's {SERVER_NAME} MCP server from {file}"),
+        GrokSync::Absent => {
+            format!("{file} has no anyr-managed {SERVER_NAME} MCP server; nothing changed.")
+        }
+        GrokSync::UserOwned => {
+            format!("{file} has your own [mcp_servers.{SERVER_NAME}] entry; anyr leaves it alone.")
+        }
+    };
+    if parsed.flag_true("json") {
+        print_json(
+            &json!({ "agent": "grok", "path": paths.config.display().to_string(), "result": format!("{result:?}").to_lowercase() }),
+        );
+    } else {
+        println!("{msg}");
     }
     Ok(0)
 }
@@ -439,6 +536,29 @@ mod tests {
         assert!(merge_json(Some("{ // comment\n}"), "mcp", json!({}), None).is_err());
         assert!(merge_json(Some("[]"), "mcp", json!({}), None).is_err());
         assert!(merge_json(Some(r#"{"mcp":"x"}"#), "mcp", json!({}), None).is_err());
+    }
+
+    #[test]
+    fn toml_remove_drops_only_that_table() {
+        let text = "model = \"m\"\n\n[mcp_servers.anyrouter]\nurl = \"u\"\n\n[profiles.x]\nmodel = \"y\"\n";
+        assert_eq!(
+            remove_toml_table(text, "[mcp_servers.anyrouter]"),
+            "model = \"m\"\n\n[profiles.x]\nmodel = \"y\"\n"
+        );
+        assert_eq!(
+            remove_toml_table(
+                "[mcp_servers.anyrouter]\nurl = \"u\"\n",
+                "[mcp_servers.anyrouter]"
+            ),
+            ""
+        );
+        assert_eq!(remove_toml_table(text, "[nope]"), text);
+        let block = codex_block(URL, Token::Env);
+        let base = "model = \"m\"\n";
+        assert_eq!(
+            remove_toml_table(&merge_toml(Some(base), &block), "[mcp_servers.anyrouter]"),
+            base
+        );
     }
 
     #[test]
