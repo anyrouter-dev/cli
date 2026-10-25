@@ -501,6 +501,17 @@ a file. `--dry-run` prints the command and environment (key masked), and
 | Crush | `anyr crush` | private `CRUSH_GLOBAL_CONFIG` with your `crush.json` and `crushrc` copied in | yes |
 | Kilo Code | `anyr kilo` | inline `KILO_CONFIG_CONTENT` | yes |
 
+**MCP auto-connect.** On every agent marked "yes", anyr connects one MCP server
+named `anyrouter` with the key the launch uses (read from `$ANYROUTER_API_KEY`,
+never written to your config files). When **Auto-connect in coding agents** is
+on in the dashboard it is the whole gateway; otherwise it is the artifact tools
+alone (`/api/v1/mcp?tools=artifacts`: `publish_artifact`, `list_artifacts`,
+`get_artifact`, `delete_artifact`, `set_artifact_visibility`), so the agent can
+publish a page and hand you a link with no setup. Nothing is connected when the
+workspace owner turns auto-connect off, with `--no-mcp`, or after
+`anyr mcp auto off`. Agents marked "no" print one line saying so on an
+interactive launch, and nothing in scripts.
+
 The AIDER_* names outrank a `.aider.conf.yml`, and Qwen Code gets `-m` because
 a `model.name` in its settings.json beats `OPENAI_MODEL`. Your own agent config
 files are read, never written.
