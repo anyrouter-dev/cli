@@ -481,3 +481,29 @@ fn a_scripted_launch_of_an_agent_without_mcp_prints_no_hint() {
     );
     assert!(gw.hits("GET", "/api/v1/mcp/config").is_empty());
 }
+
+#[test]
+fn grok_artifacts_entry_stays_out_of_the_users_own_grok_config() {
+    let gw = Gateway::start_mode(Mode::ArtifactsOnly);
+    let home = temp_home("grok-user-home");
+    login(&home, &gw.base);
+    // The user's Grok home is separate from anyr's private one.
+    let user_grok = home.join("user-grok");
+    std::fs::create_dir_all(&user_grok).unwrap();
+    let user = "[models]\ndefault = \"grok-4.5\"\n\n[mcp_servers.linear]\nurl = \"https://mcp.linear.app/mcp\"\n";
+    std::fs::write(user_grok.join("config.toml"), user).unwrap();
+    let fake = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fake-mcp-agent.py");
+    let (code, out, err) = run(anyr(&home)
+        .args(["grok", "--yes", "--model", "z-ai/glm-4.7"])
+        .env("GROK_HOME", &user_grok)
+        .env("ANYROUTER_GROK_PATH", &fake)
+        .env("FAKE_AGENT", "grok"));
+    assert_eq!(code, 0, "{out}{err}");
+    assert!(out.contains(&format!("TOOLS {ARTIFACT_TOOLS}")), "{out}");
+    assert_eq!(
+        std::fs::read_to_string(user_grok.join("config.toml")).unwrap(),
+        user,
+        "anyr wrote into the user's own Grok config"
+    );
+    assert!(!out.contains(KEY) && !err.contains(KEY));
+}
