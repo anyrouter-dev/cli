@@ -45,26 +45,28 @@ fn unreachable(service: &str, err: &ureq::Error) -> String {
         return format!("Could not reach {service}: {err}");
     };
     let full = err.to_string();
-    let reason = if full.to_ascii_lowercase().contains("timed out") {
-        "timed out".to_string()
-    } else {
-        match t.kind() {
-            ureq::ErrorKind::Dns => "DNS lookup failed".to_string(),
-            ureq::ErrorKind::ConnectionFailed => "could not connect".to_string(),
-            _ => {
-                let deepest = std::error::Error::source(err)
-                    .map(|e| e.to_string())
-                    .or_else(|| t.message().map(str::to_string))
-                    .unwrap_or_else(|| t.kind().to_string());
-                let kind = format!("{}: ", t.kind());
-                let mut d = deepest.as_str();
-                while let Some(rest) = d.strip_prefix(&kind) {
-                    d = rest;
+    // Windows reports a read timeout as WSAETIMEDOUT (10060) with its own wording.
+    let reason =
+        if full.to_ascii_lowercase().contains("timed out") || full.contains("os error 10060") {
+            "timed out".to_string()
+        } else {
+            match t.kind() {
+                ureq::ErrorKind::Dns => "DNS lookup failed".to_string(),
+                ureq::ErrorKind::ConnectionFailed => "could not connect".to_string(),
+                _ => {
+                    let deepest = std::error::Error::source(err)
+                        .map(|e| e.to_string())
+                        .or_else(|| t.message().map(str::to_string))
+                        .unwrap_or_else(|| t.kind().to_string());
+                    let kind = format!("{}: ", t.kind());
+                    let mut d = deepest.as_str();
+                    while let Some(rest) = d.strip_prefix(&kind) {
+                        d = rest;
+                    }
+                    d.to_string()
                 }
-                d.to_string()
             }
-        }
-    };
+        };
     match t.url() {
         Some(url) => format!("Could not reach {service}: {url}: {reason}"),
         None => format!("Could not reach {service}: {reason}"),
