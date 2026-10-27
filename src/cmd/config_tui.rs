@@ -25,7 +25,7 @@ use crate::cmd::dispatch::{
 };
 #[cfg(feature = "native")]
 use crate::cmd::dispatch::{tui_dump_settings, tui_settings_select};
-use crate::cmd::keys::{run_keys, stored_api_key};
+use crate::cmd::keys::stored_api_key;
 use crate::cmd::login::run_login;
 use crate::cmd::models::{
     flag_agent, models_for_picker, pick_list, pick_model, run_models, save_model_slot,
@@ -162,6 +162,17 @@ pub(crate) enum SettingKind {
     AgentKey(&'static str),
     AgentModel(&'static str),
     AgentRouting(&'static str, RoutingField),
+}
+
+/// The CLI's own key cannot read another key's secret (reveal takes a browser
+/// session), so a different key means a fresh login or a pasted key.
+fn print_new_key_hint() {
+    println!(
+        "{}",
+        term::dim(&crate::help::with_bin(
+            "New key for this machine: {bin} login · paste one: {bin} login --key - · unused keys: {bin} keys audit"
+        ))
+    );
 }
 
 pub(crate) fn run_config_tui(
@@ -778,13 +789,8 @@ pub(crate) fn config_edit_row(
     match kind {
         SettingKind::Account => config_account_actions(parsed, env),
         SettingKind::ApiKey => {
-            let mut next = parsed.clone();
-            next.command = "keys".into();
-            next.passthrough = vec!["use".into()];
-            match run_keys(&next, env) {
-                Err(err) if err == "Cancelled." => Ok(0),
-                other => other,
-            }
+            print_new_key_hint();
+            Ok(0)
         }
         SettingKind::Model(slot) => {
             let existing = load_config_if_present(path);
@@ -886,16 +892,9 @@ pub(crate) fn config_edit_row(
                 .insert("agent".into(), FlagValue::Value(id.to_string()));
             config_account_actions(&next, env)
         }
-        SettingKind::AgentKey(id) => {
-            let mut next = parsed.clone();
-            next.command = "keys".into();
-            next.passthrough = vec!["use".into()];
-            next.flags
-                .insert("agent".into(), FlagValue::Value(id.to_string()));
-            match run_keys(&next, env) {
-                Err(err) if err == "Cancelled." => Ok(0),
-                other => other,
-            }
+        SettingKind::AgentKey(_) => {
+            print_new_key_hint();
+            Ok(0)
         }
         SettingKind::AgentModel(id) => {
             let mut next = parsed.clone();
@@ -1151,7 +1150,6 @@ pub(crate) fn config_menu_loop_legacy(
     path: &Path,
 ) -> Result<i32, String> {
     let items = vec![
-        "Switch key".into(),
         "Switch account".into(),
         "Switch model".into(),
         "Credits".into(),
@@ -1167,25 +1165,19 @@ pub(crate) fn config_menu_loop_legacy(
         let result = match idx {
             0 => {
                 let mut next = parsed.clone();
-                next.command = "keys".into();
-                next.passthrough = vec!["use".into()];
-                run_keys(&next, env)
-            }
-            1 => {
-                let mut next = parsed.clone();
                 next.passthrough = Vec::new();
                 run_auth_switch(&next, env)
             }
-            2 => {
+            1 => {
                 let mut next = parsed.clone();
                 next.command = "models".into();
                 next.flags.insert("pick".into(), FlagValue::Bool(true));
                 next.passthrough = Vec::new();
                 run_models(&next, env)
             }
-            3 => run_usage(parsed, env),
-            4 => run_login(parsed, env),
-            5 => run_logout(parsed, env),
+            2 => run_usage(parsed, env),
+            3 => run_login(parsed, env),
+            4 => run_logout(parsed, env),
             _ => return Ok(0),
         };
         if let Err(err) = result {

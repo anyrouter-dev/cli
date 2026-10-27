@@ -10,7 +10,7 @@ use crate::parse::{get_string_flag, ParsedArgs};
 use crate::term;
 
 use crate::cmd::dispatch::{canonical_command, config_path};
-use crate::cmd::keys::resolve_latest_key;
+use crate::cmd::key_audit::{offer_revoke_previous, previous_device_key};
 
 pub(crate) fn persist_login(
     parsed: &ParsedArgs,
@@ -25,13 +25,17 @@ pub(crate) fn persist_login(
         .and_then(|c| c.profiles.get(&c.active_profile));
     let base = resolve_base_url(&parsed.flags, stored);
     validate_key(&base, key)?;
-    let key = resolve_latest_key(&base, key);
+    let key = key.to_string();
     let name = get_string_flag(&parsed.flags, "profile").unwrap_or_else(|| {
         existing
             .as_ref()
             .map(|c| c.active_profile.clone())
             .unwrap_or_else(|| DEFAULT_PROFILE.into())
     });
+    let previous_key = existing
+        .as_ref()
+        .and_then(|c| c.profiles.get(&name))
+        .and_then(|p| p.api_key.clone());
     let timeout = get_string_flag(&parsed.flags, "timeout").and_then(|s| s.parse().ok());
     let mut profile = create_default_profile(DefaultProfileInput {
         api_key: Some(key.clone()),
@@ -73,6 +77,9 @@ pub(crate) fn persist_login(
         term::dim(&format!("key {}", mask_api_key(Some(&key))))
     );
     println!("{}  {}", term::dim("Saved"), path.display());
+    if matches!(source, "browser" | "device code") {
+        offer_revoke_after_relogin(parsed, env, &base, previous_key.as_deref(), &key);
+    }
     if login_next_hint(&parsed.command) {
         println!(
             "{}  {} claude",
@@ -81,6 +88,45 @@ pub(crate) fn persist_login(
         );
     }
     Ok(0)
+}
+
+/// After a device login replaced this profile's device key, offer to revoke
+/// the old one. Asks first and never revokes without a yes; scripted runs get
+/// the command instead. A failed lookup only warns: the login already worked.
+fn offer_revoke_after_relogin(
+    parsed: &ParsedArgs,
+    env: &BTreeMap<String, String>,
+    base: &str,
+    previous_key: Option<&str>,
+    new_key: &str,
+) {
+    if previous_key.is_none_or(|k| k.trim() == new_key) {
+        return;
+    }
+    let rows = match crate::http::fetch_keys(base, new_key) {
+        Ok(rows) => rows,
+        Err(err) => {
+            eprintln!(
+                "{}",
+                term::warn(&format!("Could not check for the previous key: {err}"))
+            );
+            return;
+        }
+    };
+    let Some(prev) = previous_device_key(&rows, previous_key, new_key) else {
+        return;
+    };
+    let interactive = term::is_interactive() && !term::machine_output(parsed, env);
+    let result = offer_revoke_previous(
+        &prev,
+        interactive,
+        term::confirm,
+        |hash| crate::http::delete_key(base, new_key, hash),
+        &mut std::io::stderr(),
+    );
+    if let Err(err) = result {
+        eprintln!("{}", term::warn(&err));
+    }
 }
 
 pub(crate) fn apply_first_run_defaults(

@@ -208,15 +208,26 @@ pub fn start_device_flow(_base_url: &str, _tool: Option<&str>) -> Result<DeviceS
 #[cfg(feature = "native")]
 pub fn start_device_flow(base_url: &str, tool: Option<&str>) -> Result<DeviceStart, String> {
     let url = join_api(base_url, "/v1/auth/cli/device/start");
-    let body = match tool {
-        Some(t) if !t.is_empty() => serde_json::json!({ "tool": t }).to_string(),
-        _ => "{}".into(),
-    };
+    let env: BTreeMap<String, String> = std::env::vars().collect();
+    let label = crate::cmd::key_audit::device_key_label(
+        &crate::cmd::key_audit::machine_host(&env),
+        crate::civil::now_secs(),
+    );
+    let body = device_start_body(tool, &label);
     let (status, resp) = http_post(&url, None, Some(&body))?;
     if !(200..300).contains(&status) {
         return Err(format!("Failed to start device login (HTTP {status})."));
     }
     parse_device_start(&resp)
+}
+
+/// The device-start request: the launching tool and the name for the new key.
+pub fn device_start_body(tool: Option<&str>, key_label: &str) -> String {
+    let mut body = serde_json::json!({ "key_label": key_label });
+    if let Some(t) = tool.filter(|t| !t.is_empty()) {
+        body["tool"] = serde_json::Value::String(t.to_string());
+    }
+    body.to_string()
 }
 
 /// What the poll loop should do next, derived from one server response or
@@ -438,6 +449,18 @@ pub fn acquire_api_key(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn device_start_names_the_key_after_the_device() {
+        let body: serde_json::Value =
+            serde_json::from_str(&device_start_body(Some("cli"), "studio anyr 2026-10-27"))
+                .unwrap();
+        assert_eq!(body["key_label"], "studio anyr 2026-10-27");
+        assert_eq!(body["tool"], "cli");
+        let bare: serde_json::Value =
+            serde_json::from_str(&device_start_body(None, "studio anyr 2026-10-27")).unwrap();
+        assert!(bare.get("tool").is_none());
+    }
 
     #[test]
     fn parse_device_start_reads_fields() {

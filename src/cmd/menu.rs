@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use crate::http::{fetch_keys, fetch_models, is_active_key_row, reveal_key};
+use crate::http::fetch_models;
 use crate::install::{available_agents, ensure_tool_installed, missing_agents, Install};
 use crate::key::{
     load_config_if_present, mask_api_key, no_key_error, resolve_api_key, resolve_base_url,
@@ -17,18 +17,18 @@ use crate::cmd::config_tui::{
 #[cfg(feature = "native")]
 use crate::cmd::dispatch::kick_credits_refresh;
 use crate::cmd::dispatch::{
-    config_path, hint, launcher_last_tool, launcher_uses_palette, persist_tool_command,
+    config_path, launcher_last_tool, launcher_uses_palette, persist_tool_command,
     pick_palette_action, tool_command_for, tui_dump_palette, tui_wants_dump, CreditsCache,
 };
 
 #[cfg(not(feature = "native"))]
 use crate::cmd::dispatch::InlineEntry;
-use crate::cmd::keys::{key_pick_label, keys_credential, run_keys, stored_api_key};
+use crate::cmd::keys::stored_api_key;
 use crate::cmd::launch::run_launch;
 use crate::cmd::login::run_login;
 use crate::cmd::models::{
     palette_bind_detail, pick_list, pick_model, routing_toggle_detail, run_models,
-    save_agent_account, save_agent_key, save_agent_model, toggle_agent_routing_field, RoutingField,
+    save_agent_account, save_agent_model, toggle_agent_routing_field, RoutingField,
 };
 use crate::cmd::usage::run_usage;
 
@@ -255,12 +255,6 @@ pub(crate) fn push_inline_configure(
         palette_bind_detail(agent),
         format!("configure · {agent}"),
         format!("Switch account {agent}"),
-    ));
-    entries.push(InlineEntry::new(
-        "key…",
-        palette_bind_detail(agent),
-        format!("configure · {agent}"),
-        format!("Switch key {agent}"),
     ));
     entries.push(InlineEntry::new(
         "exacto",
@@ -512,12 +506,6 @@ pub(crate) fn push_agent_configure_entries(
         format!("Switch account {agent}"),
     ));
     entries.push(PaletteEntry::new(
-        "key…",
-        palette_bind_detail(agent),
-        group.clone(),
-        format!("Switch key {agent}"),
-    ));
-    entries.push(PaletteEntry::new(
         "exacto",
         routing_toggle_detail(routing.wants_exacto(), agent),
         group.clone(),
@@ -642,7 +630,7 @@ pub(crate) fn launcher_dispatch(
         }
         return Ok(LauncherNext::Continue);
     }
-    if action == "Switch account" || action == "Switch account / key" {
+    if action == "Switch account" {
         let agent = launcher_last_tool(path, parsed, env);
         let mut next = parsed.clone();
         next.flags.insert("agent".into(), FlagValue::Value(agent));
@@ -655,26 +643,6 @@ pub(crate) fn launcher_dispatch(
     }
     if let Some(agent) = action.strip_prefix("Switch account ") {
         return switch_agent_account(parsed, env, path, agent.trim());
-    }
-    if action == "Switch key" {
-        if !launcher_signed_in(path, parsed, env) {
-            eprintln!("{}", term::err("Sign in first (Login / sign in)."));
-            return Ok(LauncherNext::Continue);
-        }
-        let agent = launcher_last_tool(path, parsed, env);
-        let mut next = parsed.clone();
-        next.command = "keys".into();
-        next.passthrough = vec!["use".into()];
-        next.flags.insert("agent".into(), FlagValue::Value(agent));
-        match run_keys(&next, env) {
-            Ok(_) => {}
-            Err(err) if err == "Cancelled." => {}
-            Err(err) => eprintln!("{}", term::err(&err)),
-        }
-        return Ok(LauncherNext::Continue);
-    }
-    if let Some(agent) = action.strip_prefix("Switch key ") {
-        return switch_agent_key(parsed, env, path, agent.trim());
     }
     if let Some(agent) = action.strip_prefix("Toggle exacto ") {
         toggle_agent_routing_field(path, agent.trim(), RoutingField::Exacto)?;
@@ -799,70 +767,6 @@ pub(crate) fn bind_agent_account(path: &Path, agent: &str) -> Result<i32, String
     )?;
     let chosen = names[idx].clone();
     save_agent_account(path, agent, &chosen)
-}
-
-pub(crate) fn switch_agent_key(
-    parsed: &ParsedArgs,
-    env: &BTreeMap<String, String>,
-    path: &Path,
-    agent: &str,
-) -> Result<LauncherNext, String> {
-    if agent.is_empty() {
-        return Ok(LauncherNext::Continue);
-    }
-    if !launcher_signed_in(path, parsed, env) {
-        eprintln!("{}", term::err("Sign in first (Login / sign in)."));
-        return Ok(LauncherNext::Continue);
-    }
-    match bind_agent_key(parsed, env, path, agent) {
-        Ok(_) => {}
-        Err(err) if err == "Cancelled." => {}
-        Err(err) => eprintln!("{}", term::err(&err)),
-    }
-    Ok(LauncherNext::Continue)
-}
-
-pub(crate) fn bind_agent_key(
-    parsed: &ParsedArgs,
-    env: &BTreeMap<String, String>,
-    path: &Path,
-    agent: &str,
-) -> Result<i32, String> {
-    let (_keys_path, cfg, base, api_key) = keys_credential(parsed, env)?;
-    let rows = crate::http::keys_newest_first(
-        fetch_keys(&base, &api_key)?
-            .into_iter()
-            .filter(|r| r.active)
-            .collect(),
-    );
-    if rows.is_empty() {
-        return Err(hint("No active keys. Create one: {bin} keys create"));
-    }
-    let current_key = cfg
-        .agent_binding(agent)
-        .and_then(|b| b.api_key.as_deref())
-        .map(str::trim)
-        .filter(|s| !s.is_empty());
-    let current = rows
-        .iter()
-        .position(|r| is_active_key_row(&r.masked, current_key))
-        .or(Some(0));
-    let labels: Vec<String> = rows
-        .iter()
-        .enumerate()
-        .map(|(i, r)| key_pick_label(r, current == Some(i)))
-        .collect();
-    let idx = pick_list(
-        &format!("API key for {agent}"),
-        &[
-            "applies only to this agent · newest first".into(),
-            format!("current  {}", mask_api_key(current_key)),
-        ],
-        &labels,
-        current,
-    )?;
-    let revealed = reveal_key(&base, &api_key, &rows[idx].hash)?;
-    save_agent_key(path, agent, &revealed)
 }
 
 pub(crate) fn launch_agent_picker(

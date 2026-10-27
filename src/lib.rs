@@ -8,6 +8,7 @@ pub mod buildinfo;
 pub mod channel;
 #[cfg(feature = "native")]
 pub mod chat;
+pub mod civil;
 pub mod cmd;
 pub mod commands;
 pub mod completion;

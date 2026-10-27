@@ -5,9 +5,7 @@ use std::path::Path;
 use crate::config::{write_config, Profile};
 use crate::http::{fetch_credits, fetch_models, format_models_list, CatalogModel};
 use crate::install::KNOWN_AGENTS;
-use crate::key::{
-    load_config_if_present, mask_api_key, no_key_error, resolve_api_key, resolve_base_url,
-};
+use crate::key::{load_config_if_present, no_key_error, resolve_api_key, resolve_base_url};
 use crate::parse::{get_string_flag, ParsedArgs};
 use crate::spawn::{
     canonical_tool, catalog_model_id, display_model_id, is_auto_model, session_model_label,
@@ -301,19 +299,6 @@ pub(crate) fn save_agent_account(path: &Path, agent: &str, profile: &str) -> Res
         "{}  {agent} account  {}",
         term::ok("Switched"),
         term::accent(profile)
-    );
-    Ok(0)
-}
-
-pub(crate) fn save_agent_key(path: &Path, agent: &str, key: &str) -> Result<i32, String> {
-    let agent = known_agent(agent)?;
-    let mut cfg = load_config_if_present(path).ok_or_else(no_key_error)?;
-    cfg.agent_binding_mut(&agent).api_key = Some(key.to_string());
-    write_config(&cfg, path)?;
-    println!(
-        "{}  {agent} key  {}",
-        term::ok("Switched"),
-        mask_api_key(Some(key))
     );
     Ok(0)
 }

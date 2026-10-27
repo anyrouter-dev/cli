@@ -97,7 +97,7 @@ anyr login                  # browser / device code / paste; key saved on this m
 anyr login --device         # headless / SSH
 anyr usage                  # credit balance
 anyr models use <id>        # persist default model
-anyr keys list              # switch with: anyr keys use
+anyr keys audit             # keys that look unused, with the reason
 anyr account use work       # switch saved profiles
 anyr onboard impl           # paste-ready prompt for a coding agent
 anyr plan                   # migration plan prompt (no code changes)

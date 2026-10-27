@@ -67,6 +67,11 @@ pub fn set_invoked_bin(name: impl Into<String>) {
     INVOKED_BIN.with(|slot| *slot.borrow_mut() = name);
 }
 
+/// `template` with `{bin}` replaced by the name this binary was run as.
+pub fn with_bin(template: &str) -> String {
+    template.replace("{bin}", &invoked_bin())
+}
+
 pub fn invoked_bin() -> String {
     INVOKED_BIN.with(|slot| {
         let current = slot.borrow();
@@ -525,9 +530,8 @@ Usage:
   {bin} keys show <hash> [--json]
   {bin} keys update <hash> [--limit USD] [--reset ...] [--endpoints ...] [--expires 30d]
                            [--disable|--enable]
-  {bin} keys use [hash]
-  {bin} keys use [hash] --agent <claude|codex|grok|opencode|pi|pool>
-  {bin} keys revoke <hash> [--yes]
+  {bin} keys audit [--json]
+  {bin} keys revoke <last4|id|hash> [--yes]
 
 Scoped keys for CI: `--limit` caps spend in USD, `--reset` sets its window,
 `--endpoints` restricts the key to named endpoints (chat covers chat,
@@ -539,8 +543,13 @@ decisions, mcp, me, relay, models, keys, credits, logs, dashboard, trace.
 
 The signed-in API key must have Key Management permission.
 CLI login (`{bin} auth login`) creates a key with full access.
-`--agent` stores the revealed key on that coding agent so launch does not
-fall back to the default profile key.
+`keys audit` lists keys that look unused (never used after 7 days, idle 30
+days, or replaced by a newer login on the same device) with the reason. It
+never removes anything; revoke each one yourself.
+
+A different key on this machine comes from `{bin} login` (a new key named
+`<host> anyr <date>`) or `{bin} login --key -`. After a browser login replaces
+this machine's key, the CLI asks before revoking the old one.
 ";
 
 const LOGOUT: &str = "\
