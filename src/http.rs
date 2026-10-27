@@ -36,6 +36,41 @@ fn with_auth(mut req: ureq::Request, api_key: Option<&str>) -> ureq::Request {
     req
 }
 
+/// `Could not reach <service>: <url>: <reason>` for a request that got no
+/// HTTP answer. ureq nests an I/O error inside its own kind, so its text
+/// repeats itself ("Network Error: Network Error: …"); name the cause once.
+#[cfg(feature = "native")]
+fn unreachable(service: &str, err: &ureq::Error) -> String {
+    let ureq::Error::Transport(t) = err else {
+        return format!("Could not reach {service}: {err}");
+    };
+    let full = err.to_string();
+    let reason = if full.to_ascii_lowercase().contains("timed out") {
+        "timed out".to_string()
+    } else {
+        match t.kind() {
+            ureq::ErrorKind::Dns => "DNS lookup failed".to_string(),
+            ureq::ErrorKind::ConnectionFailed => "could not connect".to_string(),
+            _ => {
+                let deepest = std::error::Error::source(err)
+                    .map(|e| e.to_string())
+                    .or_else(|| t.message().map(str::to_string))
+                    .unwrap_or_else(|| t.kind().to_string());
+                let kind = format!("{}: ", t.kind());
+                let mut d = deepest.as_str();
+                while let Some(rest) = d.strip_prefix(&kind) {
+                    d = rest;
+                }
+                d.to_string()
+            }
+        }
+    };
+    match t.url() {
+        Some(url) => format!("Could not reach {service}: {url}: {reason}"),
+        None => format!("Could not reach {service}: {reason}"),
+    }
+}
+
 #[cfg(feature = "native")]
 fn into_status_body(result: Result<ureq::Response, ureq::Error>) -> Result<(u16, String), String> {
     match result {
@@ -48,7 +83,7 @@ fn into_status_body(result: Result<ureq::Response, ureq::Error>) -> Result<(u16,
             let body = resp.into_string().unwrap_or_default();
             Ok((code, body))
         }
-        Err(err) => Err(format!("Could not reach AnyRouter: {err}")),
+        Err(err) => Err(unreachable("AnyRouter", &err)),
     }
 }
 
@@ -82,7 +117,7 @@ fn into_status_body_labeled(
             let body = resp.into_string().unwrap_or_default();
             Ok((code, body))
         }
-        Err(err) => Err(format!("Could not reach {service}: {err}")),
+        Err(err) => Err(unreachable(service, &err)),
     }
 }
 
@@ -144,7 +179,7 @@ pub fn http_post_stream_headers(
     let resp = match req.send_string(json_body) {
         Ok(resp) => resp,
         Err(ureq::Error::Status(_, resp)) => resp,
-        Err(err) => return Err(format!("Could not reach AnyRouter: {err}")),
+        Err(err) => return Err(unreachable("AnyRouter", &err)),
     };
     let status = resp.status();
     let headers = resp
@@ -209,7 +244,7 @@ pub fn http_post_json_headers(
     let resp = match req.send_string(json_body) {
         Ok(r) => r,
         Err(ureq::Error::Status(_, r)) => r,
-        Err(err) => return Err(format!("Could not reach AnyRouter: {err}")),
+        Err(err) => return Err(unreachable("AnyRouter", &err)),
     };
     let status = resp.status();
     let headers = resp
@@ -658,6 +693,8 @@ pub struct MeInfo {
     pub name: Option<String>,
     pub username: Option<String>,
     pub balance: Option<f64>,
+    /// Plan name (`free`, `payg`, `enterprise`), once the server sends it.
+    pub plan: Option<String>,
 }
 
 impl MeInfo {
@@ -694,6 +731,12 @@ pub fn parse_me(body: &str) -> Result<MeInfo, String> {
             .and_then(|v| v.as_str())
             .map(str::to_string),
         balance: value.get("balance").and_then(|v| v.as_f64()),
+        plan: value
+            .get("plan")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
     })
 }
 
@@ -996,6 +1039,37 @@ mod tests {
 
     use super::*;
     use crate::config::DEFAULT_BASE_URL;
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn a_server_that_never_answers_reads_timed_out_once() {
+        // WHY: ureq nests its I/O error in its own kind, and the status row
+        // printed "Network Error: Network Error: Error encountered in the
+        // status line: timed out reading response".
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/api/v1/key", listener.local_addr().unwrap());
+        let hold = std::thread::spawn(move || listener.accept().map(|(s, _)| s));
+        let err = http_get_timeout(&url, None, std::time::Duration::from_millis(300)).unwrap_err();
+        assert_eq!(err, format!("Could not reach AnyRouter: {url}: timed out"));
+        drop(hold.join());
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn a_refused_connection_says_so_without_repeating_itself() {
+        let err = http_get("http://127.0.0.1:9/api/v1/key", None).unwrap_err();
+        assert!(err.starts_with("Could not reach AnyRouter: "), "{err}");
+        assert!(!err.contains("Network Error: Network Error"), "{err}");
+        assert!(err.ends_with("could not connect"), "{err}");
+    }
+
+    #[test]
+    fn me_reads_the_plan_when_the_server_sends_it() {
+        let me = parse_me(r#"{"email":"a@b.c","balance":1,"plan":"payg"}"#).unwrap();
+        assert_eq!(me.plan.as_deref(), Some("payg"));
+        let me = parse_me(r#"{"email":"a@b.c","plan":""}"#).unwrap();
+        assert_eq!(me.plan, None);
+    }
 
     #[test]
     fn join_api_appends_v1_like_js_create_client() {

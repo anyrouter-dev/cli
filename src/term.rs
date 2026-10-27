@@ -21,10 +21,119 @@ pub const MUTED: &str = "\x1b[38;2;108;108;108m";
 pub const LABEL: &str = "\x1b[38;2;200;200;200m";
 
 pub fn color_enabled() -> bool {
-    if std::env::var_os("NO_COLOR").is_some() {
+    if std::env::var_os("NO_COLOR").is_some() || dumb_terminal() {
         return false;
     }
     io::stdout().is_terminal()
+}
+
+/// `TERM=dumb`: the terminal cannot take colors or cursor moves.
+pub fn dumb_terminal() -> bool {
+    std::env::var("TERM").is_ok_and(|t| t.trim() == "dumb")
+}
+
+/// Columns of the terminal on stdout, else `COLUMNS`. `None` for a pipe,
+/// where nothing wraps.
+pub fn width() -> Option<usize> {
+    #[cfg(feature = "native")]
+    if io::stdout().is_terminal() {
+        if let Ok((w, _)) = crossterm::terminal::size() {
+            if w > 0 {
+                return Some(w as usize);
+            }
+        }
+    }
+    std::env::var("COLUMNS")
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .filter(|n: &usize| *n > 0)
+}
+
+/// Display columns of plain text (wide characters count two).
+pub fn text_width(s: &str) -> usize {
+    unicode_width::UnicodeWidthStr::width(s)
+}
+
+/// Cut plain text to `max` display columns, ending in `…` when cut.
+pub fn truncate(s: &str, max: usize) -> String {
+    use unicode_width::UnicodeWidthChar;
+    if text_width(s) <= max {
+        return s.to_string();
+    }
+    if max == 0 {
+        return String::new();
+    }
+    let mut out = String::new();
+    let mut used = 0;
+    for c in s.chars() {
+        let w = c.width().unwrap_or(0);
+        if used + w > max - 1 {
+            break;
+        }
+        out.push(c);
+        used += w;
+    }
+    out.push('…');
+    out
+}
+
+/// Cut a line that may hold color codes to `max` visible columns. Escape
+/// sequences pass through untouched and do not count; a cut line ends in
+/// `…` plus a reset so the color does not bleed into the next line.
+pub fn truncate_ansi(s: &str, max: usize) -> String {
+    use unicode_width::UnicodeWidthChar;
+    if text_width(&strip_ansi(s)) <= max {
+        return s.to_string();
+    }
+    let mut out = String::new();
+    let mut used = 0;
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            out.push(c);
+            if chars.peek() == Some(&'[') {
+                for n in chars.by_ref() {
+                    out.push(n);
+                    if n.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+        let w = c.width().unwrap_or(0);
+        if used + w > max.saturating_sub(1) {
+            break;
+        }
+        out.push(c);
+        used += w;
+    }
+    if max > 0 {
+        out.push('…');
+    }
+    if out.contains('\x1b') {
+        out.push_str(RESET);
+    }
+    out
+}
+
+/// Drop `ESC [ … letter` sequences.
+pub fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' && chars.peek() == Some(&'[') {
+            chars.next();
+            for n in chars.by_ref() {
+                if n.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+            continue;
+        }
+        out.push(c);
+    }
+    out
 }
 
 pub fn paint(ansi: &str, text: &str) -> String {
@@ -344,34 +453,70 @@ pub fn tool_color(tool: &str) -> &'static str {
     }
 }
 
-/// Plain `label  value` lines from column 0: labels dimmed and padded to one
-/// column, groups split by one thin line. No frame. NO_COLOR drops the dim.
-pub fn label_rows(groups: &[&[(&str, String)]]) -> String {
+/// One line of a label/value block: a row, or the thin line between groups.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LabelLine {
+    /// `label` is padded to the block's label column; `value` is already cut
+    /// to the width.
+    Row {
+        label: String,
+        value: String,
+    },
+    Divider(usize),
+}
+
+/// Lay out `label  value` rows from column 0: labels padded to one column,
+/// groups split by one thin line, every value cut with `…` so no row is wider
+/// than `width`. Empty groups add nothing.
+pub fn label_lines(groups: &[&[(&str, String)]], width: Option<usize>) -> Vec<LabelLine> {
     let rows = || groups.iter().flat_map(|g| g.iter());
-    let label_w = rows().map(|(l, _)| l.chars().count()).max().unwrap_or(0);
+    let label_w = rows().map(|(l, _)| text_width(l)).max().unwrap_or(0);
+    let value_max = width.map(|w| w.saturating_sub(label_w + 2));
     let line_w = rows()
-        .map(|(_, v)| label_w + 2 + v.chars().count())
+        .map(|(_, v)| label_w + 2 + text_width(v))
         .max()
         .unwrap_or(0)
-        .min(60);
-    let mut out = String::new();
+        .min(60)
+        .min(width.unwrap_or(usize::MAX));
+    let mut out = Vec::new();
     for (i, group) in groups.iter().filter(|g| !g.is_empty()).enumerate() {
         if i > 0 {
-            out.push_str(&divider(line_w));
-            out.push('\n');
+            out.push(LabelLine::Divider(line_w));
         }
         for (label, value) in group.iter() {
-            out.push_str(&dim(&format!("{label:<label_w$}")));
-            out.push_str("  ");
-            out.push_str(value);
-            out.push('\n');
+            let pad = label_w - text_width(label);
+            out.push(LabelLine::Row {
+                label: format!("{label}{}", " ".repeat(pad)),
+                value: match value_max {
+                    Some(max) => truncate(value, max),
+                    None => value.clone(),
+                },
+            });
         }
     }
     out
 }
 
+/// `label_lines` for the current terminal, painted: labels dimmed, a thin
+/// line between groups. No frame. NO_COLOR drops the dim.
+pub fn label_rows(groups: &[&[(&str, String)]]) -> String {
+    let mut out = String::new();
+    for line in label_lines(groups, width()) {
+        match line {
+            LabelLine::Row { label, value } => {
+                out.push_str(&dim(&label));
+                out.push_str("  ");
+                out.push_str(&value);
+            }
+            LabelLine::Divider(w) => out.push_str(&divider(w)),
+        }
+        out.push('\n');
+    }
+    out
+}
+
 pub fn divider(width: usize) -> String {
-    dim(&"─".repeat(width.max(8)))
+    dim(&"─".repeat(width))
 }
 
 pub fn is_interactive() -> bool {
@@ -507,8 +652,9 @@ pub fn render_inline_menu(
     }
     for (i, item) in items.iter().enumerate() {
         let n = i + 1;
+        // The `›` marks the row without color, so NO_COLOR still shows it.
         if i == cursor {
-            lines.push(format!("  {} {}", accent(&format!("{n}.")), item));
+            lines.push(format!("{} {}", accent(&format!("› {n}.")), item));
         } else {
             lines.push(format!("  {n}. {item}"));
         }
@@ -532,10 +678,42 @@ pub fn pick_inline(
         return Err("Nothing to pick.".into());
     }
     #[cfg(feature = "native")]
-    if is_interactive() {
+    if is_interactive() && !dumb_terminal() {
         return pick_inline_raw(header, question, items, footer, current);
     }
     pick_numbered("anyr", items, current)
+}
+
+/// Write a frame while raw mode is on. Raw mode turns off the terminal's
+/// newline translation, so a bare `\n` moves down without going back to
+/// column 0 and every line starts where the last one ended. Each line ends in
+/// `\r\n` and is cut to the terminal width: a wrapped line would also throw
+/// off the line count the next redraw moves up by. Returns that count.
+#[cfg(feature = "native")]
+fn write_raw_frame(out: &mut impl Write, frame: &str) -> Result<u16, String> {
+    let width = crossterm::terminal::size()
+        .ok()
+        .map(|(w, _)| w as usize)
+        .filter(|w| *w > 0);
+    let bytes = raw_frame_bytes(frame, width);
+    out.write_all(bytes.as_bytes()).map_err(|e| e.to_string())?;
+    out.flush().map_err(|e| e.to_string())?;
+    Ok(frame.lines().count().max(1) as u16)
+}
+
+/// The bytes `write_raw_frame` sends: each line cut to `width`, then `\r\n`.
+pub fn raw_frame_bytes(frame: &str, width: Option<usize>) -> String {
+    let mut out = String::with_capacity(frame.len() + 16);
+    for line in frame.lines() {
+        match width {
+            // One column spare: writing the last column parks the cursor in
+            // a pending-wrap state some terminals resolve as a new line.
+            Some(w) => out.push_str(&truncate_ansi(line, w.saturating_sub(1))),
+            None => out.push_str(line),
+        }
+        out.push_str("\r\n");
+    }
+    out
 }
 
 #[cfg(feature = "native")]
@@ -546,7 +724,7 @@ fn pick_inline_raw(
     footer: &str,
     current: Option<usize>,
 ) -> Result<usize, String> {
-    use std::io::{stderr, Write as _};
+    use std::io::stderr;
 
     use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
     use crossterm::terminal::{self, Clear, ClearType};
@@ -569,7 +747,6 @@ fn pick_inline_raw(
     let mut last_lines: u16 = 0;
     loop {
         let frame = render_inline_menu(header, question, items, cursor_i, footer);
-        let n = frame.lines().count().max(1) as u16;
         if last_lines > 0 {
             queue!(
                 out,
@@ -579,9 +756,7 @@ fn pick_inline_raw(
             )
             .map_err(|e| e.to_string())?;
         }
-        writeln!(out, "{frame}").map_err(|e| e.to_string())?;
-        out.flush().map_err(|e| e.to_string())?;
-        last_lines = n;
+        last_lines = write_raw_frame(&mut out, &frame)?;
 
         match event::read().map_err(|e| e.to_string())? {
             Event::Key(ev) if ev.kind == KeyEventKind::Press => match ev.code {
@@ -646,7 +821,7 @@ pub fn pick_checkboxes(
         .map(|i| checked.get(i).copied().unwrap_or(false))
         .collect();
     #[cfg(feature = "native")]
-    if is_interactive() && !items.is_empty() {
+    if is_interactive() && !dumb_terminal() && !items.is_empty() {
         return pick_checkboxes_raw(question, items, state);
     }
     Ok(state)
@@ -658,7 +833,7 @@ fn pick_checkboxes_raw(
     items: &[String],
     mut state: Vec<bool>,
 ) -> Result<Vec<bool>, String> {
-    use std::io::{stderr, Write as _};
+    use std::io::stderr;
 
     use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
     use crossterm::terminal::{self, Clear, ClearType};
@@ -690,10 +865,7 @@ fn pick_checkboxes_raw(
             )
             .map_err(|e| e.to_string())?;
         }
-        // Raw mode: lines need an explicit carriage return.
-        write!(out, "{}\r\n", frame.replace('\n', "\r\n")).map_err(|e| e.to_string())?;
-        out.flush().map_err(|e| e.to_string())?;
-        last_lines = frame.lines().count().max(1) as u16;
+        last_lines = write_raw_frame(&mut out, &frame)?;
 
         if let Event::Key(ev) = event::read().map_err(|e| e.to_string())? {
             if ev.kind != KeyEventKind::Press {
@@ -945,6 +1117,43 @@ pub fn rank_ids(query: &str, ids: &[String]) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn raw_frames_return_to_column_zero_on_every_line() {
+        // WHY: raw mode turns off the terminal's newline translation; a bare
+        // `\n` left each menu row starting where the last one ended.
+        let out = super::raw_frame_bytes("  1. Switch account\n  2. Log out", Some(80));
+        assert_eq!(out, "  1. Switch account\r\n  2. Log out\r\n");
+        assert!(!out.replace("\r\n", "").contains('\n'), "{out:?}");
+    }
+
+    #[test]
+    fn raw_frames_cut_lines_to_the_width_and_keep_color_codes_whole() {
+        let line = format!("{}{}", "\x1b[2m", "x".repeat(100));
+        let out = super::raw_frame_bytes(&line, Some(40));
+        let row = out.trim_end_matches("\r\n");
+        assert_eq!(super::text_width(&super::strip_ansi(row)), 39, "{row:?}");
+        assert!(
+            row.starts_with("\x1b[2m") && row.ends_with(super::RESET),
+            "{row:?}"
+        );
+    }
+
+    #[test]
+    fn label_lines_cut_values_to_the_width_with_an_ellipsis() {
+        let long = "y".repeat(300);
+        let rows = [("scopes", long), ("key", "sk-ar-v1-ab…wxyz".to_string())];
+        for width in [40, 80, 200] {
+            for line in super::label_lines(&[&rows], Some(width)) {
+                if let super::LabelLine::Row { label, value } = line {
+                    let w = super::text_width(&label) + 2 + super::text_width(&value);
+                    assert!(w <= width, "{width}: {label}{value}");
+                }
+            }
+        }
+        let lines = super::label_lines(&[&rows], Some(40));
+        assert!(matches!(&lines[0], super::LabelLine::Row { value, .. } if value.ends_with('…')));
+    }
+
     #[test]
     fn label_rows_align_one_column_and_split_groups_with_one_line() {
         let a = [("account", "duyet".to_string()), ("plan", "free".into())];

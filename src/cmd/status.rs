@@ -20,8 +20,11 @@ use crate::term;
 
 const DASHBOARD_URL: &str = "https://anyrouter.dev/dashboard";
 
-/// Account lookups are optional garnish: an offline `status` must not wait on them.
-const IDENTITY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+/// Account lookups must not hang an offline `status`: it answers within 5 s
+/// even when the gateway never replies. Measured on prod, `/v1/key` answers in
+/// about 0.25 s warm and 1 s cold, so 4 s leaves room for a slow first
+/// DNS + TLS handshake that overran the old 3 s.
+const IDENTITY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(4);
 
 /// What the status view shows. Model tier mappings stay in `config`; they are
 /// not part of this summary.
@@ -32,6 +35,8 @@ pub(crate) struct StatusView {
     pub email: Option<String>,
     pub username: Option<String>,
     pub balance: Option<f64>,
+    /// Plan name from `/me`, when the server sends one.
+    pub plan_name: Option<String>,
     /// Why name and email are missing, when they are.
     pub identity_note: Option<String>,
     /// Set only when the account lookup itself failed.
@@ -59,12 +64,15 @@ impl StatusView {
         }
     }
 
-    /// `free` or `paid`. The API reports only whether the plan is free.
-    pub(crate) fn plan(&self) -> Option<&'static str> {
-        self.key
-            .as_ref()
-            .and_then(|k| k.is_free_tier)
-            .map(|free| if free { "free" } else { "paid" })
+    /// The plan name from `/me` when the server sends it, else `free` or
+    /// `paid` from the key's `is_free_tier`. `None` when neither answered.
+    pub(crate) fn plan(&self) -> Option<String> {
+        self.plan_name.clone().or_else(|| {
+            self.key
+                .as_ref()
+                .and_then(|k| k.is_free_tier)
+                .map(|free| if free { "free" } else { "paid" }.to_string())
+        })
     }
 
     pub(crate) fn json(&self) -> serde_json::Value {
@@ -95,7 +103,8 @@ impl StatusView {
         v
     }
 
-    /// Plain label/value lines from column 0. First byte is visible text.
+    /// Plain label/value lines from column 0, cut to the terminal width.
+    /// First byte is visible text.
     pub(crate) fn render(&self) -> String {
         let dash = || "—".to_string();
         let identity = if self.name.is_some() || self.email.is_some() {
@@ -103,11 +112,14 @@ impl StatusView {
         } else {
             format!("{} ({})", self.account, self.identity_line())
         };
-        let account = [
+        let mut account = vec![
             ("account", identity),
             ("credits", self.balance.map(format_usd).unwrap_or_else(dash)),
-            ("plan", self.plan().map(str::to_string).unwrap_or_else(dash)),
         ];
+        // An unknown plan is left out: a bare dash read as "no plan".
+        if let Some(plan) = self.plan() {
+            account.push(("plan", plan));
+        }
         let mut key_rows = vec![(
             "key",
             match self.key.as_ref().and_then(|k| k.name.as_deref()) {
@@ -134,7 +146,7 @@ impl StatusView {
                     .unwrap_or_else(|| "never".into()),
             ));
         } else if let Some(err) = &self.key_error {
-            key_rows.push(("scopes", format!("unavailable: {err}")));
+            key_rows.push(("scopes", format!("unavailable ({})", short_reason(err))));
         }
         key_rows.push(("profile", self.account.clone()));
         key_rows.push(("model", session_model_label(&self.default_model)));
@@ -144,6 +156,37 @@ impl StatusView {
         key_rows.push(("base url", self.base_url.clone()));
         key_rows.push(("config", self.config_path.clone()));
         term::label_rows(&[&account, &key_rows])
+    }
+}
+
+/// A failed lookup in a few words for a status row: `timed out`, `offline`,
+/// `HTTP 500`. The full error stays in `--json` and `--verbose`.
+pub(crate) fn short_reason(err: &str) -> String {
+    let lower = err.to_ascii_lowercase();
+    if lower.contains("timed out") || lower.contains("timeout") {
+        return "timed out".into();
+    }
+    if let Some(at) = err.find("HTTP ") {
+        let code: String = err[at + 5..]
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect();
+        if !code.is_empty() {
+            return format!("HTTP {code}");
+        }
+    }
+    if lower.contains("restricted key") {
+        return "key lacks this scope".into();
+    }
+    if lower.starts_with("could not reach") {
+        return "offline".into();
+    }
+    // Anything else: its first clause, which is the subject of the error.
+    let first = err.split([':', '.']).next().unwrap_or(err).trim();
+    if first.is_empty() {
+        "error".into()
+    } else {
+        first.to_string()
     }
 }
 
@@ -186,7 +229,10 @@ pub(crate) fn identity_from_me(me: Result<MeInfo, String>) -> Identity {
         Err(err) => (
             None,
             None,
-            Some(format!("name and email unavailable: {err}")),
+            Some(format!(
+                "name and email unavailable ({})",
+                short_reason(&err)
+            )),
         ),
     }
 }
@@ -229,6 +275,7 @@ fn build_view(
     let identity_error = me.as_ref().err().cloned();
     let username = me.as_ref().ok().and_then(|m| m.username.clone());
     let balance = me.as_ref().ok().and_then(|m| m.balance);
+    let plan_name = me.as_ref().ok().and_then(|m| m.plan.clone());
     let (name, email, identity_note) = identity_from_me(me);
     Ok(StatusView {
         account,
@@ -236,6 +283,7 @@ fn build_view(
         email,
         username,
         balance,
+        plan_name,
         identity_note,
         identity_error,
         key_error: key_info.as_ref().err().cloned(),
@@ -272,6 +320,16 @@ pub(crate) fn run_whoami(
         return Ok(0);
     }
     print!("{}", view.render());
+    if parsed.flag_true("verbose") {
+        for (what, err) in [
+            ("account lookup", &view.identity_error),
+            ("key lookup", &view.key_error),
+        ] {
+            if let Some(err) = err {
+                eprintln!("{}", term::dim(&format!("{what}: {err}")));
+            }
+        }
+    }
     if term::machine_output(parsed, env) || !term::is_interactive() {
         return Ok(0);
     }
@@ -476,10 +534,63 @@ mod tests {
         let mut v = view(Some("a"), None);
         v.key_error = Some("HTTP 500".into());
         let out = v.render();
-        assert!(out.contains("plan      —"), "{out}");
-        assert!(out.contains("unavailable: HTTP 500"), "{out}");
+        // WHY: a bare dash read as "no plan" on a paid account; an unknown
+        // plan is left out instead.
+        assert!(!out.contains("plan"), "{out}");
+        assert!(out.contains("unavailable (HTTP 500)"), "{out}");
         assert_eq!(v.json()["key_error"], "HTTP 500");
         assert!(v.json()["plan"].is_null());
+    }
+
+    #[test]
+    fn a_timed_out_lookup_is_one_short_row() {
+        // The exact error 0.1.34 printed into the scopes row on a paid account.
+        let err = "Could not reach AnyRouter: https://anyrouter.dev/api/v1/key: Network Error: Network Error: Error encountered in the status line: timed out reading response";
+        let mut v = view(Some("duyet"), Some("me@duyet.net"));
+        v.balance = Some(133.83);
+        v.key_error = Some(err.into());
+        let out = v.render();
+        assert!(out.contains("scopes    unavailable (timed out)"), "{out}");
+        assert!(!out.contains("Network Error"), "{out}");
+        // WHY: a bare dash read as "no plan" on a paid account.
+        assert!(!out.contains("plan"), "{out}");
+        assert!(!out.contains('—'), "{out}");
+        // The full error stays available to scripts.
+        assert_eq!(v.json()["key_error"], err);
+    }
+
+    #[test]
+    fn short_reason_names_the_cause_in_a_few_words() {
+        for (err, want) in [
+            (
+                "Could not reach AnyRouter: https://x/api/v1/key: timed out",
+                "timed out",
+            ),
+            (
+                "Could not reach AnyRouter: https://x/api/v1/key: could not connect",
+                "offline",
+            ),
+            ("Could not fetch key info (HTTP 500).", "HTTP 500"),
+            (
+                "Invalid /key response: expected value",
+                "Invalid /key response",
+            ),
+        ] {
+            assert_eq!(short_reason(err), want, "{err}");
+        }
+    }
+
+    #[test]
+    fn plan_prefers_the_server_plan_name_over_the_free_flag() {
+        let mut v = view(Some("a"), None);
+        v.key = Some(KeyInfo {
+            is_free_tier: Some(false),
+            ..Default::default()
+        });
+        assert_eq!(v.plan().as_deref(), Some("paid"));
+        v.plan_name = Some("payg".into());
+        assert_eq!(v.plan().as_deref(), Some("payg"));
+        assert!(v.render().contains("plan      payg"), "{}", v.render());
     }
 
     #[test]

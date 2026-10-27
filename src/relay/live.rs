@@ -437,8 +437,10 @@ fn draw(s: &Snapshot) {
     let p = Paint(crate::term::color_enabled());
     let body =
         view::render_running(s, state::now_secs(), p) + &view::render_live_footer(&events(), p);
-    // Raw mode: every line needs an explicit carriage return.
-    let frame = format!("\x1b[H\x1b[J{}", body.replace('\n', "\r\n"));
+    // Raw mode: the shared writer ends each line in `\r\n` and cuts it to
+    // the width, so nothing wraps.
+    let width = crossterm::terminal::size().ok().map(|(w, _)| w as usize);
+    let frame = format!("\x1b[H\x1b[J{}", crate::term::raw_frame_bytes(&body, width));
     let mut out = std::io::stdout();
     let _ = out.write_all(frame.as_bytes());
     let _ = out.flush();
