@@ -1,5 +1,5 @@
-//! `anyr whoami` / `anyr status` / `anyr auth status`: who is signed in, which
-//! key and default model are active, plus a small action picker on a TTY.
+//! `anyr whoami` / `anyr status` / `anyr auth status`: who is signed in, what
+//! they can spend, which key is active, plus a small action picker on a TTY.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -9,7 +9,7 @@ use crate::cmd::auth::run_auth_switch;
 use crate::cmd::dispatch::{config_path, hint};
 use crate::cmd::models::{models_for_picker, pick_model, save_profile_model_slot};
 use crate::config::{Config, Profile};
-use crate::http::{fetch_me_within, MeInfo};
+use crate::http::{fetch_key_within, fetch_me_within, format_usd, KeyInfo, MeInfo};
 use crate::key::{
     config_for_credential, load_config_if_present, mask_api_key, profile_or_default,
     resolve_api_key, resolve_base_url,
@@ -20,22 +20,28 @@ use crate::term;
 
 const DASHBOARD_URL: &str = "https://anyrouter.dev/dashboard";
 
-/// Identity is optional garnish: an offline `status` must not wait on it.
+/// Account lookups are optional garnish: an offline `status` must not wait on them.
 const IDENTITY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
-/// What the status view shows. Model tier mappings and the default tool stay
-/// in `config`; they are not part of this summary.
-#[derive(Debug, Clone, PartialEq)]
+/// What the status view shows. Model tier mappings stay in `config`; they are
+/// not part of this summary.
+#[derive(Debug, Clone, PartialEq, Default)]
 pub(crate) struct StatusView {
     pub account: String,
     pub name: Option<String>,
     pub email: Option<String>,
+    pub username: Option<String>,
+    pub balance: Option<f64>,
     /// Why name and email are missing, when they are.
     pub identity_note: Option<String>,
     /// Set only when the account lookup itself failed.
     pub identity_error: Option<String>,
+    pub key: Option<KeyInfo>,
+    /// Set only when the key lookup failed.
+    pub key_error: Option<String>,
     pub key_masked: String,
     pub default_model: String,
+    pub default_agent: Option<String>,
     pub config_path: String,
     pub base_url: String,
 }
@@ -43,8 +49,8 @@ pub(crate) struct StatusView {
 impl StatusView {
     pub(crate) fn identity_line(&self) -> String {
         match (self.name.as_deref(), self.email.as_deref()) {
-            (Some(n), Some(e)) => format!("{n} <{e}>"),
-            (Some(n), None) => n.to_string(),
+            (Some(n), Some(e)) if !n.eq_ignore_ascii_case(e) => format!("{n} · {e}"),
+            (Some(n), _) => n.to_string(),
             (None, Some(e)) => e.to_string(),
             (None, None) => self
                 .identity_note
@@ -53,39 +59,113 @@ impl StatusView {
         }
     }
 
+    /// `free` or `paid`. The API reports only whether the plan is free.
+    pub(crate) fn plan(&self) -> Option<&'static str> {
+        self.key
+            .as_ref()
+            .and_then(|k| k.is_free_tier)
+            .map(|free| if free { "free" } else { "paid" })
+    }
+
     pub(crate) fn json(&self) -> serde_json::Value {
         let mut v = serde_json::json!({
+            "signed_in": true,
             "account": self.account,
-            "user": { "name": self.name, "email": self.email },
+            "user": { "name": self.name, "email": self.email, "username": self.username },
+            "credits": self.balance,
+            "plan": self.plan(),
             "key_masked": self.key_masked,
+            "key": self.key.as_ref().map(|k| serde_json::json!({
+                "name": k.name,
+                "last_used_at": k.last_used_at,
+                "allowed_endpoints": k.allowed_endpoints,
+                "allowed_models": k.allowed_models,
+            })),
             "default_model": self.default_model,
+            "default_agent": self.default_agent,
             "config_path": self.config_path,
             "base_url": self.base_url,
         });
         if let Some(err) = &self.identity_error {
             v["identity_error"] = serde_json::json!(err);
         }
+        if let Some(err) = &self.key_error {
+            v["key_error"] = serde_json::json!(err);
+        }
         v
     }
 
-    /// Text starts with a plain visible character, never an escape or `\r`.
+    /// Plain label/value lines from column 0. First byte is visible text.
     pub(crate) fn render(&self) -> String {
-        let who = if self.name.is_some() || self.email.is_some() {
-            format!("Signed in as {}", term::accent(&self.identity_line()))
+        let dash = || "—".to_string();
+        let identity = if self.name.is_some() || self.email.is_some() {
+            self.identity_line()
         } else {
-            format!("Signed in ({})", self.identity_line())
+            format!("{} ({})", self.account, self.identity_line())
         };
-        let row = |label: &str, value: String| format!("{}  {value}\n", term::dim(label));
-        let mut out = format!("{who}\n\n");
-        out.push_str(&row("account      ", term::accent(&self.account)));
-        out.push_str(&row("api key      ", self.key_masked.clone()));
-        out.push_str(&row(
-            "default model",
-            term::model_id(&session_model_label(&self.default_model)),
-        ));
-        out.push_str(&row("config       ", self.config_path.clone()));
-        out
+        let account = [
+            ("account", identity),
+            ("credits", self.balance.map(format_usd).unwrap_or_else(dash)),
+            ("plan", self.plan().map(str::to_string).unwrap_or_else(dash)),
+        ];
+        let mut key_rows = vec![(
+            "key",
+            match self.key.as_ref().and_then(|k| k.name.as_deref()) {
+                Some(name) => format!("{name} · {}", self.key_masked),
+                None => self.key_masked.clone(),
+            },
+        )];
+        if let Some(k) = &self.key {
+            key_rows.push((
+                "scopes",
+                k.allowed_endpoints
+                    .as_ref()
+                    .map(|e| e.join(", "))
+                    .unwrap_or_else(|| "all endpoints".into()),
+            ));
+            if let Some(models) = &k.allowed_models {
+                key_rows.push(("models", models.join(", ")));
+            }
+            key_rows.push((
+                "last use",
+                k.last_used_at
+                    .as_deref()
+                    .map(short_time)
+                    .unwrap_or_else(|| "never".into()),
+            ));
+        } else if let Some(err) = &self.key_error {
+            key_rows.push(("scopes", format!("unavailable: {err}")));
+        }
+        key_rows.push(("profile", self.account.clone()));
+        key_rows.push(("model", session_model_label(&self.default_model)));
+        if let Some(agent) = &self.default_agent {
+            key_rows.push(("agent", agent.clone()));
+        }
+        key_rows.push(("base url", self.base_url.clone()));
+        key_rows.push(("config", self.config_path.clone()));
+        term::label_rows(&[&account, &key_rows])
     }
+}
+
+/// `2026-10-27T15:31:41Z` → `2026-10-27 15:31 UTC`; anything else unchanged.
+fn short_time(ts: &str) -> String {
+    match (ts.get(..10), ts.get(11..16)) {
+        (Some(day), Some(hm)) if ts.ends_with('Z') && ts.as_bytes()[10] == b'T' => {
+            format!("{day} {hm} UTC")
+        }
+        _ => ts.to_string(),
+    }
+}
+
+/// What a signed-out `status` prints: one line, then the login hint.
+pub(crate) fn render_signed_out() -> String {
+    format!(
+        "Not signed in.\n{}\n",
+        term::dim(&format!(
+            "Run `{} auth login` to sign in.",
+            crate::help::invoked_bin()
+        ))
+    )
 }
 
 type Identity = (Option<String>, Option<String>, Option<String>);
@@ -131,23 +211,38 @@ fn build_view(
     env: &BTreeMap<String, String>,
     path: &Path,
 ) -> Result<StatusView, String> {
-    let (_, account, profile) = resolve_account(parsed, env, path)?;
+    let (cfg, account, profile) = resolve_account(parsed, env, path)?;
     let key = resolve_api_key(&parsed.flags, env, Some(&profile)).ok_or_else(|| {
         crate::exit::tag(crate::exit::AUTH, hint("Not signed in. Run: {bin} login"))
     })?;
     let base_url = resolve_base_url(&parsed.flags, Some(&profile));
-    let me = fetch_me_within(&base_url, &key, IDENTITY_TIMEOUT)
-        .map_err(|err| crate::exit::classify(&err).1);
+    let (me, key_info) = std::thread::scope(|s| {
+        let key_info = s.spawn(|| fetch_key_within(&base_url, &key, IDENTITY_TIMEOUT));
+        let me = fetch_me_within(&base_url, &key, IDENTITY_TIMEOUT);
+        let key_info = key_info
+            .join()
+            .unwrap_or_else(|_| Err("key lookup panicked".into()));
+        (me, key_info)
+    });
+    let me = me.map_err(|err| crate::exit::classify(&err).1);
+    let key_info = key_info.map_err(|err| crate::exit::classify(&err).1);
     let identity_error = me.as_ref().err().cloned();
+    let username = me.as_ref().ok().and_then(|m| m.username.clone());
+    let balance = me.as_ref().ok().and_then(|m| m.balance);
     let (name, email, identity_note) = identity_from_me(me);
     Ok(StatusView {
         account,
         name,
         email,
+        username,
+        balance,
         identity_note,
         identity_error,
+        key_error: key_info.as_ref().err().cloned(),
+        key: key_info.ok(),
         key_masked: mask_api_key(Some(&key)),
         default_model: display_model_id(profile.default_model()),
+        default_agent: cfg.preferred_agent(get_string_flag(&parsed.flags, "tool").as_deref()),
         config_path: path.display().to_string(),
         base_url,
     })
@@ -158,8 +253,18 @@ pub(crate) fn run_whoami(
     env: &BTreeMap<String, String>,
 ) -> Result<i32, String> {
     let path = config_path(parsed, env);
-    let view = build_view(parsed, env, &path)?;
-    if parsed.flag_true("json") {
+    let json = parsed.flag_true("json");
+    let view = match build_view(parsed, env, &path) {
+        Ok(view) => view,
+        // A missing key is an answer, not a failure: say so on stdout and
+        // keep exit 4 so scripts can branch on it. JSON keeps the error shape.
+        Err(err) if !json && crate::exit::classify(&err).0 == crate::exit::AUTH => {
+            print!("{}", render_signed_out());
+            return Ok(crate::exit::AUTH);
+        }
+        Err(err) => return Err(err),
+    };
+    if json {
         println!(
             "{}",
             serde_json::to_string_pretty(&view.json()).unwrap_or_else(|_| "{}".into())
@@ -204,7 +309,11 @@ fn status_picker(
 ) -> Result<i32, String> {
     let labels: Vec<String> = STATUS_ACTIONS.iter().map(|(_, l)| l.to_string()).collect();
     loop {
-        let Ok(idx) = term::pick("Account", &labels, None) else {
+        // Inline, not the full-screen picker: the alternate screen hid the
+        // summary printed just above it.
+        let Ok(idx) =
+            term::pick_inline(&[], "", &labels, "↑↓ move · enter select · esc quit", None)
+        else {
             return Ok(0);
         };
         let action = status_action_at(idx);
@@ -299,6 +408,7 @@ mod tests {
             default_model: "poolside/laguna-s-2.1".into(),
             config_path: "/home/u/.anyrouter/config.yaml".into(),
             base_url: "https://anyrouter.dev/api".into(),
+            ..Default::default()
         }
     }
 
@@ -328,7 +438,48 @@ mod tests {
             "{out:?}"
         );
         let anon = view(None, None).render();
-        assert!(anon.starts_with("Signed in"), "{anon:?}");
+        assert!(anon.starts_with("account"), "{anon:?}");
+        assert!(render_signed_out().starts_with("Not signed in."));
+    }
+
+    #[test]
+    fn rows_cover_credits_plan_key_and_scopes() {
+        let mut v = view(Some("duyet"), Some("me@duyet.net"));
+        v.balance = Some(133.834);
+        v.key = Some(KeyInfo {
+            name: Some("laptop".into()),
+            is_free_tier: Some(false),
+            last_used_at: Some("2026-10-27T15:31:41Z".into()),
+            allowed_endpoints: Some(vec!["/v1/chat/completions".into()]),
+            allowed_models: None,
+        });
+        let out = v.render();
+        for want in [
+            "account   duyet · me@duyet.net",
+            "credits   $133.83",
+            "plan      paid",
+            "key       laptop · sk-ar-v1-qjd4c…e5bu",
+            "scopes    /v1/chat/completions",
+            "last use  2026-10-27 15:31 UTC",
+            "base url  https://anyrouter.dev/api",
+        ] {
+            assert!(out.contains(want), "missing {want:?}:\n{out}");
+        }
+        // WHY: unrestricted keys must not print an empty models row.
+        assert!(!out.contains("models"), "{out}");
+        let sep = out.lines().filter(|l| l.starts_with('─')).count();
+        assert_eq!(sep, 1, "one separator line:\n{out}");
+    }
+
+    #[test]
+    fn failed_key_lookup_leaves_plan_unknown_and_says_why() {
+        let mut v = view(Some("a"), None);
+        v.key_error = Some("HTTP 500".into());
+        let out = v.render();
+        assert!(out.contains("plan      —"), "{out}");
+        assert!(out.contains("unavailable: HTTP 500"), "{out}");
+        assert_eq!(v.json()["key_error"], "HTTP 500");
+        assert!(v.json()["plan"].is_null());
     }
 
     #[test]

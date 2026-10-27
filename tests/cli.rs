@@ -2918,20 +2918,29 @@ fn launch_forwards_unknown_flag_to_the_agent() {
 #[test]
 fn whoami_and_keys_fail_loud_without_config() {
     let dir = temp_home();
-    for args in [vec!["whoami"], vec!["keys", "list"]] {
-        let out = anyr()
-            .args(&args)
-            .env("ANYROUTER_HOME", &dir)
-            .env_remove("ANYROUTER_API_KEY")
-            .output()
-            .expect("missing key");
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        assert_ne!(out.status.code().unwrap_or(1), 0, "{args:?} {stderr}");
-        assert!(
-            stderr.contains("No AnyRouter config") || stderr.contains("no key"),
-            "{args:?} {stderr}"
-        );
-    }
+    // `whoami` is a status question: "not signed in" is its answer, on stdout,
+    // still with the auth exit code.
+    let out = anyr()
+        .arg("whoami")
+        .env("ANYROUTER_HOME", &dir)
+        .env_remove("ANYROUTER_API_KEY")
+        .output()
+        .expect("missing key");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(4), "{stdout}");
+    assert!(stdout.contains("Not signed in"), "{stdout}");
+    let out = anyr()
+        .args(["keys", "list"])
+        .env("ANYROUTER_HOME", &dir)
+        .env_remove("ANYROUTER_API_KEY")
+        .output()
+        .expect("missing key");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_ne!(out.status.code().unwrap_or(1), 0, "{stderr}");
+    assert!(
+        stderr.contains("No AnyRouter config") || stderr.contains("no key"),
+        "{stderr}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -3342,10 +3351,6 @@ fn usage_errors_print_clean_message_without_marker() {
 }
 
 /// One-shot `/v1/me` server: returns (base_url, join handle).
-fn me_server(body: &'static str) -> (String, thread::JoinHandle<()>) {
-    me_server_with_status("200 OK", body)
-}
-
 fn me_server_with_status(
     status: &'static str,
     body: &'static str,
@@ -3380,7 +3385,12 @@ fn status_config(home: &std::path::Path) -> std::path::PathBuf {
 fn auth_status_shows_user_and_only_the_default_model() {
     let home = temp_home();
     let cfg = status_config(&home);
-    let (base, server) = me_server(r#"{"name":"Duyet Le","email":"me@duyet.net"}"#);
+    // Status asks /v1/me and /v1/key in parallel, so answer by path.
+    let base = common::serve_routes(vec![(
+        "/api/v1/me",
+        200,
+        r#"{"name":"Duyet Le","email":"me@duyet.net"}"#.into(),
+    )]);
     let out = anyr()
         .args([
             "auth",
@@ -3393,11 +3403,10 @@ fn auth_status_shows_user_and_only_the_default_model() {
         .stdin(Stdio::null())
         .output()
         .unwrap();
-    server.join().unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert_eq!(out.status.code(), Some(0), "{stdout}");
     assert!(
-        stdout.starts_with("Signed in as Duyet Le <me@duyet.net>"),
+        stdout.starts_with("account   Duyet Le · me@duyet.net"),
         "{stdout:?}"
     );
     assert!(stdout.contains("poolside/laguna-s-2.1"), "{stdout}");
@@ -3415,7 +3424,12 @@ fn auth_status_shows_user_and_only_the_default_model() {
 fn auth_status_json_has_user_and_masked_key() {
     let home = temp_home();
     let cfg = status_config(&home);
-    let (base, server) = me_server(r#"{"name":"Duyet Le","email":"me@duyet.net"}"#);
+    // Status asks /v1/me and /v1/key in parallel, so answer by path.
+    let base = common::serve_routes(vec![(
+        "/api/v1/me",
+        200,
+        r#"{"name":"Duyet Le","email":"me@duyet.net"}"#.into(),
+    )]);
     let out = anyr()
         .args([
             "status",
@@ -3428,7 +3442,6 @@ fn auth_status_json_has_user_and_masked_key() {
         .stdin(Stdio::null())
         .output()
         .unwrap();
-    server.join().unwrap();
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["account"], "default");
     assert_eq!(v["user"]["name"], "Duyet Le");

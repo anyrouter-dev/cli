@@ -117,3 +117,37 @@ pub fn unique_temp_dir(prefix: &str) -> PathBuf {
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
+
+/// Serve each request by its path, for as many connections as arrive. A path
+/// with no route gets a 404. Use it when the CLI sends requests in parallel,
+/// so the reply order of `serve` cannot be relied on.
+pub fn serve_routes(routes: Vec<(&'static str, u16, String)>) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}/api", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { return };
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            let _ = reader.read_line(&mut line);
+            loop {
+                let mut h = String::new();
+                if reader.read_line(&mut h).unwrap_or(0) == 0 || h.trim().is_empty() {
+                    break;
+                }
+            }
+            let path = line.split_whitespace().nth(1).unwrap_or("").to_string();
+            let (status, body) = routes
+                .iter()
+                .find(|(p, _, _)| *p == path)
+                .map(|(_, s, b)| (*s, b.clone()))
+                .unwrap_or((404, r#"{"error":{"message":"not found"}}"#.into()));
+            let resp = format!(
+                "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(resp.as_bytes());
+        }
+    });
+    base
+}

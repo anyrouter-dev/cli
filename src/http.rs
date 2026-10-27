@@ -722,6 +722,61 @@ fn me_from_response((status, body): (u16, String)) -> Result<MeInfo, String> {
     parse_me(&body)
 }
 
+/// The calling key as GET `/v1/key` describes it. Only the fields the CLI shows.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct KeyInfo {
+    pub name: Option<String>,
+    pub is_free_tier: Option<bool>,
+    pub last_used_at: Option<String>,
+    /// `None` means the key may call every endpoint.
+    pub allowed_endpoints: Option<Vec<String>>,
+    /// `None` means the key may call every model.
+    pub allowed_models: Option<Vec<String>>,
+}
+
+pub fn parse_key_info(body: &str) -> Result<KeyInfo, String> {
+    let value: serde_json::Value =
+        serde_json::from_str(body).map_err(|e| format!("Invalid /key response: {e}"))?;
+    let data = value.get("data").unwrap_or(&value);
+    let text = |k: &str| {
+        data.get(k)
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+    let list = |k: &str| {
+        data.get(k).and_then(|v| v.as_array()).map(|a| {
+            a.iter()
+                .filter_map(|s| s.as_str().map(str::to_string))
+                .collect::<Vec<_>>()
+        })
+    };
+    Ok(KeyInfo {
+        name: text("name"),
+        is_free_tier: data.get("is_free_tier").and_then(|v| v.as_bool()),
+        last_used_at: text("last_used_at"),
+        allowed_endpoints: list("allowed_endpoints").filter(|a| !a.is_empty()),
+        allowed_models: list("allowed_models").filter(|a| !a.is_empty()),
+    })
+}
+
+/// GET `/v1/key` (the bearer key's own row) with an overall deadline.
+pub fn fetch_key_within(
+    base_url: &str,
+    api_key: &str,
+    timeout: std::time::Duration,
+) -> Result<KeyInfo, String> {
+    let url = join_api(base_url, "/v1/key");
+    let (status, body) = http_get_timeout(&url, Some(api_key), timeout)?;
+    if status == 401 || status == 403 {
+        return Err(scope_error("key"));
+    }
+    if !(200..300).contains(&status) {
+        return Err(format!("Could not fetch key info (HTTP {status})."));
+    }
+    parse_key_info(&body)
+}
+
 pub fn format_usd(n: f64) -> String {
     if !n.is_finite() {
         return "$?".into();
@@ -1073,6 +1128,19 @@ mod tests {
             sorted.iter().map(|k| k.name.as_str()).collect::<Vec<_>>(),
             vec!["new", "old", "undated"]
         );
+    }
+
+    #[test]
+    fn key_info_reads_the_data_envelope_and_treats_empty_lists_as_unrestricted() {
+        let k = parse_key_info(
+            r#"{"data":{"name":"cli","is_free_tier":true,"last_used_at":"2026-10-27T15:31:41Z","allowed_endpoints":[],"allowed_models":["a/b"],"hash":"x"}}"#,
+        )
+        .unwrap();
+        assert_eq!(k.name.as_deref(), Some("cli"));
+        assert_eq!(k.is_free_tier, Some(true));
+        assert_eq!(k.allowed_endpoints, None);
+        assert_eq!(k.allowed_models, Some(vec!["a/b".to_string()]));
+        assert!(parse_key_info("nope").is_err());
     }
 
     #[test]
