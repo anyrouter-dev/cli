@@ -67,6 +67,11 @@ pub fn set_invoked_bin(name: impl Into<String>) {
     INVOKED_BIN.with(|slot| *slot.borrow_mut() = name);
 }
 
+/// `template` with `{bin}` replaced by the name this binary was run as.
+pub fn with_bin(template: &str) -> String {
+    template.replace("{bin}", &invoked_bin())
+}
+
 pub fn invoked_bin() -> String {
     INVOKED_BIN.with(|slot| {
         let current = slot.borrow();

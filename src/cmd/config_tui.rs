@@ -169,7 +169,7 @@ pub(crate) enum SettingKind {
 fn print_new_key_hint() {
     println!(
         "{}",
-        term::dim(&hint(
+        term::dim(&crate::help::with_bin(
             "New key for this machine: {bin} login · paste one: {bin} login --key - · unused keys: {bin} keys audit"
         ))
     );

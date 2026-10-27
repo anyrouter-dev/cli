@@ -135,7 +135,7 @@ pub(crate) fn run_keys(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> R
             println!();
             println!(
                 "{}",
-                term::dim(&hint(
+                term::dim(&crate::help::with_bin(
                     "* = key this machine uses · new key: {bin} login · unused keys: {bin} keys audit"
                 ))
             );
@@ -315,7 +315,7 @@ fn run_keys_audit(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result
     println!();
     println!(
         "{}",
-        term::dim(&hint(&format!(
+        term::dim(&crate::help::with_bin(&format!(
             "Revoke one: {{bin}} keys revoke {}",
             revoke_ref(&found[0].row)
         )))
