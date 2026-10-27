@@ -29,6 +29,7 @@ const SKIP: &[&str] = &[
     "aider",
     "crush",
     "kilo",
+    "fx",
     "menu",
     "upgrade",
     "login",

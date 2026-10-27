@@ -285,6 +285,7 @@ pub fn command_help(command: &str) -> Option<String> {
         "aider" => launch_help(&bin, "aider", "Aider"),
         "crush" => launch_help(&bin, "crush", "Crush"),
         "kilo" => launch_help(&bin, "kilo", "Kilo Code"),
+        "fx" => launch_help(&bin, "fx", "fx"),
         "pool" => format!(
             "{}\n{}",
             fill(&bin, POOL),

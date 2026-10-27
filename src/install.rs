@@ -27,6 +27,7 @@ pub const KNOWN_AGENTS: &[(&str, &str)] = &[
     ("aider", "Aider"),
     ("crush", "Crush"),
     ("kilo", "Kilo Code"),
+    ("fx", "fx"),
 ];
 
 /// `ANYR_AGENTS` overrides PATH detection (tests / dump). Unset = probe PATH.
@@ -157,6 +158,12 @@ pub fn tool_hint(tool: &str) -> Option<ToolHint> {
             install: "npm install -g @kilocode/cli",
             docs: "https://kilo.ai/docs/code-with-ai/platforms/cli",
             env: "ANYROUTER_KILO_PATH",
+        },
+        "fx" => ToolHint {
+            label: "fx",
+            install: "curl -fsSL https://fx.sh/setup.sh | bash",
+            docs: "https://fx.sh/docs",
+            env: "ANYROUTER_FX_PATH",
         },
         _ => return None,
     })

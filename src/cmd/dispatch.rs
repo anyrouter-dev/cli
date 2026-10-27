@@ -280,11 +280,11 @@ pub(crate) fn cmd_kind(command: &str) -> Option<CmdKind> {
     Some(match c {
         "setup" | "login" | "auth" | "menu" | "models" | "config" | "keys" | "whoami"
         | "status" | "logout" | "account" | "usage" | "claude" | "codex" | "grok" | "opencode"
-        | "pool" | "pi" | "qwen" | "goose" | "aider" | "crush" | "kilo" | "upgrade" | "onboard"
-        | "impl" | "plan" | "fix" | "deploy" | "cp" | "relay" | "decision" | "commands" | "api"
-        | "completion" | "byok" | "publish" | "apps" | "artifact" | "chat" | "logs"
-        | "transactions" | "embed" | "generation" | "presets" | "mcp" | "eval" | "task"
-        | "delegate" => CmdKind::Implemented,
+        | "pool" | "pi" | "qwen" | "goose" | "aider" | "crush" | "kilo" | "fx" | "upgrade"
+        | "onboard" | "impl" | "plan" | "fix" | "deploy" | "cp" | "relay" | "decision"
+        | "commands" | "api" | "completion" | "byok" | "publish" | "apps" | "artifact" | "chat"
+        | "logs" | "transactions" | "embed" | "generation" | "presets" | "mcp" | "eval"
+        | "task" | "delegate" => CmdKind::Implemented,
         "cursor" | "cline" | "windsurf" => CmdKind::HelpOnly,
         "audit" | "skills" | "prompt" => CmdKind::Stub,
         _ => return None,
@@ -326,6 +326,7 @@ pub(crate) const COMMANDS: &[(&str, &str)] = &[
     ("aider", "Launch Aider"),
     ("crush", "Launch Crush"),
     ("kilo", "Launch Kilo Code"),
+    ("fx", "Launch fx"),
     ("api", "Dashboard from the terminal; raw calls like gh api"),
     ("publish", "Publish a JSON document or a page to an app"),
     ("apps", "Manage what you published to apps"),

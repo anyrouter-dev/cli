@@ -339,6 +339,7 @@ pub fn tool_color(tool: &str) -> &'static str {
         "qwen" | "kilo" => BLUE,
         "goose" | "aider" => SUCCESS,
         "crush" => MAGENTA,
+        "fx" => WHITE,
         _ => BRAND,
     }
 }

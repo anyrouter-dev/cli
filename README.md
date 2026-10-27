@@ -500,10 +500,16 @@ a file. `--dry-run` prints the command and environment (key masked), and
 | Aider | `anyr aider` | `AIDER_OPENAI_API_BASE`, `AIDER_OPENAI_API_KEY`, `AIDER_MODEL=openai/<model>` | no (Aider has no MCP) |
 | Crush | `anyr crush` | private `CRUSH_GLOBAL_CONFIG` with your `crush.json` and `crushrc` copied in | yes |
 | Kilo Code | `anyr kilo` | inline `KILO_CONFIG_CONTENT` | yes |
+| fx | `anyr fx` | `providers.anyrouter` in `~/.fx/settings.json`, selected with `FX_PROVIDER`, `FX_MODEL` | no (`~/.fx/mcp.json` only) |
 
 The AIDER_* names outrank a `.aider.conf.yml`, and Qwen Code gets `-m` because
 a `model.name` in its settings.json beats `OPENAI_MODEL`. Your own agent config
-files are read, never written.
+files are read, never written, with one exception: fx only takes a custom
+endpoint from `~/.fx/settings.json` and has no variable to move that file, so
+`anyr fx` sets one `providers.anyrouter` entry there (no key; it reads
+`$ANYROUTER_API_KEY`). Your selected provider and every other key stay as they
+are, and `--dry-run` only says what it would change. `anyr fx` needs fx 0.0.11
+or newer, the first release with custom connections.
 
 ## Passing flags to the agent
 
@@ -532,22 +538,22 @@ for that agent. This table is generated from `src/cmd/portable.rs`, and a test
 keeps it in sync:
 
 <!-- portable-flags:start -->
-| Flag | claude | codex | grok | opencode | pi | pool | qwen | goose | aider | crush | kilo |
-|------|---|---|---|---|---|---|---|---|---|---|---|
-| `--yolo` | `--dangerously-skip-permissions` | `--dangerously-bypass-approvals-and-sandbox` | `--always-approve` | `--auto` | no | `--unsafe-auto-allow` * | `--approval-mode yolo` | env `GOOSE_MODE=auto` | `--yes-always` | `-y` | `--auto` |
-| `--effort <level>` | env `MAX_THINKING_TOKENS` | `-c model_reasoning_effort="<level>"` | `--reasoning-effort <level>` | no | `--thinking <level>` | no | no | no | `--reasoning-effort <level>` | no | no |
-| `--print` | `-p` | `exec` | `--single` | `run` | `-p` | no | `-p` | no | `--message` | `run` | `run` |
-| `--continue` | `--continue` | `resume --last` | `--continue` | `--continue` | `--continue` | no | `--continue` | no | `--restore-chat-history` | `--continue` | `--continue` |
-| `--resume [<id>]` | `--resume <id>` | `resume <id>` | `--resume <id>` | `--session <id>` | `--session <id>` | `--resume <id>` * | `--resume <id>` | `--resume --session-id <id>` | no | `--session <id>` | `--session <id>` |
-| `--system <text>` | `--system-prompt <text>` | no | `--system-prompt-override <text>` | no | `--system-prompt <text>` | no | `--system-prompt <text>` | `--system <text>` | no | no | no |
-| `--append-system <text>` | `--append-system-prompt <text>` | no | `--rules <text>` | no | `--append-system-prompt <text>` | no | `--append-system-prompt <text>` | `--system <text>` | no | no | no |
-| `--add-dir <path>` | `--add-dir <path>` | `--add-dir <path>` | no | no | no | no | `--add-dir=<path>` | no | no | no | no |
-| `--cwd <path>` | no | `--cd <path>` | `--cwd <path>` | no | no | `--directory <path>` * | no | no | no | `--cwd <path>` | no |
-| `--max-turns <n>` | `--max-turns <n>` † | no | `--max-turns <n>` | no | no | no | `--max-session-turns <n>` | `--max-turns <n>` | no | no | no |
-| `--no-tools, --tools-off` | `--tools=` | no | no | no | `--no-tools` | no | no | no | no | no | no |
-| `--no-skills, --skills-off` | `--disable-slash-commands` | no | no | no | `--no-skills` | no | no | no | no | no | no |
+| Flag | claude | codex | grok | opencode | pi | pool | qwen | goose | aider | crush | kilo | fx |
+|------|---|---|---|---|---|---|---|---|---|---|---|---|
+| `--yolo` | `--dangerously-skip-permissions` | `--dangerously-bypass-approvals-and-sandbox` | `--always-approve` | `--auto` | no | `--unsafe-auto-allow` * | `--approval-mode yolo` | env `GOOSE_MODE=auto` | `--yes-always` | `-y` | `--auto` | env `FX_PERMISSION_MODE=full-access` |
+| `--effort <level>` | env `MAX_THINKING_TOKENS` | `-c model_reasoning_effort="<level>"` | `--reasoning-effort <level>` | no | `--thinking <level>` | no | no | no | `--reasoning-effort <level>` | no | no | `--effort <level>` |
+| `--print` | `-p` | `exec` | `--single` | `run` | `-p` | no | `-p` | no | `--message` | `run` | `run` | `ask` |
+| `--continue` | `--continue` | `resume --last` | `--continue` | `--continue` | `--continue` | no | `--continue` | no | `--restore-chat-history` | `--continue` | `--continue` | `--continue` |
+| `--resume [<id>]` | `--resume <id>` | `resume <id>` | `--resume <id>` | `--session <id>` | `--session <id>` | `--resume <id>` * | `--resume <id>` | `--resume --session-id <id>` | no | `--session <id>` | `--session <id>` | `--resume <id>` |
+| `--system <text>` | `--system-prompt <text>` | no | `--system-prompt-override <text>` | no | `--system-prompt <text>` | no | `--system-prompt <text>` | `--system <text>` | no | no | no | `--system <text>` |
+| `--append-system <text>` | `--append-system-prompt <text>` | no | `--rules <text>` | no | `--append-system-prompt <text>` | no | `--append-system-prompt <text>` | `--system <text>` | no | no | no | no |
+| `--add-dir <path>` | `--add-dir <path>` | `--add-dir <path>` | no | no | no | no | `--add-dir=<path>` | no | no | no | no | `--add-dir <path>` |
+| `--cwd <path>` | no | `--cd <path>` | `--cwd <path>` | no | no | `--directory <path>` * | no | no | no | `--cwd <path>` | no | no |
+| `--max-turns <n>` | `--max-turns <n>` † | no | `--max-turns <n>` | no | no | no | `--max-session-turns <n>` | `--max-turns <n>` | no | no | no | no |
+| `--no-tools, --tools-off` | `--tools=` | no | no | no | `--no-tools` | no | no | no | no | no | no | no |
+| `--no-skills, --skills-off` | `--disable-slash-commands` | no | no | no | `--no-skills` | no | no | no | no | no | no | no |
 
-Checked against each agent's `--help`: claude 2.1.310, codex 0.133.0, grok 1.0.52, opencode 2.0.24, pi 0.73.1, qwen 0.26.1, goose 1.56.0, aider 0.86.2, crush 0.98.2, kilo 7.8.17. † hidden from `--help`; the agent's parser accepts it. * from docs.poolside.ai (v1.0.16), not run. "no": the agent has no such flag, so anyr drops it with a one-line note. Goose takes these flags only on `goose session` or `goose run`, and its `--system` adds to the default prompt. Crush `-y` works on the interactive command only. Qwen's `-p` is deprecated but listed.
+Checked against each agent's `--help`: claude 2.1.310, codex 0.133.0, grok 1.0.52, opencode 2.0.24, pi 0.73.1, qwen 0.26.1, goose 1.56.0, aider 0.86.2, crush 0.98.2, kilo 7.8.17, fx 0.0.14. † hidden from `--help`; the agent's parser accepts it. * from docs.poolside.ai (v1.0.16), not run. "no": the agent has no such flag, so anyr drops it with a one-line note. Goose takes these flags only on `goose session` or `goose run`, and its `--system` adds to the default prompt. Crush `-y` works on the interactive command only. Qwen's `-p` is deprecated but listed. fx takes `--add-dir` only on the interactive command and `--system` only on `fx ask`.
 <!-- portable-flags:end -->
 
 ## Launcher settings: `anyr config`
