@@ -469,3 +469,125 @@ fn fx_settings_symlink_is_written_through_not_replaced() {
     assert!(cfg["providers"]["anyrouter"].is_object());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A settings file the user already tuned: other connections, a selected
+/// provider, top-level keys anyr does not know, and nested unknown fields.
+const FX_USER_SETTINGS: &str = r#"{
+  "provider": "local",
+  "theme": "dark",
+  "experimental": { "fancy": [1, 2, { "deep": true }] },
+  "providers": {
+    "local": {
+      "protocol": "openai-chat-completions",
+      "base_url": "http://127.0.0.1:11434/v1",
+      "headers": { "x-team": "core" }
+    },
+    "work": { "protocol": "anthropic-messages", "unknown_flag": 7 }
+  }
+}"#;
+
+fn fx_conn() -> serde_json::Value {
+    anyr_cli::spawn::fx_connection(
+        "https://gw.example/api/v1",
+        "ANYROUTER_API_KEY",
+        "anyrouter/free",
+        &[],
+    )
+}
+
+fn fx_settings_file(tag: &str, body: &[u8]) -> (PathBuf, PathBuf) {
+    let dir = temp_dir(tag);
+    let path = dir.join(".fx").join("settings.json");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, body).unwrap();
+    (dir, path)
+}
+
+#[cfg(unix)]
+#[test]
+fn fx_unreadable_settings_abort_and_are_left_untouched() {
+    use std::os::unix::fs::PermissionsExt;
+    let (dir, path) = fx_settings_file("fx-unreadable", FX_USER_SETTINGS.as_bytes());
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if std::fs::read(&path).is_ok() {
+        eprintln!("skipped: this user can read a mode-000 file (root)");
+        let _ = std::fs::remove_dir_all(&dir);
+        return;
+    }
+    for dry_run in [true, false] {
+        let err = anyr_cli::spawn::prepare_fx_settings(&path, &fx_conn(), dry_run)
+            .expect_err("an unreadable settings.json must stop the launch");
+        assert!(err.contains(&path.display().to_string()), "{err}");
+    }
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        FX_USER_SETTINGS,
+        "the user's fx settings were overwritten"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn fx_non_utf8_settings_abort_and_are_left_untouched() {
+    let body = b"{\"theme\":\"\xff\xfe\"}";
+    let (dir, path) = fx_settings_file("fx-non-utf8", body);
+    let err = anyr_cli::spawn::prepare_fx_settings(&path, &fx_conn(), false)
+        .expect_err("a settings.json that is not UTF-8 must stop the launch");
+    assert!(err.contains(&path.display().to_string()), "{err}");
+    assert_eq!(std::fs::read(&path).unwrap(), body);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn fx_invalid_json_settings_abort_and_are_left_untouched() {
+    for (tag, body) in [
+        ("fx-bad-json", "{ \"theme\": \"dark\", nope"),
+        ("fx-array-json", "[\"not\", \"an\", \"object\"]"),
+        ("fx-bad-providers", "{ \"theme\": \"dark\", \"providers\": \"local\" }"),
+    ] {
+        let (dir, path) = fx_settings_file(tag, body.as_bytes());
+        let err = anyr_cli::spawn::prepare_fx_settings(&path, &fx_conn(), false)
+            .expect_err(tag);
+        assert!(err.contains(&path.display().to_string()), "{tag}: {err}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), body, "{tag}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[test]
+fn fx_settings_keep_every_other_key_and_provider() {
+    let (dir, path) = fx_settings_file("fx-preserve", FX_USER_SETTINGS.as_bytes());
+    anyr_cli::spawn::prepare_fx_settings(&path, &fx_conn(), false).unwrap();
+    let mut after: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(after["providers"]["anyrouter"], fx_conn());
+    after["providers"]
+        .as_object_mut()
+        .unwrap()
+        .remove("anyrouter");
+    let before: serde_json::Value = serde_json::from_str(FX_USER_SETTINGS).unwrap();
+    assert_eq!(after, before, "a key other than providers.anyrouter changed");
+    let leftovers: Vec<_> = std::fs::read_dir(path.parent().unwrap())
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert_eq!(leftovers, ["settings.json"], "temp file left behind");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn fx_missing_settings_are_created_private() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = temp_dir("fx-missing");
+    let path = dir.join(".fx").join("settings.json");
+    let line = anyr_cli::spawn::prepare_fx_settings(&path, &fx_conn(), false).unwrap();
+    assert!(line.contains("set providers.anyrouter"), "{line}");
+    let cfg: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(cfg, serde_json::json!({ "providers": { "anyrouter": fx_conn() } }));
+    let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600, "fx ignores a settings.json others can read");
+    let _ = std::fs::remove_dir_all(&dir);
+}
