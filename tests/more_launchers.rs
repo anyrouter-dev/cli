@@ -430,8 +430,13 @@ fn fx_gets_only_the_anyrouter_connection_in_its_settings() {
 #[test]
 fn fx_connection_is_left_alone_when_already_current() {
     let conn = serde_json::json!({ "base_url": "https://gw.example/api/v1" });
-    let once = anyr_cli::spawn::fx_settings_with(None, &conn).expect("first write");
-    assert_eq!(anyr_cli::spawn::fx_settings_with(Some(once), &conn), None);
+    let once = anyr_cli::spawn::fx_settings_with(None, &conn)
+        .unwrap()
+        .expect("first write");
+    assert_eq!(
+        anyr_cli::spawn::fx_settings_with(Some(once), &conn),
+        Ok(None)
+    );
 }
 
 #[cfg(unix)]
@@ -544,11 +549,13 @@ fn fx_invalid_json_settings_abort_and_are_left_untouched() {
     for (tag, body) in [
         ("fx-bad-json", "{ \"theme\": \"dark\", nope"),
         ("fx-array-json", "[\"not\", \"an\", \"object\"]"),
-        ("fx-bad-providers", "{ \"theme\": \"dark\", \"providers\": \"local\" }"),
+        (
+            "fx-bad-providers",
+            "{ \"theme\": \"dark\", \"providers\": \"local\" }",
+        ),
     ] {
         let (dir, path) = fx_settings_file(tag, body.as_bytes());
-        let err = anyr_cli::spawn::prepare_fx_settings(&path, &fx_conn(), false)
-            .expect_err(tag);
+        let err = anyr_cli::spawn::prepare_fx_settings(&path, &fx_conn(), false).expect_err(tag);
         assert!(err.contains(&path.display().to_string()), "{tag}: {err}");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), body, "{tag}");
         let _ = std::fs::remove_dir_all(&dir);
@@ -567,7 +574,10 @@ fn fx_settings_keep_every_other_key_and_provider() {
         .unwrap()
         .remove("anyrouter");
     let before: serde_json::Value = serde_json::from_str(FX_USER_SETTINGS).unwrap();
-    assert_eq!(after, before, "a key other than providers.anyrouter changed");
+    assert_eq!(
+        after, before,
+        "a key other than providers.anyrouter changed"
+    );
     let leftovers: Vec<_> = std::fs::read_dir(path.parent().unwrap())
         .unwrap()
         .map(|e| e.unwrap().file_name())
@@ -586,7 +596,10 @@ fn fx_missing_settings_are_created_private() {
     assert!(line.contains("set providers.anyrouter"), "{line}");
     let cfg: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-    assert_eq!(cfg, serde_json::json!({ "providers": { "anyrouter": fx_conn() } }));
+    assert_eq!(
+        cfg,
+        serde_json::json!({ "providers": { "anyrouter": fx_conn() } })
+    );
     let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode, 0o600, "fx ignores a settings.json others can read");
     let _ = std::fs::remove_dir_all(&dir);

@@ -1250,23 +1250,30 @@ pub fn fx_connection(
 }
 
 /// `settings` with `providers.anyrouter` set to `connection`, or None when it
-/// already is. Every other key, including the user's selected `provider`, is
-/// kept: the launch selects the connection with FX_PROVIDER instead.
+/// already is. Every other key, including the user's selected `provider` and
+/// fields anyr does not know, is kept: the launch selects the connection with
+/// FX_PROVIDER instead. None for `settings` means there is no file yet. A
+/// file that is not a JSON object, or whose `providers` is not one, is an
+/// error: replacing it would drop the user's config.
 pub fn fx_settings_with(
     settings: Option<serde_json::Value>,
     connection: &serde_json::Value,
-) -> Option<serde_json::Value> {
-    let mut settings = settings
-        .filter(serde_json::Value::is_object)
-        .unwrap_or_else(|| serde_json::json!({}));
-    if settings["providers"][FX_CONNECTION] == *connection {
-        return None;
+) -> Result<Option<serde_json::Value>, String> {
+    let mut settings = settings.unwrap_or_else(|| serde_json::json!({}));
+    let Some(root) = settings.as_object_mut() else {
+        return Err("it is not a JSON object".into());
+    };
+    let providers = root
+        .entry("providers")
+        .or_insert_with(|| serde_json::json!({}));
+    let Some(providers) = providers.as_object_mut() else {
+        return Err("its `providers` is not a JSON object".into());
+    };
+    if providers.get(FX_CONNECTION) == Some(connection) {
+        return Ok(None);
     }
-    if !settings["providers"].is_object() {
-        settings["providers"] = serde_json::json!({});
-    }
-    settings["providers"][FX_CONNECTION] = connection.clone();
-    Some(settings)
+    providers.insert(FX_CONNECTION.into(), connection.clone());
+    Ok(Some(settings))
 }
 
 /// Make sure `~/.fx/settings.json` holds the AnyRouter connection.
@@ -1284,13 +1291,25 @@ pub fn prepare_fx_settings(
     let current = match std::fs::read_to_string(path) {
         Ok(s) => Some(serde_json::from_str::<serde_json::Value>(&s).map_err(|e| {
             format!(
-                "{} is not valid JSON ({e}); fix it, then run again.",
+                "{} is not valid JSON ({e}); fix it, then run again. anyr left it unchanged.",
                 path.display()
             )
         })?),
-        Err(_) => None,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => {
+            return Err(format!(
+                "Could not read {} ({e}); fix it, then run again. anyr left it unchanged.",
+                path.display()
+            ))
+        }
     };
-    let Some(next) = fx_settings_with(current, connection) else {
+    let next = fx_settings_with(current, connection).map_err(|why| {
+        format!(
+            "{} cannot take the AnyRouter connection: {why}. Fix it, then run again. anyr left it unchanged.",
+            path.display()
+        )
+    })?;
+    let Some(next) = next else {
         return Ok(format!(
             "fx: providers.{FX_CONNECTION} in {} is current",
             path.display()
@@ -1318,10 +1337,20 @@ fn write_fx_settings(path: &Path, settings: &serde_json::Value) -> Result<(), St
     // A dotfiles symlink stays a symlink: write the file it points at.
     let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let tmp = target.with_extension("json.anyr-tmp");
-    let body = serde_json::to_vec_pretty(settings).unwrap_or_else(|_| b"{}".to_vec());
-    crate::config::write_private(&tmp, &body)
-        .map_err(|e| format!("Could not write {}: {e}", tmp.display()))?;
-    std::fs::rename(&tmp, &target).map_err(|e| format!("Could not write {}: {e}", target.display()))
+    let body = serde_json::to_vec_pretty(settings)
+        .map_err(|e| format!("Could not encode {}: {e}", target.display()))?;
+    // A stale tmp from a crashed run could carry a looser mode; start clean.
+    let _ = std::fs::remove_file(&tmp);
+    let written = crate::config::open_private(&tmp, true).and_then(|mut f| {
+        use std::io::Write;
+        f.write_all(&body)?;
+        f.sync_all()
+    });
+    let replaced = written.and_then(|()| std::fs::rename(&tmp, &target));
+    replaced.map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("Could not write {}: {e}", target.display())
+    })
 }
 
 #[cfg(not(feature = "native"))]
