@@ -10,6 +10,26 @@ GitHub Releases use this file as the release notes (full history through that ta
 
 * **cli:** add `anyr decision` for typed `POST /api/v1/decisions` requests with flag or stdin JSON input. Known Decisions models are refused by chat-agent launchers. ([duyet/anyrouter#3550](https://github.com/duyet/anyrouter/issues/3550))
 
+## [0.1.34](https://github.com/anyrouter-dev/cli/compare/v0.1.33...v0.1.34) (2026-10-27)
+
+
+### Features
+
+* **launch:** add an fx launcher ([#215](https://github.com/anyrouter-dev/cli/issues/215)) ([c25aed7](https://github.com/anyrouter-dev/cli/commit/c25aed7dcb68dc6427846f55df3341e7e9a1c74f))
+* **launch:** add qwen, goose, aider, crush and kilo launchers ([#212](https://github.com/anyrouter-dev/cli/issues/212)) ([414dc5a](https://github.com/anyrouter-dev/cli/commit/414dc5a22ef5fb83034fae3c82a72d71b31eb305))
+* **launch:** map portable agent flags through one registry ([#213](https://github.com/anyrouter-dev/cli/issues/213)) ([6b49fa6](https://github.com/anyrouter-dev/cli/commit/6b49fa65146fc816d07ecd2164d7e4dd1fe92d28))
+
+
+### Bug Fixes
+
+* **auth:** show account, credits, plan and key in auth status ([#231](https://github.com/anyrouter-dev/cli/issues/231)) ([e5263c1](https://github.com/anyrouter-dev/cli/commit/e5263c1c7889a6e0af41c946babc158e154723f0))
+* **test:** remove the races behind the flaky CI tests ([#222](https://github.com/anyrouter-dev/cli/issues/222)) ([2e8556e](https://github.com/anyrouter-dev/cli/commit/2e8556ea6d1736517ae5c645c7d6cb1f19b097ec))
+
+
+### Performance Improvements
+
+* **launch:** cache the catalog so a warm launch starts in ~3 ms; anyr config get/set launcher settings ([#217](https://github.com/anyrouter-dev/cli/issues/217)) ([4b3a00c](https://github.com/anyrouter-dev/cli/commit/4b3a00c1b5798d1d9ee06454b3dbf74efcb85071))
+
 ## [0.1.33](https://github.com/anyrouter-dev/cli/compare/v0.1.32...v0.1.33) (2026-10-24)
 
 
