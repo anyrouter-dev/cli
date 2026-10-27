@@ -1,226 +1,297 @@
 //! Ratatui widgets + ANSI-free plain frames for dump / tests.
 //!
-//! The launcher / config menu renders as a **centered dialog card** (title,
-//! status, actions) — not a full-bleed two-pane sprawl. Pickers stay
-//! single-pane and fill the terminal. All plain_* dumps remain ANSI-free for CI.
+//! Every screen draws from the top-left as plain text: `label  value` status
+//! rows, one thin line, the list, and a one-line key hint. No frame, no
+//! backdrop, no logo, no centering. All plain_* dumps stay ANSI-free for CI
+//! and show the same lines the live screen draws.
 
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
 
 use super::state::{
     MenuState, PaletteEntry, PaletteState, PickerState, SettingRow, SettingsState, Tone,
 };
 use super::theme;
+use crate::term::{label_lines, text_width, truncate, LabelLine};
 
-/// Preferred dialog width; shrinks on narrow terminals.
-const DIALOG_PREF_WIDTH: u16 = 56;
-/// Minimum usable dialog width before we fill almost the whole terminal.
-const DIALOG_MIN_WIDTH: u16 = 28;
-/// Settings screen is wider — model ids need room next to their labels.
-const SETTINGS_PREF_WIDTH: u16 = 68;
-/// Inner inset (cols / rows) so content isn't flush against the border.
-const INSET_X: u16 = 1;
-const INSET_Y: u16 = 1;
+/// The thin line under the status rows is never wider than this.
+const RULE_MAX: usize = 60;
+
+/// Plain dumps never lay out narrower than this.
+const DUMP_MIN_COLS: usize = 20;
+
+/// `label  value` header strings as rows. A line with no double space has no
+/// label and prints whole.
+fn status_pairs(header: &[String]) -> Vec<(&str, String)> {
+    header
+        .iter()
+        .map(|h| match h.split_once("  ") {
+            Some((k, v)) => (k.trim(), v.trim_start().to_string()),
+            None => ("", h.clone()),
+        })
+        .collect()
+}
+
+/// Status rows as (label, value) text cut to `width`, via the shared
+/// `label_lines` layout so every screen aligns the same way.
+fn status_text(header: &[String], width: usize) -> Vec<(String, String)> {
+    if header.is_empty() {
+        return vec![(String::new(), "—".into())];
+    }
+    let pairs = status_pairs(header);
+    let labeled: Vec<(&str, String)> = pairs
+        .iter()
+        .filter(|(k, _)| !k.is_empty())
+        .cloned()
+        .collect();
+    let mut laid = label_lines(&[&labeled], Some(width))
+        .into_iter()
+        .filter_map(|l| match l {
+            LabelLine::Row { label, value } => Some((label, value)),
+            LabelLine::Divider(_) => None,
+        });
+    pairs
+        .iter()
+        .map(|(k, v)| {
+            if k.is_empty() {
+                (String::new(), truncate(v, width))
+            } else {
+                laid.next().unwrap_or_default()
+            }
+        })
+        .collect()
+}
+
+fn status_lines(header: &[String], width: usize) -> Vec<Line<'static>> {
+    status_text(header, width)
+        .into_iter()
+        .map(|(label, value)| {
+            if label.is_empty() {
+                Line::from(Span::styled(value, theme::white()))
+            } else {
+                Line::from(vec![
+                    Span::styled(label, theme::muted()),
+                    Span::raw("  "),
+                    Span::styled(value, theme::white()),
+                ])
+            }
+        })
+        .collect()
+}
+
+fn status_plain(header: &[String], width: usize) -> Vec<String> {
+    status_text(header, width)
+        .into_iter()
+        .map(|(label, value)| {
+            if label.is_empty() {
+                value
+            } else {
+                format!("{label}  {value}")
+            }
+        })
+        .collect()
+}
+
+fn rule_text(width: usize) -> String {
+    "─".repeat(width.min(RULE_MAX))
+}
+
+fn rule(width: u16) -> Paragraph<'static> {
+    Paragraph::new(Span::styled(rule_text(width as usize), theme::muted()))
+}
+
+fn hint(text: &str, width: u16) -> Paragraph<'static> {
+    Paragraph::new(Span::styled(truncate(text, width as usize), theme::muted()))
+}
+
+fn title_line(title: &str) -> Line<'static> {
+    Line::from(Span::styled(title.to_string(), theme::title()))
+}
+
+/// The top-left block a screen draws in: full width, as tall as its content.
+fn top_left(area: Rect, height: u16) -> Rect {
+    Rect::new(area.x, area.y, area.width, height.min(area.height).max(1))
+}
+
+fn split(area: Rect, rows: &[u16], grow: usize) -> Vec<Rect> {
+    let constraints: Vec<Constraint> = rows
+        .iter()
+        .enumerate()
+        .map(|(i, h)| {
+            if i == grow {
+                Constraint::Min(*h)
+            } else {
+                Constraint::Length(*h)
+            }
+        })
+        .collect();
+    Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(constraints)
+        .split(area)
+        .to_vec()
+}
+
+/// Column where values start: two spaces past the widest label.
+fn value_column(labels: impl Iterator<Item = usize>) -> usize {
+    labels.max().unwrap_or(0) + 2
+}
+
+// Picker: title, header, search, line, list, gap, hint.
+const PK_HEAD: usize = 0;
+const PK_SEARCH: usize = 1;
+const PK_RULE: usize = 2;
+const PK_LIST: usize = 3;
+const PK_HINT: usize = 5;
+
+fn picker_chunks(area: Rect, state: &PickerState) -> Vec<Rect> {
+    split(
+        area,
+        &[1 + state.header.len() as u16, 1, 1, 1, 1, 1],
+        PK_LIST,
+    )
+}
 
 pub fn render_picker(frame: &mut Frame, state: &PickerState) {
     let area = frame.area();
-    let area = inset(area, 1, 0);
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1 + state.header.len() as u16),
-            Constraint::Length(1),
-            Constraint::Length(3),
-            Constraint::Length(1),
-            Constraint::Min(3),
-            Constraint::Length(1),
-            Constraint::Length(1),
-        ])
-        .split(area);
+    let chunks = picker_chunks(area, state);
+    let width = area.width as usize;
 
-    render_header(frame, chunks[0], &state.title, &state.header);
+    let mut head = vec![title_line(&state.title)];
+    for h in &state.header {
+        head.push(Line::from(Span::styled(truncate(h, width), theme::muted())));
+    }
+    frame.render_widget(Paragraph::new(head), chunks[PK_HEAD]);
 
     let search = Paragraph::new(Line::from(vec![
         Span::styled("⌕ ", theme::accent()),
-        Span::styled(state.query.as_str(), theme::white()),
+        Span::styled(state.query.clone(), theme::white()),
         Span::styled("█", theme::accent()),
-    ]))
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(theme::muted())
-            .title(Span::styled(" search ", theme::muted())),
-    );
-    frame.render_widget(search, chunks[2]);
+    ]));
+    frame.render_widget(search, chunks[PK_SEARCH]);
+    frame.render_widget(rule(area.width), chunks[PK_RULE]);
 
     let filtered = state.filtered();
     let items: Vec<ListItem> = filtered
         .iter()
         .enumerate()
         .map(|(i, (_, label))| {
-            let style = if i == state.cursor {
-                theme::selected()
-            } else {
-                theme::white()
-            };
+            let selected = i == state.cursor;
+            let icon = item_icon(label);
+            let room = width.saturating_sub(2 + text_width(icon));
             ListItem::new(Line::from(vec![
-                Span::styled(if i == state.cursor { "❯ " } else { "  " }, theme::accent()),
-                Span::styled(item_icon(label), item_icon_style(label)),
-                Span::styled(label.to_string(), style),
+                Span::styled(if selected { "❯ " } else { "  " }, theme::accent()),
+                Span::styled(icon, item_icon_style(label)),
+                Span::styled(
+                    truncate(label, room),
+                    if selected {
+                        theme::selected()
+                    } else {
+                        theme::white()
+                    },
+                ),
             ]))
         })
         .collect();
-
-    let list = List::new(items).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(theme::muted())
-            .title(Span::styled(format!(" {} ", state.title), theme::title())),
-    );
     let mut list_state = ListState::default()
         .with_selected(Some(state.cursor.min(filtered.len().saturating_sub(1))));
-    frame.render_stateful_widget(list, chunks[4], &mut list_state);
+    frame.render_stateful_widget(List::new(items), chunks[PK_LIST], &mut list_state);
+    frame.render_widget(hint(state.hint(), area.width), chunks[PK_HINT]);
+}
 
-    let footer = Paragraph::new(Span::styled(state.hint(), theme::muted()));
-    frame.render_widget(footer, chunks[6]);
+// Menu: title, status, line, items, gap, hint.
+const MN_TITLE: usize = 0;
+const MN_STATUS: usize = 1;
+const MN_RULE: usize = 2;
+const MN_LIST: usize = 3;
+const MN_HINT: usize = 5;
+
+fn menu_chunks(area: Rect, state: &MenuState) -> Vec<Rect> {
+    let status = state.header.len().max(1) as u16;
+    let items = state.items.len().max(1) as u16;
+    let rows = [1, status, 1, items, 1, 1];
+    let height = rows.iter().sum();
+    split(top_left(area, height), &rows, MN_LIST)
 }
 
 pub fn render_menu(frame: &mut Frame, state: &MenuState) {
     let area = frame.area();
-
-    // Dim full-screen backdrop so the card reads as a modal.
+    let chunks = menu_chunks(area, state);
+    let width = area.width as usize;
+    frame.render_widget(Paragraph::new(title_line(&state.title)), chunks[MN_TITLE]);
     frame.render_widget(
-        Block::default().style(Style::default().bg(theme::backdrop_rgb()).fg(Color::Reset)),
-        area,
+        Paragraph::new(status_lines(&state.header, width)),
+        chunks[MN_STATUS],
     );
-
-    let dialog = centered_dialog(area, dialog_height(state), DIALOG_PREF_WIDTH);
-    frame.render_widget(Clear, dialog);
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(theme::brand())
-        .title(Span::styled(format!(" ▲ {} ", state.title), theme::brand()))
-        .style(Style::default().bg(theme::surface_rgb()));
-    let inner = inset(block.inner(dialog), INSET_X, INSET_Y);
-    frame.render_widget(block, dialog);
-
-    // status | pad | rule | pad | actions | pad | hint
-    let status_h = state.header.len().max(1) as u16;
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(status_h),
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Min(state.items.len().max(1) as u16),
-            Constraint::Length(1),
-            Constraint::Length(1),
-        ])
-        .split(inner);
-
-    render_status_lines(frame, chunks[0], &state.header);
-
-    let rule = Paragraph::new(Span::styled(
-        "─".repeat(chunks[2].width as usize),
-        theme::muted(),
-    ));
-    frame.render_widget(rule, chunks[2]);
+    frame.render_widget(rule(area.width), chunks[MN_RULE]);
 
     let items: Vec<ListItem> = state
         .items
         .iter()
         .enumerate()
         .map(|(i, label)| {
-            let style = if i == state.cursor {
-                theme::selected()
-            } else {
-                theme::white()
-            };
+            let selected = i == state.cursor;
+            let icon = item_icon(label);
+            let room = width.saturating_sub(2 + text_width(icon));
             ListItem::new(Line::from(vec![
-                Span::styled(if i == state.cursor { "❯ " } else { "  " }, theme::accent()),
-                Span::styled(item_icon(label), item_icon_style(label)),
-                Span::styled(label.as_str(), style),
+                Span::styled(if selected { "❯ " } else { "  " }, theme::accent()),
+                Span::styled(icon, item_icon_style(label)),
+                Span::styled(
+                    truncate(label, room),
+                    if selected {
+                        theme::selected()
+                    } else {
+                        theme::white()
+                    },
+                ),
             ]))
         })
         .collect();
-
-    let list = List::new(items);
     let mut list_state = ListState::default().with_selected(Some(state.cursor));
-    frame.render_stateful_widget(list, chunks[4], &mut list_state);
-
-    let footer = Paragraph::new(Span::styled(state.hint(), theme::muted()));
-    frame.render_widget(footer, chunks[6]);
+    frame.render_stateful_widget(List::new(items), chunks[MN_LIST], &mut list_state);
+    frame.render_widget(hint(state.hint(), area.width), chunks[MN_HINT]);
 }
 
-fn dialog_height(state: &MenuState) -> u16 {
-    // borders(2) + inset(2) + status + pads(3) + rule(1) + items + hint(1)
-    let status = state.header.len().max(1) as u16;
-    let items = state.items.len().max(1) as u16;
-    2 + 2 + status + 3 + 1 + items + 1
-}
+// Palette: status, line, input, results, gap, hint.
+const PL_STATUS: usize = 0;
+const PL_RULE: usize = 1;
+const PL_INPUT: usize = 2;
+const PL_RESULTS: usize = 3;
+const PL_HINT: usize = 5;
 
-/// Palette preferred width — AR mark + status captions need room.
-const PALETTE_PREF_WIDTH: u16 = 72;
-
-/// Command palette: floating input on top, fuzzy results below, groups
-/// rendered only where they change. Same centered-card language as the menu.
+/// Command palette (the launcher): account rows, a line, the filter input,
+/// then agents and actions grouped under plain headers.
 pub fn render_palette(frame: &mut Frame, state: &PaletteState) {
     let area = frame.area();
-    frame.render_widget(
-        Block::default().style(Style::default().bg(theme::backdrop_rgb()).fg(Color::Reset)),
-        area,
-    );
-
-    let (dialog, chunks, visible) = palette_card(area, state);
-    frame.render_widget(Clear, dialog);
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(theme::brand())
-        .title(Span::styled(" anyr ", theme::brand()))
-        .style(Style::default().bg(theme::surface_rgb()));
-    frame.render_widget(block, dialog);
+    let (chunks, visible) = palette_chunks(area, state);
+    let width = area.width as usize;
 
     frame.render_widget(
-        Paragraph::new(palette_header_lines(
-            &state.header,
-            chunks[0].width as usize,
-        )),
-        chunks[0],
+        Paragraph::new(status_lines(&state.header, width)),
+        chunks[PL_STATUS],
     );
-    frame.render_widget(
-        Paragraph::new(Span::styled(
-            "─".repeat(chunks[1].width as usize),
-            theme::muted(),
-        )),
-        chunks[1],
-    );
+    frame.render_widget(rule(area.width), chunks[PL_RULE]);
 
     let input = Paragraph::new(Line::from(vec![
         Span::styled("❯ ", theme::accent()),
         Span::styled(state.query.clone(), theme::white()),
         Span::styled("█", theme::accent()),
     ]));
-    frame.render_widget(input, chunks[2]);
+    frame.render_widget(input, chunks[PL_INPUT]);
 
     let filtered = state.filtered();
     if filtered.is_empty() {
         frame.render_widget(
             Paragraph::new(Span::styled("no matches", theme::muted())),
-            chunks[4],
+            chunks[PL_RESULTS],
         );
     } else {
-        let rows = palette_rows(state, &filtered, visible, chunks[4].width as usize);
-        frame.render_widget(Paragraph::new(rows), chunks[4]);
+        let rows = palette_rows(state, &filtered, visible, width);
+        frame.render_widget(Paragraph::new(rows), chunks[PL_RESULTS]);
     }
-
-    let footer = Paragraph::new(Span::styled(state.hint(), theme::muted()));
-    frame.render_widget(footer, chunks[6]);
+    frame.render_widget(hint(state.hint(), area.width), chunks[PL_HINT]);
 }
 
 /// Number of distinct groups among the first `visible` filtered entries —
@@ -240,15 +311,47 @@ fn palette_groups(state: &PaletteState, filtered: &[usize], visible: usize) -> u
     groups.len()
 }
 
+/// One palette row as text parts: marker, icon, label padded to the value
+/// column, detail cut to the width.
+fn palette_row_parts(
+    entry: &PaletteEntry,
+    selected: bool,
+    label_col: usize,
+    width: usize,
+) -> (&'static str, &'static str, String, String) {
+    let marker = if selected { "❯ " } else { "  " };
+    let icon = item_icon(&entry.label);
+    let lead = 2 + text_width(icon);
+    let label = truncate(&entry.label, width.saturating_sub(lead));
+    let pad = label_col.saturating_sub(text_width(&label)).max(2);
+    let padded = format!("{label}{}", " ".repeat(pad));
+    let room = width.saturating_sub(lead + text_width(&padded));
+    let detail = if entry.detail.is_empty() || room == 0 {
+        String::new()
+    } else {
+        truncate(&entry.detail, room)
+    };
+    (marker, icon, padded, detail)
+}
+
+fn palette_label_col(state: &PaletteState, filtered: &[usize]) -> usize {
+    value_column(
+        filtered
+            .iter()
+            .map(|&i| text_width(&state.entries[i].label)),
+    )
+}
+
 /// Build the result lines, inserting a group header whenever it changes and
-/// right-aligning each row's detail column.
+/// lining every detail up in one column.
 fn palette_rows(
     state: &PaletteState,
     filtered: &[usize],
     visible: usize,
-    inner_w: usize,
+    width: usize,
 ) -> Vec<Line<'static>> {
     let (start, vis) = palette_window(state.cursor, filtered.len(), visible.max(1));
+    let label_col = palette_label_col(state, filtered);
     let mut rows: Vec<Line> = Vec::new();
     let mut last_group: Option<&str> = None;
     for (row_i, &entry_i) in filtered.iter().skip(start).take(vis).enumerate() {
@@ -259,99 +362,79 @@ fn palette_rows(
             }
             if !entry.group.is_empty() {
                 rows.push(Line::from(Span::styled(
-                    format!("  {}", entry.group.to_ascii_uppercase()),
+                    truncate(&format!("  {}", entry.group), width),
                     theme::muted(),
                 )));
             }
             last_group = Some(&entry.group);
         }
         let selected = start + row_i == state.cursor;
-        let marker_style = if selected {
-            theme::accent()
-        } else {
-            theme::muted()
-        };
-        let label = entry.label.clone();
-        let icon = item_icon(&label);
-        // Right-align the detail: pad between label and detail like the
-        // settings screen pads its value column.
-        let used = 2 + icon.chars().count() + label.chars().count() + entry.detail.chars().count();
-        let gap = inner_w.saturating_sub(used).max(1);
-        let marker: String = if selected { "❯ ".into() } else { "  ".into() };
+        let (marker, icon, label, detail) = palette_row_parts(entry, selected, label_col, width);
         rows.push(Line::from(vec![
-            Span::styled(marker, marker_style),
-            Span::styled(icon.to_string(), item_icon_style(&label)),
             Span::styled(
-                format!("{label}{}", " ".repeat(gap)),
+                marker,
+                if selected {
+                    theme::accent()
+                } else {
+                    theme::muted()
+                },
+            ),
+            Span::styled(icon, item_icon_style(&entry.label)),
+            Span::styled(
+                label,
                 if selected {
                     theme::selected()
                 } else {
                     theme::white()
                 },
             ),
-            Span::styled(entry.detail.clone(), theme::muted()),
+            Span::styled(detail, theme::muted()),
         ]));
     }
     rows
 }
 
-/// Settings screen: same centered-dialog shape, grouped rows with
-/// right-aligned colored values.
+// Settings: title, status, tabs, line, rows, gap, hint.
+const ST_TITLE: usize = 0;
+const ST_STATUS: usize = 1;
+const ST_TABS: usize = 2;
+const ST_RULE: usize = 3;
+const ST_ROWS: usize = 4;
+const ST_HINT: usize = 6;
+
+fn settings_chunks(area: Rect, state: &SettingsState) -> Vec<Rect> {
+    let status = state.header.len().max(1) as u16;
+    let tabs = if state.tabs.len() > 1 { 1 } else { 0 };
+    let rows_h = state.rows.len().max(1) as u16;
+    let rows = [1, status, tabs, 1, rows_h, 1, 1];
+    let height = rows.iter().sum();
+    split(top_left(area, height), &rows, ST_ROWS)
+}
+
+/// Settings screen: grouped rows, each value in one column after the labels.
 pub fn render_settings(frame: &mut Frame, state: &SettingsState) {
     let area = frame.area();
+    let chunks = settings_chunks(area, state);
+    let width = area.width as usize;
+    frame.render_widget(Paragraph::new(title_line(&state.title)), chunks[ST_TITLE]);
     frame.render_widget(
-        Block::default().style(Style::default().bg(theme::backdrop_rgb()).fg(Color::Reset)),
-        area,
+        Paragraph::new(status_lines(&state.header, width)),
+        chunks[ST_STATUS],
     );
-
-    let dialog = centered_dialog(area, settings_dialog_height(state), SETTINGS_PREF_WIDTH);
-    frame.render_widget(Clear, dialog);
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(theme::brand())
-        .title(Span::styled(format!(" ▲ {} ", state.title), theme::brand()))
-        .style(Style::default().bg(theme::surface_rgb()));
-    let inner = inset(block.inner(dialog), INSET_X, INSET_Y);
-    frame.render_widget(block, dialog);
-
-    let status_h = state.header.len().max(1) as u16;
-    let tab_h = if state.tabs.len() > 1 { 2 } else { 0 };
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(status_h),
-            Constraint::Length(tab_h),
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Min(state.rows.len().max(1) as u16),
-            Constraint::Length(1),
-            Constraint::Length(1),
-        ])
-        .split(inner);
-
-    render_status_lines(frame, chunks[0], &state.header);
-    if tab_h > 0 {
-        frame.render_widget(Paragraph::new(tab_bar_line(state)), chunks[1]);
+    if state.tabs.len() > 1 {
+        frame.render_widget(Paragraph::new(tab_bar_line(state)), chunks[ST_TABS]);
     }
+    frame.render_widget(rule(area.width), chunks[ST_RULE]);
 
-    let rule = Paragraph::new(Span::styled(
-        "─".repeat(chunks[2].width as usize),
-        theme::muted(),
-    ));
-    frame.render_widget(rule, chunks[2]);
-
-    let inner_w = chunks[4].width as usize;
+    let label_col = settings_label_col(state);
     let lines: Vec<Line> = state
         .rows
         .iter()
         .enumerate()
-        .map(|(i, row)| settings_row_line(row, i == state.cursor, inner_w))
+        .map(|(i, row)| settings_row_line(row, i == state.cursor, label_col, width))
         .collect();
-    frame.render_widget(Paragraph::new(lines), chunks[4]);
-
-    let footer = Paragraph::new(Span::styled(state.hint(), theme::muted()));
-    frame.render_widget(footer, chunks[6]);
+    frame.render_widget(Paragraph::new(lines), chunks[ST_ROWS]);
+    frame.render_widget(hint(state.hint(), area.width), chunks[ST_HINT]);
 }
 
 fn tab_bar_line(state: &SettingsState) -> Line<'static> {
@@ -369,88 +452,76 @@ fn tab_bar_line(state: &SettingsState) -> Line<'static> {
     Line::from(spans)
 }
 
-fn settings_dialog_height(state: &SettingsState) -> u16 {
-    // borders(2) + inset(2) + status + pads(3) + rule(1) + rows + hint(1) + tabs
-    let status = state.header.len().max(1) as u16;
-    let rows = state.rows.len().max(1) as u16;
-    let tabs = if state.tabs.len() > 1 { 2 } else { 0 };
-    2 + 2 + status + tabs + 3 + 1 + rows + 1
+fn settings_label_col(state: &SettingsState) -> usize {
+    value_column(state.rows.iter().filter_map(|r| match r {
+        SettingRow::Entry { label, .. } => Some(text_width(label)),
+        _ => None,
+    }))
 }
 
-fn tone_style(tone: Tone) -> Style {
+fn tone_style(tone: Tone) -> ratatui::style::Style {
     match tone {
         Tone::Normal => theme::white(),
         Tone::Good => theme::success(),
         Tone::Model => theme::model(),
-        Tone::Warn => Style::default().fg(theme::rgb(230, 160, 60)),
+        Tone::Warn => theme::warn(),
         Tone::Muted => theme::muted(),
     }
 }
 
-/// One settings row as styled spans: `❯ label      value` (value right-aligned).
-fn settings_row_line(row: &SettingRow, selected: bool, inner_w: usize) -> Line<'static> {
+/// One settings row as text: marker, label padded to the value column, value
+/// cut to the width.
+fn settings_row_text(
+    label: &str,
+    value: &str,
+    selected: bool,
+    label_col: usize,
+    width: usize,
+) -> (&'static str, String, String) {
+    let marker = if selected { "❯ " } else { "  " };
+    let label = truncate(label, width.saturating_sub(2));
+    let pad = label_col.saturating_sub(text_width(&label)).max(2);
+    let padded = format!("{label}{}", " ".repeat(pad));
+    let room = width.saturating_sub(2 + text_width(&padded));
+    (marker, padded, truncate(value, room))
+}
+
+fn settings_row_line(
+    row: &SettingRow,
+    selected: bool,
+    label_col: usize,
+    width: usize,
+) -> Line<'static> {
     match row {
         SettingRow::Section(name) => Line::from(Span::styled(
-            format!("  {}", name.to_ascii_uppercase()),
+            truncate(&format!("  {}", name.to_ascii_uppercase()), width),
             theme::muted(),
         )),
         SettingRow::Gap => Line::from(""),
         SettingRow::Entry { label, value, tone } => {
-            let marker = if selected { "❯ " } else { "  " };
-            let marker_style = if selected {
-                theme::accent()
-            } else {
-                theme::muted()
-            };
-            let label_style = if selected {
-                theme::selected()
-            } else {
-                theme::white()
-            };
-            // Right-align the value: pad the label column to fill the gap.
-            let used = 2 + label.chars().count() + value.chars().count();
-            let gap = inner_w.saturating_sub(used).max(1);
-            let padded_label = format!("{label}{}", " ".repeat(gap));
+            let (marker, label, value) =
+                settings_row_text(label, value, selected, label_col, width);
             Line::from(vec![
-                Span::styled(marker.to_string(), marker_style),
-                Span::styled(padded_label, label_style),
-                Span::styled(value.clone(), tone_style(*tone)),
+                Span::styled(
+                    marker,
+                    if selected {
+                        theme::accent()
+                    } else {
+                        theme::muted()
+                    },
+                ),
+                Span::styled(
+                    label,
+                    if selected {
+                        theme::selected()
+                    } else {
+                        theme::white()
+                    },
+                ),
+                Span::styled(value, tone_style(*tone)),
             ])
         }
     }
-}
-
-/// Shrink a rect by `x` columns and `y` rows on each side.
-fn inset(area: Rect, x: u16, y: u16) -> Rect {
-    if area.width == 0 || area.height == 0 {
-        return area;
-    }
-    let x = x.min(area.width.saturating_sub(1) / 2);
-    let y = y.min(area.height.saturating_sub(1) / 2);
-    Rect::new(
-        area.x + x,
-        area.y + y,
-        area.width.saturating_sub(x.saturating_mul(2)).max(1),
-        area.height.saturating_sub(y.saturating_mul(2)).max(1),
-    )
-}
-
-/// Center a fixed-size dialog; clamp to terminal so narrow TTYs never clip badly.
-fn centered_dialog(area: Rect, content_height: u16, pref_width: u16) -> Rect {
-    if area.width == 0 || area.height == 0 {
-        return area;
-    }
-    let max_w = area.width.saturating_sub(2).max(1);
-    let width = pref_width.min(max_w).max(DIALOG_MIN_WIDTH.min(max_w));
-    let max_h = area.height.saturating_sub(0).max(1);
-    let height = content_height.min(max_h).max(5.min(max_h));
-    let x = area.x + (area.width.saturating_sub(width)) / 2;
-    let y = area.y + (area.height.saturating_sub(height)) / 2;
-    Rect::new(x, y, width, height)
-}
-
-fn card_inner(dialog: Rect) -> Rect {
-    inset(inset(dialog, 1, 1), INSET_X, INSET_Y)
 }
 
 fn in_rect(r: Rect, col: u16, row: u16) -> bool {
@@ -478,44 +549,22 @@ fn palette_window(cursor: usize, n: usize, max: usize) -> (usize, usize) {
     (start, vis)
 }
 
-fn palette_card(area: Rect, state: &PaletteState) -> (Rect, Vec<Rect>, usize) {
+fn palette_chunks(area: Rect, state: &PaletteState) -> (Vec<Rect>, usize) {
     let filtered = state.filtered();
-    let header_h = palette_header_height(&state.header);
+    let status = state.header.len().max(1) as u16;
     let (_, visible) = palette_window(state.cursor, filtered.len(), PALETTE_LIVE_ROWS);
     let groups = palette_groups(state, &filtered, visible);
     let between = groups.saturating_sub(1);
-    let height = 2
-        + 2
-        + header_h
-        + 1
-        + 1
-        + 1
-        + visible.max(1) as u16
-        + groups as u16
-        + between as u16
-        + 1
-        + 1;
-    let dialog = centered_dialog(area, height, PALETTE_PREF_WIDTH);
-    let inner = card_inner(dialog);
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(header_h),
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Min(visible.max(1) as u16),
-            Constraint::Length(1),
-            Constraint::Length(1),
-        ])
-        .split(inner);
-    (dialog, chunks.to_vec(), visible)
+    let results = (visible.max(1) + groups + between) as u16;
+    let rows = [status, 1, 1, results, 1, 1];
+    let height = rows.iter().sum();
+    (split(top_left(area, height), &rows, PL_RESULTS), visible)
 }
 
 /// Filtered-row index under the cell, skipping group headers and gaps.
 pub fn hit_palette(area: Rect, state: &PaletteState, col: u16, row: u16) -> Option<usize> {
-    let (_, chunks, visible) = palette_card(area, state);
-    let results = chunks[4];
+    let (chunks, visible) = palette_chunks(area, state);
+    let results = chunks[PL_RESULTS];
     if !in_rect(results, col, row) {
         return None;
     }
@@ -545,58 +594,21 @@ fn palette_hit_map(state: &PaletteState, visible: usize) -> Vec<Option<usize>> {
 }
 
 pub fn hit_menu(area: Rect, state: &MenuState, col: u16, row: u16) -> Option<usize> {
-    let dialog = centered_dialog(area, dialog_height(state), DIALOG_PREF_WIDTH);
-    let inner = card_inner(dialog);
-    let status_h = state.header.len().max(1) as u16;
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(status_h),
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Min(state.items.len().max(1) as u16),
-            Constraint::Length(1),
-            Constraint::Length(1),
-        ])
-        .split(inner);
-    let list = chunks[4];
+    let list = menu_chunks(area, state)[MN_LIST];
     if !in_rect(list, col, row) {
         return None;
     }
     let i = (row - list.y) as usize;
-    if i < state.items.len() {
-        Some(i)
-    } else {
-        None
-    }
+    (i < state.items.len()).then_some(i)
 }
 
 pub fn hit_picker(area: Rect, state: &PickerState, col: u16, row: u16) -> Option<usize> {
-    let area = inset(area, 1, 0);
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1 + state.header.len() as u16),
-            Constraint::Length(1),
-            Constraint::Length(3),
-            Constraint::Length(1),
-            Constraint::Min(3),
-            Constraint::Length(1),
-            Constraint::Length(1),
-        ])
-        .split(area);
-    let inner = inset(chunks[4], 1, 1);
-    if !in_rect(inner, col, row) {
+    let list = picker_chunks(area, state)[PK_LIST];
+    if !in_rect(list, col, row) {
         return None;
     }
-    let i = (row - inner.y) as usize;
-    let n = state.filtered().len();
-    if i < n {
-        Some(i)
-    } else {
-        None
-    }
+    let i = (row - list.y) as usize;
+    (i < state.filtered().len()).then_some(i)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -606,28 +618,13 @@ pub enum SettingsHit {
 }
 
 pub fn hit_settings(area: Rect, state: &SettingsState, col: u16, row: u16) -> Option<SettingsHit> {
-    let dialog = centered_dialog(area, settings_dialog_height(state), SETTINGS_PREF_WIDTH);
-    let inner = card_inner(dialog);
-    let status_h = state.header.len().max(1) as u16;
-    let tab_h = if state.tabs.len() > 1 { 2 } else { 0 };
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(status_h),
-            Constraint::Length(tab_h),
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Min(state.rows.len().max(1) as u16),
-            Constraint::Length(1),
-            Constraint::Length(1),
-        ])
-        .split(inner);
-    if tab_h > 0 {
-        if let Some(tab) = settings_tab_at(state, chunks[1], col, row) {
+    let chunks = settings_chunks(area, state);
+    if state.tabs.len() > 1 {
+        if let Some(tab) = settings_tab_at(state, chunks[ST_TABS], col, row) {
             return Some(SettingsHit::Tab(tab));
         }
     }
-    let list = chunks[4];
+    let list = chunks[ST_ROWS];
     if !in_rect(list, col, row) {
         return None;
     }
@@ -660,36 +657,6 @@ fn settings_tab_at(state: &SettingsState, bar: Rect, col: u16, row: u16) -> Opti
     None
 }
 
-fn render_status_lines(frame: &mut Frame, area: Rect, header: &[String]) {
-    let mut lines: Vec<Line> = Vec::new();
-    if header.is_empty() {
-        lines.push(Line::from(Span::styled("—", theme::muted())));
-    } else {
-        for h in header {
-            if let Some((key, rest)) = h.split_once("  ") {
-                lines.push(Line::from(vec![
-                    Span::styled(format!("{key:<9}"), theme::muted()),
-                    Span::styled(rest.to_string(), theme::white()),
-                ]));
-            } else {
-                lines.push(Line::from(Span::styled(h.clone(), theme::white())));
-            }
-        }
-    }
-    frame.render_widget(Paragraph::new(lines), area);
-}
-
-fn render_header(frame: &mut Frame, area: Rect, title: &str, header: &[String]) {
-    let mut lines: Vec<Line> = vec![Line::from(Span::styled(
-        format!("▲ {title}"),
-        theme::brand(),
-    ))];
-    for h in header {
-        lines.push(Line::from(Span::styled(h.clone(), theme::muted())));
-    }
-    frame.render_widget(Paragraph::new(lines), area);
-}
-
 /// Geometric row prefix (› for launch rows). No emoji.
 pub fn item_icon(label: &str) -> &'static str {
     let l = label.to_ascii_lowercase();
@@ -706,69 +673,7 @@ pub fn item_icon(label: &str) -> &'static str {
     }
 }
 
-fn mark_line_width() -> usize {
-    crate::term::TUI_MARK_LINES
-        .iter()
-        .map(|s| s.chars().count())
-        .max()
-        .unwrap_or(0)
-}
-
-fn palette_shows_mark(inner_w: usize) -> bool {
-    inner_w >= mark_line_width() + 2 + 12
-}
-
-fn padded_mark_line(i: usize) -> String {
-    let raw = crate::term::TUI_MARK_LINES.get(i).copied().unwrap_or("");
-    let w = mark_line_width();
-    format!("{raw}{}", " ".repeat(w.saturating_sub(raw.chars().count())))
-}
-
-fn palette_header_height(header: &[String]) -> u16 {
-    crate::term::TUI_MARK_LINES.len().max(header.len()).max(1) as u16
-}
-
-fn status_caption_spans(line: &str) -> Vec<Span<'static>> {
-    if let Some((key, rest)) = line.split_once("  ") {
-        vec![
-            Span::styled(format!("{key:<9}"), theme::muted()),
-            Span::styled(rest.to_string(), theme::white()),
-        ]
-    } else {
-        vec![Span::styled(line.to_string(), theme::white())]
-    }
-}
-
-fn palette_header_lines(header: &[String], inner_w: usize) -> Vec<Line<'static>> {
-    let with_mark = palette_shows_mark(inner_w);
-    let n = if with_mark {
-        crate::term::TUI_MARK_LINES.len().max(header.len()).max(1)
-    } else {
-        header.len().max(1)
-    };
-    let mut lines = Vec::with_capacity(n);
-    for i in 0..n {
-        let cap = header.get(i).map(String::as_str).unwrap_or("");
-        let mut spans = Vec::new();
-        if with_mark {
-            spans.push(Span::styled(padded_mark_line(i), theme::white()));
-            if !cap.is_empty() {
-                spans.push(Span::raw("  "));
-            }
-        }
-        if cap.is_empty() {
-            if spans.is_empty() {
-                spans.push(Span::styled("—", theme::muted()));
-            }
-        } else {
-            spans.extend(status_caption_spans(cap));
-        }
-        lines.push(Line::from(spans));
-    }
-    lines
-}
-
-fn item_icon_style(label: &str) -> Style {
+fn item_icon_style(label: &str) -> ratatui::style::Style {
     let l = label.to_ascii_lowercase();
     if label.starts_with("Launch") {
         theme::success()
@@ -781,77 +686,45 @@ fn item_icon_style(label: &str) -> Style {
     }
 }
 
+fn dump_width(cols: usize) -> usize {
+    cols.max(DUMP_MIN_COLS)
+}
+
 /// ANSI-free plain frame for `--dump-tui` and unit tests.
 pub fn plain_picker_lines(state: &PickerState, cols: usize) -> Vec<String> {
-    let width = cols.max(40);
-    let mut lines = Vec::new();
-    lines.push(truncate(&format!("▲ {}", state.title), width));
+    let width = dump_width(cols);
+    let mut lines = vec![truncate(&state.title, width)];
     for h in &state.header {
         lines.push(truncate(h, width));
     }
     lines.push(truncate(&format!("search: {}", state.query), width));
-    lines.push(truncate(&"─".repeat(width.min(48)), width));
+    lines.push(rule_text(width));
     let filtered = state.filtered();
     if filtered.is_empty() {
         lines.push(truncate("  (no matches)", width));
     } else {
         for (i, (_, label)) in filtered.iter().enumerate() {
-            let marker = if i == state.cursor { "◆" } else { " " };
+            let marker = if i == state.cursor { "❯" } else { " " };
             lines.push(truncate(&format!("{marker} {label}"), width));
         }
     }
+    lines.push(String::new());
     lines.push(truncate(state.hint(), width));
     lines
 }
 
 pub fn plain_menu_lines(state: &MenuState, cols: usize) -> Vec<String> {
-    // Dialog-shaped dump: fixed inner width, centered with padding when wide.
-    let term_w = cols.max(DIALOG_MIN_WIDTH as usize);
-    let inner = (DIALOG_PREF_WIDTH as usize)
-        .min(term_w.saturating_sub(2))
-        .max(DIALOG_MIN_WIDTH as usize)
-        .min(term_w);
-    let pad = term_w.saturating_sub(inner) / 2;
-    let pad_s = " ".repeat(pad);
-    let content_w = inner.saturating_sub(2); // inside │…│
-
-    let mut lines = Vec::new();
-    let title_raw = format!(" ▲ {} ", state.title);
-    let title = truncate(&title_raw, content_w);
-    let dash_n = content_w.saturating_sub(title.chars().count());
-    lines.push(format!("{pad_s}╭{title}{}╮", "─".repeat(dash_n)));
-
-    if state.header.is_empty() {
-        lines.push(format!("{pad_s}│{}│", pad_content("—", content_w)));
-    } else {
-        for h in &state.header {
-            lines.push(format!("{pad_s}│{}│", pad_content(h, content_w)));
-        }
-    }
-    lines.push(format!("{pad_s}│{}│", pad_content("", content_w)));
-    lines.push(format!("{pad_s}├{}┤", "─".repeat(content_w)));
-    lines.push(format!("{pad_s}│{}│", pad_content("", content_w)));
-
+    let width = dump_width(cols);
+    let mut lines = vec![truncate(&state.title, width)];
+    lines.extend(status_plain(&state.header, width));
+    lines.push(rule_text(width));
     for (i, label) in state.items.iter().enumerate() {
-        let marker = if i == state.cursor { "◆" } else { " " };
-        let row = format!("{marker} {label}");
-        lines.push(format!("{pad_s}│{}│", pad_content(&row, content_w)));
+        let marker = if i == state.cursor { "❯" } else { " " };
+        lines.push(truncate(&format!("{marker} {label}"), width));
     }
-
-    lines.push(format!("{pad_s}│{}│", pad_content("", content_w)));
-    lines.push(format!("{pad_s}├{}┤", "─".repeat(content_w)));
-    lines.push(format!("{pad_s}│{}│", pad_content(state.hint(), content_w)));
-    lines.push(format!("{pad_s}╰{}╯", "─".repeat(content_w)));
+    lines.push(String::new());
+    lines.push(truncate(state.hint(), width));
     lines
-}
-
-fn pad_content(s: &str, width: usize) -> String {
-    let truncated = truncate(s, width);
-    let chars: Vec<char> = truncated.chars().collect();
-    if chars.len() >= width {
-        return truncated;
-    }
-    format!("{truncated}{}", " ".repeat(width - chars.len()))
 }
 
 pub fn plain_picker_frame(state: &PickerState, cols: usize) -> String {
@@ -866,69 +739,43 @@ pub fn plain_menu_frame(state: &MenuState, cols: usize) -> String {
     lines.join("\n")
 }
 
-fn header_val<'a>(header: &'a [String], key: &str) -> &'a str {
-    let prefix = format!("{key}  ");
-    header
-        .iter()
-        .find_map(|h| h.strip_prefix(&prefix))
-        .unwrap_or("—")
-}
-
-/// Compact HUD dump: two status lines, then actions. No dialog card.
+/// The launcher as plain lines: the same rows the live palette draws, with
+/// every filtered entry (a dump is a snapshot, not a viewport).
 pub fn plain_palette_lines(state: &PaletteState, cols: usize) -> Vec<String> {
-    let width = cols.max(40);
-    let mut lines = Vec::new();
-    let mark = crate::term::TUI_MARK_LINES[0].trim();
-    let account = header_val(&state.header, "account");
-    let credits = header_val(&state.header, "credits");
-    lines.push(truncate(
-        &format!("▲ anyr  {mark}  ·  account  {account}  ·  credits  {credits}"),
-        width,
-    ));
-    let rest: Vec<&str> = state
-        .header
-        .iter()
-        .map(String::as_str)
-        .filter(|h| !h.starts_with("account  ") && !h.starts_with("credits  "))
-        .collect();
-    if !rest.is_empty() {
-        lines.push(truncate(&rest.join("  ·  "), width));
-    }
-    lines.push(String::new());
+    let width = dump_width(cols);
+    let mut lines = status_plain(&state.header, width);
+    lines.push(rule_text(width));
+    lines.push(truncate(&format!("❯ {}", state.query), width));
 
     let filtered = state.filtered();
-
     if filtered.is_empty() {
         lines.push(truncate("  (no matches)", width));
     } else {
-        // Dump is a full snapshot, not a viewport — CI must see every row.
         let cursor_row = state.cursor.min(filtered.len().saturating_sub(1));
+        let label_col = palette_label_col(state, &filtered);
         let mut last_group: Option<&str> = None;
         for (row_i, &entry_i) in filtered.iter().enumerate() {
             let entry = &state.entries[entry_i];
             if last_group != Some(entry.group.as_str()) {
+                if last_group.is_some() {
+                    lines.push(String::new());
+                }
                 if !entry.group.is_empty() {
-                    lines.push(truncate(&entry.group.to_ascii_uppercase(), width));
+                    lines.push(truncate(&format!("  {}", entry.group), width));
                 }
                 last_group = Some(&entry.group);
             }
-            let selected = row_i == cursor_row;
-            let marker = if selected { "◆" } else { " " };
-            let icon = item_icon(&entry.label);
-            let row = if entry.detail.is_empty() {
-                format!("{marker} {icon}{label}", label = entry.label)
-            } else {
-                format!(
-                    "{marker} {icon}{label}  {detail}",
-                    label = entry.label,
-                    detail = entry.detail
-                )
-            };
-            lines.push(truncate(&row, width));
+            let (marker, icon, label, detail) =
+                palette_row_parts(entry, row_i == cursor_row, label_col, width);
+            lines.push(
+                format!("{marker}{icon}{label}{detail}")
+                    .trim_end()
+                    .to_string(),
+            );
         }
     }
-
-    lines.push(truncate("❯  ↵ launch  ·  esc quit", width));
+    lines.push(String::new());
+    lines.push(truncate(state.hint(), width));
     lines
 }
 
@@ -940,29 +787,9 @@ pub fn plain_palette_frame(state: &PaletteState, cols: usize) -> String {
 
 /// ANSI-free settings frame for `--dump-tui` and unit tests.
 pub fn plain_settings_lines(state: &SettingsState, cols: usize) -> Vec<String> {
-    let term_w = cols.max(DIALOG_MIN_WIDTH as usize);
-    let inner = (SETTINGS_PREF_WIDTH as usize)
-        .min(term_w.saturating_sub(2))
-        .max(DIALOG_MIN_WIDTH as usize)
-        .min(term_w);
-    let pad = term_w.saturating_sub(inner) / 2;
-    let pad_s = " ".repeat(pad);
-    let content_w = inner.saturating_sub(2);
-
-    let mut lines = Vec::new();
-    let title_raw = format!(" ▲ {} ", state.title);
-    let title = truncate(&title_raw, content_w);
-    let dash_n = content_w.saturating_sub(title.chars().count());
-    lines.push(format!("{pad_s}╭{title}{}╮", "─".repeat(dash_n)));
-
-    if state.header.is_empty() {
-        lines.push(format!("{pad_s}│{}│", pad_content("—", content_w)));
-    } else {
-        for h in &state.header {
-            lines.push(format!("{pad_s}│{}│", pad_content(h, content_w)));
-        }
-    }
-    lines.push(format!("{pad_s}│{}│", pad_content("", content_w)));
+    let width = dump_width(cols);
+    let mut lines = vec![truncate(&state.title, width)];
+    lines.extend(status_plain(&state.header, width));
     if state.tabs.len() > 1 {
         let bar = state
             .tabs
@@ -977,29 +804,25 @@ pub fn plain_settings_lines(state: &SettingsState, cols: usize) -> Vec<String> {
             })
             .collect::<Vec<_>>()
             .join("  ");
-        lines.push(format!("{pad_s}│{}│", pad_content(&bar, content_w)));
-        lines.push(format!("{pad_s}│{}│", pad_content("", content_w)));
+        lines.push(truncate(&bar, width));
     }
-    lines.push(format!("{pad_s}├{}┤", "─".repeat(content_w)));
-    lines.push(format!("{pad_s}│{}│", pad_content("", content_w)));
-
+    lines.push(rule_text(width));
+    let label_col = settings_label_col(state);
     for (i, row) in state.rows.iter().enumerate() {
-        let line = match row {
-            SettingRow::Section(name) => format!("  {}", name.to_ascii_uppercase()),
+        lines.push(match row {
+            SettingRow::Section(name) => {
+                truncate(&format!("  {}", name.to_ascii_uppercase()), width)
+            }
             SettingRow::Gap => String::new(),
             SettingRow::Entry { label, value, .. } => {
-                let marker = if i == state.cursor { "◆" } else { " " };
-                let used = 4 + label.chars().count() + value.chars().count();
-                let gap = content_w.saturating_sub(used).max(1);
-                format!("{marker} {label}{}{value}", " ".repeat(gap))
+                let (marker, label, value) =
+                    settings_row_text(label, value, i == state.cursor, label_col, width);
+                format!("{marker}{label}{value}").trim_end().to_string()
             }
-        };
-        lines.push(format!("{pad_s}│{}│", pad_content(&line, content_w)));
+        });
     }
-
-    lines.push(format!("{pad_s}├{}┤", "─".repeat(content_w)));
-    lines.push(format!("{pad_s}│{}│", pad_content(state.hint(), content_w)));
-    lines.push(format!("{pad_s}╰{}╯", "─".repeat(content_w)));
+    lines.push(String::new());
+    lines.push(truncate(state.hint(), width));
     lines
 }
 
@@ -1009,22 +832,26 @@ pub fn plain_settings_frame(state: &SettingsState, cols: usize) -> String {
     lines.join("\n")
 }
 
-fn truncate(s: &str, max: usize) -> String {
-    if max == 0 {
-        return String::new();
-    }
-    let chars: Vec<char> = s.chars().collect();
-    if chars.len() <= max {
-        return s.to_string();
-    }
-    let mut out: String = chars.into_iter().take(max.saturating_sub(1)).collect();
-    out.push('…');
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every dumped line starts near column 0 and fits the width: the
+    /// owner's plain top-left rule, with no frame characters.
+    fn assert_plain(frame: &str, cols: usize) {
+        assert!(!frame.contains('\u{1b}'), "must be ANSI-free: {frame}");
+        for line in frame.lines() {
+            assert!(
+                text_width(line) <= cols,
+                "line wider than {cols}: {line:?}\n{frame}"
+            );
+            let indent = line.chars().take_while(|c| *c == ' ').count();
+            assert!(indent <= 4, "indented {indent}: {line:?}\n{frame}");
+            for c in ['╭', '╮', '╰', '╯', '│', '├', '┤'] {
+                assert!(!line.contains(c), "frame char {c} in {line:?}");
+            }
+        }
+    }
 
     #[test]
     fn palette_window_keeps_cursor_visible() {
@@ -1037,35 +864,23 @@ mod tests {
     }
 
     #[test]
-    fn dump_menu_is_ansi_free() {
+    fn dump_menu_is_plain_text_from_the_top_left() {
         let state = MenuState::new(
             "AnyRouter",
             vec!["account  default".into()],
             vec!["Launch claude".into(), "Config".into(), "Quit".into()],
         );
-        let frame = plain_menu_frame(&state, 80);
-        assert!(!frame.contains('\u{1b}'));
-        assert!(frame.contains("▲ AnyRouter"), "{frame}");
-        assert!(frame.contains("◆ Launch claude"), "{frame}");
-        assert!(frame.contains("Config"), "{frame}");
-        assert!(frame.contains("Quit"), "{frame}");
-        assert!(
-            frame.contains('╭') && frame.contains('╯'),
-            "dialog box: {frame}"
-        );
-    }
-
-    #[test]
-    fn dump_menu_narrow_terminal() {
-        let state = MenuState::new(
-            "AnyRouter",
-            vec!["model  auto".into()],
-            vec!["Login / sign in".into(), "Quit".into()],
-        );
-        let frame = plain_menu_frame(&state, 32);
-        assert!(!frame.contains('\u{1b}'));
-        assert!(frame.contains("▲ AnyRouter"), "{frame}");
-        assert!(frame.contains("Quit"), "{frame}");
+        for cols in [32, 80] {
+            let frame = plain_menu_frame(&state, cols);
+            assert_plain(&frame, cols);
+            assert!(frame.starts_with("AnyRouter\n"), "{frame}");
+            assert!(frame.contains("account  default"), "{frame}");
+            assert!(frame.contains("❯ Launch claude"), "{frame}");
+            assert!(
+                frame.contains("  Config") && frame.contains("  Quit"),
+                "{frame}"
+            );
+        }
     }
 
     #[test]
@@ -1074,7 +889,7 @@ mod tests {
         state.query = "a".into();
         let frame = plain_picker_frame(&state, 80);
         assert!(frame.contains("search: a"));
-        assert!(!frame.contains('\u{1b}'));
+        assert_plain(&frame, 80);
     }
 
     #[test]
@@ -1088,71 +903,68 @@ mod tests {
         assert!(!item_icon("claude").contains("⚡"));
     }
 
-    #[test]
-    fn dump_palette_shows_mark_status_and_icons() {
-        let state = PaletteState::new(
+    fn launcher_state() -> PaletteState {
+        PaletteState::new(
             vec![
                 "account  duyet · me@example.co".into(),
-                "key      sk-ar-v1-ab…wxyz".into(),
-                "model    stealth/ox-alpha".into(),
-                "agent    claude".into(),
                 "credits  $12.50".into(),
             ],
             vec![
-                PaletteEntry::new("claude", "stealth/ox-alpha", "launch", "Launch claude"),
                 PaletteEntry::new(
-                    "model…",
-                    "switch session default",
-                    "configure",
-                    "Switch model",
+                    "claude",
+                    "stealth/ox-alpha · …wxyz",
+                    "launch",
+                    "Launch claude",
                 ),
-                PaletteEntry::new("quit", "esc works too", "configure", "Quit"),
+                PaletteEntry::new("codex", "auto · …wxyz", "launch", "Launch codex"),
+                PaletteEntry::new("model…", "for claude", "configure · claude", "Switch model"),
+                PaletteEntry::new("quit", "esc works too", "more", "Quit"),
             ],
-        );
+        )
+    }
+
+    #[test]
+    fn dump_palette_is_status_rows_a_line_and_the_agent_list() {
+        let state = launcher_state();
         let frame = plain_palette_frame(&state, 80);
-        assert!(!frame.contains('\u{1b}'), "must be ANSI-free: {frame}");
-        assert!(frame.contains(" anyr "), "{frame}");
+        assert_plain(&frame, 80);
+        let lines: Vec<&str> = frame.lines().collect();
+        // WHY: account and credits first, from row 0, then one thin line.
+        assert_eq!(lines[0], "account  duyet · me@example.co", "{frame}");
+        assert_eq!(lines[1], "credits  $12.50", "{frame}");
+        assert!(lines[2].chars().all(|c| c == '─'), "{frame}");
         assert!(
-            frame.contains(crate::term::TUI_MARK_LINES[0].trim()),
-            "AR mark missing:\n{frame}"
+            !frame.contains(crate::term::TUI_MARK_LINES[1].trim()),
+            "no logo:\n{frame}"
         );
-        for line in [
-            "account  duyet · me@example.co",
-            "key      sk-ar-v1-ab…wxyz",
-            "model    stealth/ox-alpha",
-            "agent    claude",
-            "credits  $12.50",
-        ] {
-            assert!(frame.contains(line), "missing {line} in:\n{frame}");
+        // Details line up in one column after the longest label.
+        let col = |needle: &str| {
+            let line = lines.iter().find(|l| l.contains(needle)).unwrap();
+            line[..line.find(needle).unwrap()].chars().count()
+        };
+        assert_eq!(col("stealth/ox-alpha"), col("auto · …wxyz"), "{frame}");
+        assert!(frame.contains("❯ › claude"), "{frame}");
+        assert!(frame.contains("  configure · claude"), "{frame}");
+        assert_eq!(*lines.last().unwrap(), hint_text(), "{frame}");
+    }
+
+    fn hint_text() -> &'static str {
+        super::super::keys::hint_line(super::super::keys::Surface::Palette)
+    }
+
+    #[test]
+    fn dump_palette_cuts_long_details_at_narrow_widths() {
+        let mut state = launcher_state();
+        state.entries[0].detail = "x".repeat(300);
+        for cols in [40, 80, 200] {
+            let frame = plain_palette_frame(&state, cols);
+            assert_plain(&frame, cols);
+            assert!(frame.contains('…'), "{cols}: long detail not cut:\n{frame}");
         }
-        assert!(!frame.contains("⚡"), "emoji icons removed:\n{frame}");
-        assert!(frame.contains("claude"), "{frame}");
-        assert!(frame.contains("LAUNCH"), "{frame}");
-        assert!(frame.contains("CONFIGURE"), "{frame}");
-        assert!(frame.contains('❯'), "{frame}");
     }
 
     #[test]
-    fn inset_shrinks_and_clamps() {
-        let r = Rect::new(0, 0, 20, 10);
-        let i = inset(r, 1, 1);
-        assert_eq!(i, Rect::new(1, 1, 18, 8));
-        let tiny = Rect::new(0, 0, 2, 2);
-        let i = inset(tiny, 4, 4);
-        assert!(i.width >= 1 && i.height >= 1);
-    }
-
-    #[test]
-    fn centered_dialog_clamps_to_area() {
-        let tiny = Rect::new(0, 0, 20, 8);
-        let d = centered_dialog(tiny, 20, 52);
-        assert!(d.width <= tiny.width);
-        assert!(d.height <= tiny.height);
-        assert!(d.width >= 1);
-    }
-
-    #[test]
-    fn dump_settings_is_ansi_free_and_grouped() {
+    fn dump_settings_is_plain_and_grouped() {
         use super::super::state::{SettingRow, SettingsState, Tone};
         let state = SettingsState::new(
             "Config",
@@ -1175,56 +987,31 @@ mod tests {
         )
         .with_tabs(vec!["general".into(), "claude".into(), "codex".into()], 0);
         let frame = plain_settings_frame(&state, 80);
-        assert!(!frame.contains('\u{1b}'), "must be ANSI-free: {frame}");
-        assert!(frame.contains("▲ Config"), "{frame}");
+        assert_plain(&frame, 80);
+        assert!(frame.starts_with("Config\n"), "{frame}");
         assert!(frame.contains("[general]"), "{frame}");
-        assert!(frame.contains("ACCOUNT"), "{frame}");
-        assert!(frame.contains("MODEL"), "{frame}");
-        assert!(frame.contains("◆ account"), "{frame}");
-        assert!(frame.contains('╭') && frame.contains('╯'), "{frame}");
+        assert!(
+            frame.contains("ACCOUNT") && frame.contains("MODEL"),
+            "{frame}"
+        );
+        assert!(frame.contains("❯ account  duyet"), "{frame}");
         // Blank line between ACCOUNT and MODEL sections.
         let dumped: Vec<&str> = frame.lines().collect();
-        let acct = dumped
-            .iter()
-            .position(|l| l.contains("ACCOUNT"))
-            .expect("ACCOUNT");
-        let model = dumped
-            .iter()
-            .position(|l| l.contains("MODEL"))
-            .expect("MODEL");
+        let acct = dumped.iter().position(|l| l.contains("ACCOUNT")).unwrap();
+        let model = dumped.iter().position(|l| l.contains("MODEL")).unwrap();
         assert!(
             model > acct + 1,
             "expected padding between sections:\n{frame}"
         );
-        // Values right-aligned inside the card (before the right border).
-        let row_line = frame
-            .lines()
-            .find(|l| l.contains("default") && l.contains("auto"))
-            .expect("default row");
-        assert!(
-            row_line
-                .trim_end()
-                .trim_end_matches('│')
-                .trim_end()
-                .ends_with("auto"),
-            "{row_line}"
-        );
-        // Narrow terminals still render.
-        let narrow = plain_settings_frame(&state, 30);
-        assert!(!narrow.contains('\u{1b}'));
-        assert!(narrow.contains("▲ Config"), "{narrow}");
+        // Values share one column after the labels, not the far right edge.
+        assert!(frame.contains("  default  auto"), "{frame}");
+        assert_plain(&plain_settings_frame(&state, 30), 30);
     }
 
     #[test]
     fn palette_click_skips_group_headers_and_hits_rows() {
         let state = PaletteState::new(
-            vec![
-                "account  default".into(),
-                "key      sk-ar-…".into(),
-                "model    auto".into(),
-                "agent    claude".into(),
-                "credits  -".into(),
-            ],
+            vec!["account  default".into(), "credits  -".into()],
             vec![
                 PaletteEntry::new("claude", "x", "launch", "Launch claude"),
                 PaletteEntry::new("codex", "y", "launch", "Launch codex"),
@@ -1232,8 +1019,10 @@ mod tests {
             ],
         );
         let area = Rect::new(0, 0, 80, 40);
-        let (_, chunks, _) = palette_card(area, &state);
-        let results = chunks[4];
+        let (chunks, _) = palette_chunks(area, &state);
+        let results = chunks[PL_RESULTS];
+        // Status rows, the line and the input sit above the results.
+        assert_eq!(results.y, 4);
         let x = results.x + 2;
         assert_eq!(hit_palette(area, &state, x, results.y), None);
         assert_eq!(hit_palette(area, &state, x, results.y + 1), Some(0));
@@ -1252,26 +1041,42 @@ mod tests {
             vec!["Launch claude".into(), "Config".into(), "Quit".into()],
         );
         let area = Rect::new(0, 0, 80, 24);
-        let dialog = centered_dialog(area, dialog_height(&state), DIALOG_PREF_WIDTH);
-        let inner = card_inner(dialog);
-        let status_h = 1u16;
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(status_h),
-                Constraint::Length(1),
-                Constraint::Length(1),
-                Constraint::Length(1),
-                Constraint::Min(3),
-                Constraint::Length(1),
-                Constraint::Length(1),
-            ])
-            .split(inner);
-        let list = chunks[4];
-        let x = list.x + 2;
-        assert_eq!(hit_menu(area, &state, x, list.y), Some(0));
-        assert_eq!(hit_menu(area, &state, x, list.y + 1), Some(1));
-        assert_eq!(hit_menu(area, &state, x, list.y + 2), Some(2));
+        // Title, one status row and the line: the list starts on row 3.
+        let y = 3;
+        assert_eq!(hit_menu(area, &state, 2, y), Some(0));
+        assert_eq!(hit_menu(area, &state, 2, y + 1), Some(1));
+        assert_eq!(hit_menu(area, &state, 2, y + 2), Some(2));
+        assert_eq!(hit_menu(area, &state, 2, y + 3), None);
         assert_eq!(hit_menu(area, &state, 0, 0), None);
+    }
+
+    #[test]
+    fn live_palette_draws_from_the_top_left_without_a_frame() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        for cols in [40u16, 80, 200] {
+            let mut term = Terminal::new(TestBackend::new(cols, 30)).unwrap();
+            let state = launcher_state();
+            term.draw(|f| render_palette(f, &state)).unwrap();
+            let buf = term.backend().buffer().clone();
+            let row = |y: u16| -> String {
+                (0..cols)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect()
+            };
+            assert!(row(0).starts_with("account  duyet"), "{cols}: {:?}", row(0));
+            assert!(
+                row(1).starts_with("credits  $12.50"),
+                "{cols}: {:?}",
+                row(1)
+            );
+            for y in 0..30 {
+                let r = row(y);
+                assert!(
+                    !r.contains('│') && !r.contains('╭'),
+                    "{cols}: frame on row {y}: {r:?}"
+                );
+            }
+        }
     }
 }

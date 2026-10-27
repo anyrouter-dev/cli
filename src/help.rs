@@ -429,6 +429,7 @@ FLAGS
   --json       Print as JSON: account, user, key_masked, default_model,
                config_path, base_url (identity_error if the lookup failed)
   --profile    Use a named account
+  --verbose    Print the full error on stderr when a lookup failed
 
 Also available as `{bin} whoami`.
 ";

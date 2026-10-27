@@ -33,7 +33,13 @@ jobs:
         with:
           tool: cargo-llvm-cov
 
+      # tests/tty_render.rs drives anyr in a pseudo-terminal under each shell.
+      - name: install shells for the terminal render tests
+        run: sudo apt-get update -q && sudo apt-get install -y -q zsh fish
+
       - name: cargo llvm-cov (full suite)
+        env:
+          ANYR_PTY_REQUIRE_SHELLS: "1"
         run: cargo llvm-cov --locked --all-targets --lcov --output-path lcov.info
 
       # Repo secret CODECOV_TOKEN from https://app.codecov.io/gh/anyrouter-dev/cli
@@ -109,8 +115,19 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      # tests/tty_render.rs drives anyr in a pseudo-terminal under each shell.
+      - name: install shells for the terminal render tests (linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -q && sudo apt-get install -y -q zsh fish
+
+      - name: install shells for the terminal render tests (macos)
+        if: runner.os == 'macOS'
+        run: brew install fish
+
       - name: cargo test
         timeout-minutes: 20
+        env:
+          ANYR_PTY_REQUIRE_SHELLS: ${{ runner.os == 'Windows' && '0' || '1' }}
         run: cargo test --locked --all-targets
 
       - name: stamp beta version (main)

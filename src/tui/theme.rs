@@ -6,55 +6,57 @@ pub fn rgb(r: u8, g: u8, b: u8) -> Color {
     Color::Rgb(r, g, b)
 }
 
-/// Dim backdrop behind the centered launcher dialog.
-pub fn backdrop_rgb() -> Color {
-    rgb(12, 12, 14)
+/// `NO_COLOR` or `TERM=dumb`: styles keep bold and the selection, drop color.
+fn plain() -> bool {
+    static PLAIN: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *PLAIN.get_or_init(|| std::env::var_os("NO_COLOR").is_some() || crate::term::dumb_terminal())
 }
 
-/// Dialog card surface (slightly lifted from backdrop).
-pub fn surface_rgb() -> Color {
-    rgb(22, 22, 26)
+fn fg(c: Color) -> Style {
+    if plain() {
+        Style::default()
+    } else {
+        Style::default().fg(c)
+    }
 }
 
 pub fn brand() -> Style {
-    Style::default()
-        .fg(rgb(246, 130, 31))
-        .add_modifier(Modifier::BOLD)
+    fg(rgb(246, 130, 31)).add_modifier(Modifier::BOLD)
 }
 
 pub fn accent() -> Style {
-    Style::default()
-        .fg(rgb(230, 160, 60))
-        .add_modifier(Modifier::BOLD)
+    fg(rgb(230, 160, 60)).add_modifier(Modifier::BOLD)
 }
 
 pub fn muted() -> Style {
-    Style::default().fg(rgb(108, 108, 108))
+    fg(rgb(108, 108, 108))
 }
 
 pub fn success() -> Style {
-    Style::default()
-        .fg(rgb(158, 206, 106))
-        .add_modifier(Modifier::BOLD)
+    fg(rgb(158, 206, 106)).add_modifier(Modifier::BOLD)
 }
 
 pub fn model() -> Style {
-    Style::default().fg(rgb(58, 149, 171))
+    fg(rgb(58, 149, 171))
 }
 
 pub fn white() -> Style {
-    Style::default().fg(rgb(225, 225, 225))
+    fg(rgb(225, 225, 225))
 }
 
 pub fn selected() -> Style {
-    Style::default()
-        .fg(rgb(225, 225, 225))
-        .bg(rgb(46, 46, 51))
-        .add_modifier(Modifier::BOLD)
+    let style = if plain() {
+        Style::default()
+    } else {
+        fg(rgb(225, 225, 225)).bg(rgb(46, 46, 51))
+    };
+    style.add_modifier(Modifier::BOLD)
+}
+
+pub fn warn() -> Style {
+    fg(rgb(230, 160, 60))
 }
 
 pub fn title() -> Style {
-    Style::default()
-        .fg(rgb(225, 225, 225))
-        .add_modifier(Modifier::BOLD)
+    fg(rgb(225, 225, 225)).add_modifier(Modifier::BOLD)
 }

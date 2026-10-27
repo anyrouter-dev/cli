@@ -90,3 +90,26 @@ fn signed_out_prints_the_login_hint_and_exits_4() {
     assert!(stdout.contains("anyr auth login"), "{stdout}");
     let _ = std::fs::remove_dir_all(&home);
 }
+
+#[test]
+fn failed_key_lookup_is_short_on_stdout_and_full_with_verbose() {
+    let base = serve_routes(vec![
+        ("/api/v1/me", 200, ME.into()),
+        ("/api/v1/key", 500, r#"{"error":{"message":"boom"}}"#.into()),
+    ]);
+    let (code, out, err) = run(&base, &["auth", "status"], None);
+    assert_eq!(code, 0, "{out}{err}");
+    // WHY: a long error wrapped across the terminal and broke the rows.
+    assert!(out.contains("scopes    unavailable (HTTP 500)"), "{out}");
+    assert!(!out.contains("plan"), "unknown plan must be hidden:\n{out}");
+    assert!(
+        !err.contains("key lookup"),
+        "quiet without --verbose: {err}"
+    );
+    let (code, out, err) = run(&base, &["auth", "status", "--verbose"], None);
+    assert_eq!(code, 0, "{out}{err}");
+    assert!(
+        err.contains("key lookup: Could not fetch key info (HTTP 500)."),
+        "{err}"
+    );
+}

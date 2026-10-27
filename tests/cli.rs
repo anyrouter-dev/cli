@@ -2040,10 +2040,12 @@ profiles:
         !stdout.contains('\u{1b}'),
         "dump must be ANSI-free: {stdout}"
     );
+    // WHY: plain text from the top-left, no card frame (owner style rule).
     assert!(
-        stdout.contains('╭') && stdout.contains('╯'),
-        "dialog card: {stdout}"
+        !stdout.contains('╭') && !stdout.contains('│'),
+        "no frame: {stdout}"
     );
+    assert!(stdout.starts_with("Config"), "starts top-left: {stdout}");
     // Grouped sections with current values.
     for section in ["ACCOUNT", "MODEL", "AGENT", "GENERAL"] {
         assert!(stdout.contains(section), "missing {section} in:\n{stdout}");

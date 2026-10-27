@@ -32,6 +32,14 @@ use crate::cmd::models::{
 };
 use crate::cmd::usage::run_usage;
 
+/// `…6789` from a masked key: enough to tell keys apart in a one-line row.
+fn key_last4(masked: &str) -> String {
+    match masked.rsplit_once('…') {
+        Some((_, tail)) if !tail.is_empty() => format!("…{tail}"),
+        _ => masked.to_string(),
+    }
+}
+
 pub(crate) fn agent_binding_detail(
     cfg: &crate::config::Config,
     id: &str,
@@ -57,19 +65,22 @@ pub(crate) fn agent_binding_detail(
         .filter(|s| !s.is_empty())
         .unwrap_or(cfg.active_profile.as_str());
     let key = if signed_in {
-        if let Some(k) = binding
+        let k = binding
             .and_then(|b| b.api_key.as_deref())
             .map(str::trim)
             .filter(|s| !s.is_empty())
-        {
-            mask_api_key(Some(k))
-        } else {
-            mask_api_key(profile.and_then(|p| p.api_key.as_deref()))
-        }
+            .or_else(|| profile.and_then(|p| p.api_key.as_deref()));
+        key_last4(&mask_api_key(k))
     } else {
         "(not signed in)".into()
     };
-    let mut parts = vec![model, account.to_string(), key];
+    // The account shows only when this agent uses another one than the
+    // active profile; the account row above already names that one.
+    let mut parts = vec![model];
+    if account != cfg.active_profile {
+        parts.push(account.to_string());
+    }
+    parts.push(key);
     if let Some(r) = binding.map(|b| &b.routing) {
         if r.wants_exacto() {
             parts.push("exacto".into());
