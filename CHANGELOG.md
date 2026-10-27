@@ -10,6 +10,18 @@ GitHub Releases use this file as the release notes (full history through that ta
 
 * **cli:** add `anyr decision` for typed `POST /api/v1/decisions` requests with flag or stdin JSON input. Known Decisions models are refused by chat-agent launchers. ([duyet/anyrouter#3550](https://github.com/duyet/anyrouter/issues/3550))
 
+## [0.1.35](https://github.com/anyrouter-dev/cli/compare/v0.1.34...v0.1.35) (2026-10-27)
+
+
+### Features
+
+* **keys:** drop the impossible key picker, name device keys, add keys audit ([#232](https://github.com/anyrouter-dev/cli/issues/232)) ([710f40c](https://github.com/anyrouter-dev/cli/commit/710f40c7dd373f3b20b3df896925d791b02df6c5))
+
+
+### Bug Fixes
+
+* **tui:** plain top-left screens; raw-mode rows back to column 0; rows cut to width ([#234](https://github.com/anyrouter-dev/cli/issues/234)) ([9a9d3f5](https://github.com/anyrouter-dev/cli/commit/9a9d3f55b42aa0582a8ef96184130852b74e7164))
+
 ## [0.1.34](https://github.com/anyrouter-dev/cli/compare/v0.1.33...v0.1.34) (2026-10-27)
 
 
