@@ -343,6 +343,32 @@ pub fn tool_color(tool: &str) -> &'static str {
     }
 }
 
+/// Plain `label  value` lines from column 0: labels dimmed and padded to one
+/// column, groups split by one thin line. No frame. NO_COLOR drops the dim.
+pub fn label_rows(groups: &[&[(&str, String)]]) -> String {
+    let rows = || groups.iter().flat_map(|g| g.iter());
+    let label_w = rows().map(|(l, _)| l.chars().count()).max().unwrap_or(0);
+    let line_w = rows()
+        .map(|(_, v)| label_w + 2 + v.chars().count())
+        .max()
+        .unwrap_or(0)
+        .min(60);
+    let mut out = String::new();
+    for (i, group) in groups.iter().filter(|g| !g.is_empty()).enumerate() {
+        if i > 0 {
+            out.push_str(&divider(line_w));
+            out.push('\n');
+        }
+        for (label, value) in group.iter() {
+            out.push_str(&dim(&format!("{label:<label_w$}")));
+            out.push_str("  ");
+            out.push_str(value);
+            out.push('\n');
+        }
+    }
+    out
+}
+
 pub fn divider(width: usize) -> String {
     dim(&"─".repeat(width.max(8)))
 }
@@ -918,6 +944,19 @@ pub fn rank_ids(query: &str, ids: &[String]) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn label_rows_align_one_column_and_split_groups_with_one_line() {
+        let a = [("account", "duyet".to_string()), ("plan", "free".into())];
+        let b = [("base url", "https://x".to_string())];
+        let out = super::label_rows(&[&a, &[], &b]);
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines[0], "account   duyet");
+        assert_eq!(lines[1], "plan      free");
+        assert!(lines[2].chars().all(|c| c == '─'), "{out}");
+        assert_eq!(lines[3], "base url  https://x");
+        assert_eq!(lines.len(), 4, "empty groups add no separator:\n{out}");
+    }
+
     use super::*;
 
     #[test]
