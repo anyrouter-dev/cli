@@ -2,18 +2,18 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use crate::config::write_config;
-use crate::http::{delete_key, fetch_keys, is_active_key_row, reveal_key};
+use crate::http::{delete_key, fetch_keys, is_active_key_row};
 use crate::key::{
-    config_for_credential, load_config_if_present, mask_api_key, profile_or_default,
-    resolve_api_key, resolve_base_url,
+    config_for_credential, load_config_if_present, profile_or_default, resolve_api_key,
+    resolve_base_url,
 };
 use crate::parse::{get_string_flag, ParsedArgs};
 use crate::term;
 
 use crate::api::{get, send, Ctx};
 use crate::cmd::dispatch::{config_path, hint};
+use crate::cmd::key_audit::{last4, revoke_ref, short_ref, suggest_removals};
 use crate::cmd::key_scope::{render_show, scope_fields};
-use crate::cmd::models::{flag_agent, pick_list, save_agent_key};
 
 pub(crate) fn keys_credential(
     parsed: &ParsedArgs,
@@ -30,12 +30,6 @@ pub(crate) fn keys_credential(
     Ok((path, cfg, base, api_key))
 }
 
-fn now_secs() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs() as i64)
-}
-
 fn key_ctx(parsed: &ParsedArgs, base: &str, cred: &str) -> Ctx {
     Ctx {
         base: base.to_string(),
@@ -45,22 +39,31 @@ fn key_ctx(parsed: &ParsedArgs, base: &str, cred: &str) -> Ctx {
     }
 }
 
-/// The one key whose hash equals or starts with `hash`.
+/// The one key matching `needle`: its id, its hash or a hash prefix, or the
+/// last four characters of the key.
 fn resolve_key(
     rows: &[crate::http::RemoteKey],
-    hash: &str,
+    needle: &str,
 ) -> Result<crate::http::RemoteKey, String> {
     let matches: Vec<_> = rows
         .iter()
-        .filter(|r| r.hash == hash || r.hash.starts_with(hash))
+        .filter(|r| {
+            r.id == needle
+                || r.hash == needle
+                || r.hash.starts_with(needle)
+                || (needle.len() == 4 && last4(&r.masked) == needle)
+        })
         .collect();
     match matches.as_slice() {
         [one] => Ok((*one).clone()),
-        [] => Err(hint(&format!(
-            "No key matches \"{hash}\". See: {{bin}} keys list"
-        ))),
+        [] => Err(crate::exit::tag(
+            crate::exit::NOT_FOUND,
+            hint(&format!(
+                "No key matches \"{needle}\". See: {{bin}} keys list"
+            )),
+        )),
         _ => Err(format!(
-            "\"{hash}\" matches {} keys — use a longer hash prefix.",
+            "\"{needle}\" matches {} keys — use the key id or a longer hash prefix.",
             matches.len()
         )),
     }
@@ -132,7 +135,9 @@ pub(crate) fn run_keys(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> R
             println!();
             println!(
                 "{}",
-                term::dim(&hint("* = key this profile uses · switch: {bin} keys use"))
+                term::dim(&hint(
+                    "* = key this machine uses · new key: {bin} login · unused keys: {bin} keys audit"
+                ))
             );
             Ok(0)
         }
@@ -144,7 +149,7 @@ pub(crate) fn run_keys(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> R
                 .cloned()
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(default_key_name);
-            let mut body = scope_fields(parsed, now_secs())?;
+            let mut body = scope_fields(parsed, crate::civil::now_secs())?;
             body.remove("disabled");
             body.insert("name".into(), serde_json::Value::String(name.clone()));
             let ctx = key_ctx(parsed, &base, &cred);
@@ -190,7 +195,7 @@ pub(crate) fn run_keys(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> R
             let row = resolve_key(&fetch_keys(&base, &cred)?, &hash)?;
             let url = format!("/v1/keys/{}", row.hash);
             if sub == "update" {
-                let body = scope_fields(parsed, now_secs())?;
+                let body = scope_fields(parsed, crate::civil::now_secs())?;
                 if body.is_empty() {
                     return Err(hint(
                         "Nothing to update. Pass --limit, --reset, --endpoints, --expires, --disable or --enable.",
@@ -221,114 +226,32 @@ pub(crate) fn run_keys(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> R
             }
             Ok(0)
         }
-        "use" => {
-            let (path, mut cfg, base, api_key) = keys_credential(parsed, env)?;
-            let rows = crate::http::keys_newest_first(
-                fetch_keys(&base, &api_key)?
-                    .into_iter()
-                    .filter(|r| r.active)
-                    .collect(),
-            );
-            if rows.is_empty() {
-                return Err(hint("No active keys. Create one: {bin} keys create"));
-            }
-            let hash_arg = parsed.passthrough.get(1).cloned();
-            let row = if let Some(hash) = hash_arg {
-                let matches: Vec<_> = rows
-                    .iter()
-                    .filter(|r| r.hash == hash || r.hash.starts_with(&hash))
-                    .collect();
-                match matches.as_slice() {
-                    [one] => (*one).clone(),
-                    [] => {
-                        return Err(hint(&format!(
-                            "No key matches \"{hash}\". See: {{bin}} keys list"
-                        )))
-                    }
-                    _ => {
-                        return Err(format!(
-                            "\"{hash}\" matches {} keys — use a longer hash prefix.",
-                            matches.len()
-                        ))
-                    }
-                }
-            } else if term::is_interactive() {
-                let current = rows
-                    .iter()
-                    .position(|r| is_active_key_row(&r.masked, Some(&api_key)))
-                    .or(Some(0));
-                let labels: Vec<String> = rows
-                    .iter()
-                    .enumerate()
-                    .map(|(i, r)| key_pick_label(r, current == Some(i)))
-                    .collect();
-                let idx = pick_list(
-                    "API key",
-                    &[
-                        "newest first · type to search".into(),
-                        format!("current  {}", mask_api_key(Some(&api_key))),
-                    ],
-                    &labels,
-                    current,
-                )?;
-                rows[idx].clone()
-            } else {
-                return Err(hint(
-                    "Usage: {bin} keys use <hash>   (interactive picker needs a terminal)",
-                ));
-            };
-            let revealed = reveal_key(&base, &api_key, &row.hash)?;
-            if let Some(agent) = flag_agent(parsed) {
-                return save_agent_key(&path, &agent, &revealed);
-            }
-            let active = cfg.active_profile.clone();
-            if let Some(p) = cfg.profiles.get_mut(&active) {
-                p.api_key = Some(revealed);
-            }
-            write_config(&cfg, &path)?;
-            println!(
-                "{}  now using {} ({})",
-                term::ok("Switched"),
-                term::accent(&row.name),
-                mask_api_key(cfg.profiles.get(&active).and_then(|p| p.api_key.as_deref()))
-            );
-            Ok(0)
-        }
+        "use" => Err(hint(
+            "This machine cannot fetch another key's secret. Get a fresh key: {bin} login, or paste one copied from the dashboard: {bin} login --key -",
+        )),
+        "audit" => run_keys_audit(parsed, env),
         "revoke" | "rm" | "delete" => {
             let hash = parsed.passthrough.get(1).cloned().ok_or_else(|| {
-                hint("Usage: {bin} keys revoke <hash>   (find hashes: {bin} keys list)")
+                hint("Usage: {bin} keys revoke <last4|id|hash>   (find keys: {bin} keys list)")
             })?;
             let (_path, _cfg, base, cred) = keys_credential(parsed, env)?;
-            let rows = fetch_keys(&base, &cred)?;
-            let matches: Vec<_> = rows
-                .iter()
-                .filter(|r| r.hash == hash || r.hash.starts_with(&hash))
-                .collect();
-            let row = match matches.as_slice() {
-                [one] => *one,
-                [] => {
-                    return Err(crate::exit::tag(
-                        crate::exit::NOT_FOUND,
-                        format!(
-                            "No key matches \"{hash}\". See: {} keys list",
-                            crate::help::invoked_bin()
-                        ),
-                    ))
-                }
-                _ => {
-                    return Err(format!(
-                        "\"{hash}\" matches {} keys — use a longer hash prefix.",
-                        matches.len()
-                    ))
-                }
-            };
+            let row = resolve_key(&fetch_keys(&base, &cred)?, &hash)?;
             if !parsed.skip_confirm() {
                 if !term::is_interactive() {
                     return Err(crate::cmd::dispatch::hint(
                         "Revoking a key is destructive; pass --yes to run non-interactively.",
                     ));
                 }
-                if !term::confirm(&format!("Revoke \"{}\" ({})?", row.name, row.masked)) {
+                let this_machine = if is_active_key_row(&row.masked, Some(&cred)) {
+                    " This is the key this machine uses."
+                } else {
+                    ""
+                };
+                if !term::confirm(&format!(
+                    "Revoke \"{}\" ({})?{this_machine}",
+                    row.name,
+                    short_ref(&row)
+                )) {
                     return Ok(1);
                 }
             }
@@ -337,43 +260,67 @@ pub(crate) fn run_keys(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> R
                 "{}  revoked \"{}\" ({})",
                 term::ok("Revoked"),
                 row.name,
-                row.masked
+                short_ref(&row)
             );
             Ok(0)
         }
         other => Err(crate::cmd::dispatch::hint(&format!(
-            "Unknown keys subcommand \"{other}\". Try: list | create | show | update | use | revoke"
+            "Unknown keys subcommand \"{other}\". Try: list | create | show | update | audit | revoke"
         ))),
     }
 }
 
-pub(crate) fn resolve_latest_key(base: &str, current: &str) -> String {
-    let Ok(rows) = fetch_keys(base, current) else {
-        return current.to_string();
-    };
-    let rows = crate::http::keys_newest_first(rows.into_iter().filter(|r| r.active).collect());
-    let Some(latest) = rows.first() else {
-        return current.to_string();
-    };
-    if is_active_key_row(&latest.masked, Some(current)) {
-        return current.to_string();
+fn run_keys_audit(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> Result<i32, String> {
+    let (_path, _cfg, base, cred) = keys_credential(parsed, env)?;
+    let rows = fetch_keys(&base, &cred)?;
+    let found = suggest_removals(&rows, Some(&cred), crate::civil::now_secs());
+    if parsed.flag_true("json") {
+        let payload: Vec<_> = found
+            .iter()
+            .map(|s| {
+                serde_json::json!({
+                    "id": s.row.id,
+                    "name": s.row.name,
+                    "last4": last4(&s.row.masked),
+                    "created_at": s.row.created_at,
+                    "last_used_at": s.row.last_used_at,
+                    "requests_30d": s.row.requests_30d,
+                    "reason": s.reason.code(),
+                    "detail": s.reason.text(),
+                })
+            })
+            .collect();
+        crate::cmd::view::print_json(&serde_json::Value::Array(payload));
+        return Ok(0);
     }
-    if !latest.can_reveal {
-        // Reveal would 409 for pre-reveal-support rows; the stored key stays.
-        return current.to_string();
+    if found.is_empty() {
+        println!("No unused keys. Checked {} keys.", rows.len());
+        return Ok(0);
     }
-    reveal_key(base, current, &latest.hash).unwrap_or_else(|_| current.to_string())
-}
-
-pub(crate) fn key_pick_label(row: &crate::http::RemoteKey, current: bool) -> String {
-    let mut parts = vec![row.name.clone(), row.masked.clone()];
-    if let Some(created) = row.created_at.as_deref() {
-        parts.push(created.get(..10).unwrap_or(created).to_string());
+    println!(
+        "{} of {} keys look unused. Nothing is removed until you revoke it.",
+        found.len(),
+        rows.len()
+    );
+    println!("{}", term::dim(&"─".repeat(40)));
+    let name_w = found.iter().map(|s| s.row.name.len()).max().unwrap_or(4);
+    for s in &found {
+        println!(
+            "{:name_w$}  {}  {}",
+            s.row.name,
+            short_ref(&s.row),
+            term::dim(&s.reason.text())
+        );
     }
-    if current {
-        parts.push("●".into());
-    }
-    parts.join("  ·  ")
+    println!();
+    println!(
+        "{}",
+        term::dim(&hint(&format!(
+            "Revoke one: {{bin}} keys revoke {}",
+            revoke_ref(&found[0].row)
+        )))
+    );
+    Ok(0)
 }
 
 pub(crate) fn stored_api_key(

@@ -461,10 +461,6 @@ impl PaletteState {
                     entry.action = format!("Switch account {agent}");
                     entry.detail = format!("for {agent}");
                 }
-                ConfigureKind::Key => {
-                    entry.action = format!("Switch key {agent}");
-                    entry.detail = format!("for {agent}");
-                }
                 ConfigureKind::Exacto => {
                     entry.action = format!("Toggle exacto {agent}");
                     entry.detail =
@@ -554,13 +550,12 @@ fn launch_id_from_action(action: &str) -> Option<String> {
 enum ConfigureKind {
     Model,
     Account,
-    Key,
     Exacto,
     Tools,
     MinContext,
 }
 
-/// model / account / key / routing toggles — inline home-TUI switches.
+/// model / account / routing toggles — inline home-TUI switches.
 fn configure_kind(action: &str, label: &str) -> Option<ConfigureKind> {
     let a = action.to_ascii_lowercase();
     let l = label.to_ascii_lowercase();
@@ -568,8 +563,6 @@ fn configure_kind(action: &str, label: &str) -> Option<ConfigureKind> {
         Some(ConfigureKind::Model)
     } else if a.starts_with("switch account") || l.starts_with("account") {
         Some(ConfigureKind::Account)
-    } else if a.starts_with("switch key") || l.starts_with("key") {
-        Some(ConfigureKind::Key)
     } else if a.starts_with("toggle exacto") || l.starts_with("exacto") {
         Some(ConfigureKind::Exacto)
     } else if a.starts_with("toggle tools") || l.starts_with("tools") {

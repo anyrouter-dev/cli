@@ -830,7 +830,10 @@ pub struct RemoteKey {
     pub created_at: Option<String>,
     pub last_used_at: Option<String>,
     pub active: bool,
-    pub can_reveal: bool,
+    pub id: String,
+    /// How the key was made: `cli:<tool>` for device login, null for the dashboard.
+    pub origin: Option<String>,
+    pub requests_30d: u64,
 }
 
 pub fn parse_key_list(body: &str) -> Result<Vec<RemoteKey>, String> {
@@ -876,7 +879,19 @@ pub fn parse_key_list(body: &str) -> Result<Vec<RemoteKey>, String> {
                     .and_then(|v| v.as_str())
                     .map(str::to_string),
                 active: item.get("disabled").and_then(|v| v.as_bool()) != Some(true),
-                can_reveal: item.get("can_reveal").and_then(|v| v.as_bool()) == Some(true),
+                id: item
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                origin: item
+                    .get("origin")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
+                requests_30d: item
+                    .get("real_usage_monthly_requests")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0),
             })
         })
         .collect())
@@ -892,28 +907,6 @@ pub fn fetch_keys(base_url: &str, credential: &str) -> Result<Vec<RemoteKey>, St
         return Err(format!("Could not list keys (HTTP {status})."));
     }
     parse_key_list(&body)
-}
-
-pub fn reveal_key(base_url: &str, credential: &str, hash: &str) -> Result<String, String> {
-    let url = join_api(base_url, &format!("/v1/keys/{hash}/reveal"));
-    let (status, resp) = http_post(&url, Some(credential), None)?;
-    if status == 409 {
-        return Err(
-            "That key cannot be revealed (created before reveal support). Create a fresh one: anyr keys create"
-                .into(),
-        );
-    }
-    if !(200..300).contains(&status) {
-        return Err(format!("Could not fetch the key (HTTP {status})."));
-    }
-    let value: serde_json::Value =
-        serde_json::from_str(&resp).map_err(|e| format!("Invalid reveal response: {e}"))?;
-    value
-        .get("key")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .ok_or_else(|| "Reveal response did not include a key.".into())
 }
 
 pub fn delete_key(base_url: &str, credential: &str, hash: &str) -> Result<(), String> {
@@ -1023,13 +1016,15 @@ mod tests {
     #[test]
     fn parse_key_list_accepts_data_wrapper() {
         let keys = parse_key_list(
-            r#"{"data":[{"hash":"abc123def456","name":"laptop","key_prefix":"sk-ar-v1-abcd","can_reveal":true}]}"#,
+            r#"{"data":[{"id":"key_1","hash":"abc123def456","name":"laptop","key_prefix":"sk-ar-v1-abcd","origin":"cli:cli","real_usage_monthly_requests":12}]}"#,
         )
         .unwrap();
         assert_eq!(keys.len(), 1);
         assert_eq!(keys[0].name, "laptop");
         assert_eq!(keys[0].masked, "sk-ar-v1-abcd");
-        assert!(keys[0].can_reveal);
+        assert_eq!(keys[0].id, "key_1");
+        assert_eq!(keys[0].origin.as_deref(), Some("cli:cli"));
+        assert_eq!(keys[0].requests_30d, 12);
     }
 
     #[test]
@@ -1102,7 +1097,9 @@ mod tests {
                 created_at: Some("2026-01-01T00:00:00Z".into()),
                 last_used_at: None,
                 active: true,
-                can_reveal: true,
+                id: String::new(),
+                origin: None,
+                requests_30d: 0,
             },
             RemoteKey {
                 name: "new".into(),
@@ -1111,7 +1108,9 @@ mod tests {
                 created_at: Some("2026-08-24T12:00:00Z".into()),
                 last_used_at: None,
                 active: true,
-                can_reveal: true,
+                id: String::new(),
+                origin: None,
+                requests_30d: 0,
             },
             RemoteKey {
                 name: "undated".into(),
@@ -1120,7 +1119,9 @@ mod tests {
                 created_at: None,
                 last_used_at: None,
                 active: true,
-                can_reveal: true,
+                id: String::new(),
+                origin: None,
+                requests_30d: 0,
             },
         ];
         let sorted = keys_newest_first(keys);
