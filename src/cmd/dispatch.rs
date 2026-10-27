@@ -463,7 +463,7 @@ pub(crate) fn allowed_flags(command: &str) -> Option<&'static [&'static str]> {
             "base-url",
             "config",
         ],
-        "whoami" => &["profile", "config", "json", "key", "base-url"],
+        "whoami" => &["profile", "config", "json", "key", "base-url", "verbose"],
         "config" => &[
             "config", "json", "key", "base-url", "profile", "dump-tui", "pick",
         ],
@@ -616,6 +616,7 @@ pub(crate) fn allowed_flags(command: &str) -> Option<&'static [&'static str]> {
             "yes",
             "json",
             "masked",
+            "verbose",
         ],
         "prompt" => &["base-url", "json"],
         "menu" => &["dump-tui", "config", "profile", "key", "base-url"],
