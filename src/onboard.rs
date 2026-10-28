@@ -401,13 +401,13 @@ pub fn usage_hint(bin: &str) -> String {
         "\
 {bin} onboard — paste-ready prompts for coding agents
 
-USAGE
+Usage:
   {bin} onboard                 Interactive pick (TTY)
   {bin} onboard <mode>          Print the prompt
   {bin} onboard cp [mode]       Copy to clipboard (or print + hint)
   {bin} impl | plan | fix | deploy | cp
 
-MODES
+Modes:
   impl        Set up AnyRouter (alias: implement)
   plan        Plan a migration (no code changes)
   fix         Repair LLM wiring through AnyRouter
@@ -415,7 +415,7 @@ MODES
   discover    Recommend models for this project
   openai | anthropic | openrouter | claude-code | hermes
 
-FLAGS
+Options:
   --json      Emit {{\"mode\",\"label\",\"prompt\"}}
   --copy      Copy instead of printing (same as `cp`)
   -h, --help  Show this help
