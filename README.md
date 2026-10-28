@@ -1,53 +1,56 @@
-# AnyRouter CLI (`anyr`)
+# anyr
 
-Native CLI for [AnyRouter](https://anyrouter.dev). This line is **0.1.x**.
-
-[![CI](https://github.com/anyrouter-dev/cli/actions/workflows/ci.yml/badge.svg)](https://github.com/anyrouter-dev/cli/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/anyrouter-dev/cli/branch/main/graph/badge.svg)](https://codecov.io/gh/anyrouter-dev/cli)
-
-Launch coding agents through the AnyRouter gateway. One key, every provider.
-
-## Install
-
-### curl (GitHub Releases)
-
-The installer downloads `anyr-<os>-<arch>` from
-[GitHub Releases](https://github.com/anyrouter-dev/cli/releases)
-into `~/.local/bin`.
-
-**stable** (latest non-prerelease):
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/anyrouter-dev/cli/main/setup.sh | bash
-```
-
-**beta** (every push to `main` publishes a GitHub prerelease):
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/anyrouter-dev/cli/main/setup.sh | bash -s -- --channel beta
-```
-
-Docs and install: [anyrouter.dev/cli](https://anyrouter.dev/cli).
-
-CI builds **linux x86_64/arm64**, **macOS x86_64/arm64**, **Windows x86_64**, and **wasm32**.
-Every PR runs the full test suite (`cargo test --all-targets`) on each of those
-platforms, plus LLVM coverage uploaded to [Codecov](https://codecov.io/gh/anyrouter-dev/cli).
-Every PR and GitHub Release gets a size + startup report (`anyr --version` / `--help`).
-
-Manual download of `https://github.com/anyrouter-dev/cli/releases/latest/download/anyr-linux-x86_64`
-404s when the latest non-prerelease has no assets (v0.1.11 shipped empty). Use
-`setup.sh` — it probes `/latest` and then picks a release that actually has
-`anyr-linux-x86_64`. Direct tag URLs:
-
-`https://github.com/anyrouter-dev/cli/releases/download/<tag>/anyr-linux-x86_64`
-
-Hosted setup (same resolver):
+Point any coding agent at AnyRouter. One key, every provider.
 
 ```bash
 curl -fsSL https://anyrouter.dev/setup.sh | bash
 ```
 
-Add `~/.local/bin` to `PATH` if the installer says so.
+`anyr` is the command line for [AnyRouter](https://anyrouter.dev). It is one
+native binary, so there is no runtime to install. It signs you in, then starts
+Claude Code, Codex, Grok Build, OpenCode and other coding agents with your key
+and model already wired to the gateway. It also chats with models, manages keys
+and presets, publishes pages, and serves your local models. This line is
+**0.1.x**.
+
+[![CI](https://github.com/anyrouter-dev/cli/actions/workflows/ci.yml/badge.svg)](https://github.com/anyrouter-dev/cli/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/anyrouter-dev/cli/branch/main/graph/badge.svg)](https://codecov.io/gh/anyrouter-dev/cli)
+
+## Features
+
+- **Launchers**: `anyr claude`, `anyr codex` and ten more start a coding agent through the gateway. The key reaches the agent through its environment, never argv or a file ([Launchers](#launchers)).
+- **Chat and models**: `anyr chat` asks a model from the terminal, a pipe or a REPL. `anyr models` browses the catalog and sets your default.
+- **Scripts first**: `--json` works on every command, errors become one JSON object on stderr, and exit codes are fixed. Without a TTY there are no prompts, spinners or update notices ([For agents and scripts](#for-agents-and-scripts)).
+- **Keys, presets and logs**: scoped keys for CI with a spend cap, saved routing presets, request logs and the credit ledger.
+- **Publish**: `anyr artifact publish` turns a file or folder into a shareable URL.
+- **Relay and pool**: `anyr relay` serves your local models through AnyRouter, and `anyr pool` shows the shared pool.
+- **Plain terminal output**: text from the top left and thin lines. Color only dims labels, and `NO_COLOR=1` turns it off.
+
+## Install
+
+```bash
+curl -fsSL https://anyrouter.dev/setup.sh | bash
+```
+
+The installer downloads `anyr-<os>-<arch>` from
+[GitHub Releases](https://github.com/anyrouter-dev/cli/releases) into
+`~/.local/bin`. Add that directory to `PATH` if the installer says so. CI builds
+linux x86_64/arm64, macOS x86_64/arm64, Windows x86_64 and wasm32.
+
+The same script is served from this repo, and `--channel beta` installs the
+prerelease that every push to `main` publishes:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/anyrouter-dev/cli/main/setup.sh | bash
+curl -fsSL https://raw.githubusercontent.com/anyrouter-dev/cli/main/setup.sh | bash -s -- --channel beta
+```
+
+Use `setup.sh` instead of a hand-built `releases/latest/download/...` URL. When
+the latest non-prerelease has no assets (v0.1.11 shipped empty) that URL 404s,
+and `setup.sh` falls back to a release that has `anyr-linux-x86_64`. Direct tag
+URLs look like
+`https://github.com/anyrouter-dev/cli/releases/download/<tag>/anyr-linux-x86_64`.
+More at [anyrouter.dev/cli](https://anyrouter.dev/cli).
 
 ### npm / npx
 
@@ -64,7 +67,7 @@ The npm package is a thin Node wrapper. It execs a shipped binary in
 `binaries/` when present, otherwise it downloads the matching GitHub Release
 asset (`anyr-linux-x86_64`, `anyr-linux-arm64`, `anyr-darwin-x86_64`, `anyr-darwin-arm64`, `anyr-windows-x86_64.exe`).
 
-## Upgrade
+### Upgrade
 
 ```bash
 anyr update                 # install latest for your current channel
@@ -75,43 +78,68 @@ anyr upgrade --check
 anyr upgrade --check --channel beta   # one-shot, does not persist
 ```
 
-Or re-run the installer / bump the npm `next` tag:
-
-```bash
-# curl, stable
-curl -fsSL https://raw.githubusercontent.com/anyrouter-dev/cli/main/setup.sh | bash
-
-# curl, beta
-curl -fsSL https://raw.githubusercontent.com/anyrouter-dev/cli/main/setup.sh | bash -s -- --channel beta
-
-# npm
-npm install -g @anyr/cli@next
-```
+You can also re-run the installer or bump the npm `next` tag. Auto-update
+follows `update.auto` and `update.channel` in `anyr config`, and `--quiet` or
+`ANYR_QUIET=1` turns off update notices and the background update.
 
 ## Quick start
 
+Sign in once. The key is saved on this machine.
+
 ```bash
-anyr                        # interactive TUI (TTY) — launch, model, key, credits
+anyr login            # browser, device code or paste
+anyr login --device   # headless / SSH
+```
+
+Then launch an agent through the gateway:
+
+```bash
+anyr claude           # asks before it logs in or installs anything
+anyr claude --ok      # same, skipping the confirmation prompts
+anyr codex --ok       # also: grok, opencode, pi, pool, qwen, goose, aider, crush, kilo, fx
+```
+
+With no command on a terminal, `anyr` opens a launcher that confirms account,
+model and agent, then starts it. To send one request without an agent, use
+`anyr chat`. Add `--json` when a script reads the result:
+
+```bash
+anyr chat "Reply with ok"
+git diff | anyr chat "Review this" -
+anyr chat "Reply with ok" --json
+```
+
+More first steps:
+
+```bash
 anyr --help                 # the everyday commands; anyr help --all for every command
-anyr login                  # browser / device code / paste; key saved on this machine
-anyr login --device         # headless / SSH
 anyr usage                  # credit balance
 anyr models use <id>        # persist default model
 anyr keys audit             # keys that look unused, with the reason
 anyr account use work       # switch saved profiles
+anyr claude --install --ok  # install Claude Code first if missing
 anyr onboard impl           # paste-ready prompt for a coding agent
 anyr plan                   # migration plan prompt (no code changes)
 anyr fix                    # repair LLM wiring through AnyRouter
-anyr claude --ok            # launch through the gateway (model: anyrouter/auto)
-anyr claude --install --ok  # install Claude Code first if missing
-anyr codex --ok
-anyr opencode --ok
-anyr pi --ok
-anyr qwen --ok              # also: goose, aider, crush, kilo (see Launchers)
 anyr decision --model typesafe/jev \
   --state 'Help! My payouts have been failing for 3 days.' \
   --questions '{"is_urgent":{"type":"noul","instructions":"Does this convey urgency?"}}'
 ```
+
+## Commands
+
+`anyr help --all` prints the full map, and `anyr <command> --help` the detail
+for one command.
+
+| Group | Commands |
+|-------|----------|
+| Sign in | `login`, `logout`, `whoami`, `account`, `auth` |
+| Chat and models | `chat`, `models`, `embed`, `eval`, `task`, `delegate`, `decision` |
+| Launch | `claude`, `codex`, `grok`, `opencode`, `pi`, `pool`, and more ([Launchers](#launchers)) |
+| Relay | `relay` |
+| Publish | `publish`, `apps`, `artifact` |
+| Account | `api`, `usage`, `logs`, `generation`, `presets`, `mcp`, `transactions`, `keys`, `byok` |
+| Setup and help | `config`, `menu`, `onboard`, `upgrade`, `completion`, `commands`, `help` |
 
 ### For agents and scripts
 
@@ -127,6 +155,8 @@ anyr help agents                         # the guide, from docs/agents.md
 ```
 
 Exit codes: 0 ok, 1 error, 2 usage, 3 not found, 4 auth, 5 rate limited.
+
+## Command reference
 
 ### Dashboard from the terminal: `anyr api`
 
@@ -593,7 +623,33 @@ keys of `anyr config --json` moved to `launcher.claude.haiku`, `.sonnet` and
 or runs `anyr config get launcher.claude.opus`, which prints only a value you
 set yourself.
 
-## Version lock (0.1.x)
+## Documentation
+
+[anyrouter.dev/cli](https://anyrouter.dev/cli) covers install and usage.
+`anyr help --all` lists every command, `anyr <command> --help` explains one,
+and `anyr help agents` is the guide for scripts and coding agents.
+
+## Feedback
+
+[Open an issue](https://github.com/anyrouter-dev/cli/issues/new) in this repo.
+
+## Contributing
+
+You need a Rust toolchain. Test your change with the binary you just built, not
+an older `anyr` on your `PATH`:
+
+```bash
+cargo build --locked
+./target/debug/anyr --help
+cargo test --locked --all-targets
+cargo clippy --locked --all-targets
+cargo fmt --check
+```
+
+Read [AGENTS.md](AGENTS.md) first. It lists the invariants (version lock, key
+redaction, config file fields) and the size budget.
+
+### Version lock (0.1.x)
 
 `Cargo.toml`, `package.json`, and `.release-please-manifest.json` stay on
 `0.1.x`. release-please uses `"versioning": "always-bump-patch"` so `feat`,
@@ -601,7 +657,7 @@ set yourself.
 
 Do not auto-merge release-please PRs.
 
-## Git hooks
+### Git hooks
 
 `.githooks/prepare-commit-msg` appends:
 
