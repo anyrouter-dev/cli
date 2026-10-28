@@ -20,11 +20,11 @@ and presets, publishes pages, and serves your local models. This line is
 
 - **Launchers**: `anyr claude`, `anyr codex` and ten more start a coding agent through the gateway. The key reaches the agent through its environment, never argv or a file ([Launchers](#launchers)).
 - **Chat and models**: `anyr chat` asks a model from the terminal, a pipe or a REPL. `anyr models` browses the catalog and sets your default.
-- **Scripts first**: `--json` works on every command, errors become one JSON object on stderr, and exit codes are fixed. Without a TTY there are no prompts, spinners or update notices ([For agents and scripts](#for-agents-and-scripts)).
+- **Scripts first**: `--json` works wherever a command has a JSON form, errors become one JSON object on stderr, and exit codes are fixed. Without a TTY there are no prompts, spinners or update notices ([For agents and scripts](#for-agents-and-scripts)).
 - **Keys, presets and logs**: scoped keys for CI with a spend cap, saved routing presets, request logs and the credit ledger.
 - **Publish**: `anyr artifact publish` turns a file or folder into a shareable URL.
 - **Relay and pool**: `anyr relay` serves your local models through AnyRouter, and `anyr pool` shows the shared pool.
-- **Plain terminal output**: text from the top left and thin lines. Color only dims labels, and `NO_COLOR=1` turns it off.
+- **Plain terminal output**: text from the top left and thin lines. Color is off when stdout is not a terminal or `NO_COLOR=1` is set.
 
 ## Install
 
@@ -507,8 +507,8 @@ python scripts/bench.py measure --bin target/release/anyr \
   --asset anyr-linux-x86_64 --kind native --out /tmp/anyr-bench.json
 ```
 
-Interactive `menu` / `config` use a centered Ratatui dialog (GrokNight theme);
-pickers stay full-pane. `anyr menu --dump-tui` prints one ANSI-free frame for CI.
+Interactive `menu` / `config` draw plain text from the top left with thin lines,
+no frame and no centering. `anyr menu --dump-tui` prints one ANSI-free frame for CI.
 
 ## Launchers
 
