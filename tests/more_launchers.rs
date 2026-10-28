@@ -439,6 +439,89 @@ fn fx_connection_is_left_alone_when_already_current() {
     );
 }
 
+/// fx's `/model` picker lists only the ids in `model_metadata`, so every
+/// AnyRouter model fx can drive (chat with tool calls) must be declared there,
+/// not just the one the launch started on.
+#[test]
+fn fx_connection_lists_every_tool_capable_chat_model_for_the_model_picker() {
+    let row = |id: &str, caps: &[&str], context: Option<i64>| anyr_cli::http::CatalogModel {
+        id: id.into(),
+        context_length: context,
+        capabilities: caps.iter().map(|c| c.to_string()).collect(),
+        ..Default::default()
+    };
+    let catalog = [
+        row(
+            "nvidia/nemotron-3.5-lightning-30b-a3b",
+            &["chat", "function-calling"],
+            Some(128_000),
+        ),
+        row(
+            "minimax/minimax-m3.1-flash",
+            &["chat", "function-calling", "vision"],
+            Some(200_000),
+        ),
+        row("baai/bge-base-en-v1.5", &["embedding"], Some(512)),
+        row("anyrouter/decision", &["systemone"], None),
+        row("apple/foundation-model", &["chat", "streaming"], None),
+        anyr_cli::http::CatalogModel {
+            max_completion_tokens: Some(131_072),
+            ..row(
+                "meta/muse-glimmer-30b",
+                &["chat", "function-calling"],
+                Some(131_072),
+            )
+        },
+    ];
+    let conn = anyr_cli::spawn::fx_connection(
+        "https://gw.example/api/v1",
+        "ANYROUTER_API_KEY",
+        "nvidia/nemotron-3.5-lightning-30b-a3b",
+        &catalog,
+    );
+    let meta = conn["model_metadata"].as_object().unwrap();
+    let mut ids: Vec<&str> = meta.keys().map(String::as_str).collect();
+    ids.sort_unstable();
+    assert_eq!(
+        ids,
+        [
+            "meta/muse-glimmer-30b",
+            "minimax/minimax-m3.1-flash",
+            "nvidia/nemotron-3.5-lightning-30b-a3b"
+        ],
+        "the picker must offer the second model and skip models fx cannot drive"
+    );
+    let minimax = &meta["minimax/minimax-m3.1-flash"];
+    assert_eq!(minimax["context_window"], 200_000);
+    assert_eq!(minimax["supports_tool_use"], true);
+    assert_eq!(minimax["supports_vision"], true);
+    assert!(meta["nvidia/nemotron-3.5-lightning-30b-a3b"]
+        .get("supports_vision")
+        .is_none());
+    // fx sends `max_output_tokens` as `max_tokens` on every request, and the
+    // catalog cap is not one every route accepts (a 400), nor one fx accepts
+    // when it reaches the context window (fx refuses to start).
+    for (id, m) in meta {
+        assert!(m.get("max_output_tokens").is_none(), "{id}: {m}");
+    }
+    assert_eq!(meta["meta/muse-glimmer-30b"]["context_window"], 131_072);
+}
+
+/// A launch model the catalog does not list (a preset, an offline launch)
+/// still has to be selectable.
+#[test]
+fn fx_connection_keeps_the_launch_model_without_a_catalog_row() {
+    let conn = anyr_cli::spawn::fx_connection(
+        "https://gw.example/api/v1",
+        "ANYROUTER_API_KEY",
+        "@preset/coding-stack",
+        &[],
+    );
+    let meta = conn["model_metadata"].as_object().unwrap();
+    assert_eq!(meta.len(), 1);
+    assert_eq!(meta["@preset/coding-stack"]["supports_tool_use"], true);
+}
+
 #[cfg(unix)]
 #[test]
 fn fx_settings_symlink_is_written_through_not_replaced() {
