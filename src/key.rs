@@ -319,11 +319,14 @@ pub fn mask_secrets(text: &str) -> String {
 
 /// Exits 4 (auth) through `commands::run`.
 pub fn no_key_error() -> String {
+    let bin = crate::help::invoked_bin();
     crate::exit::tag(
         crate::exit::AUTH,
-        "No AnyRouter config and no key. Pass --key sk-ar-... or set ANYROUTER_API_KEY, \
-or use --device/--device-code for headless environments, \
-or run in an interactive terminal to log in.",
+        format!(
+            "not signed in, no AnyRouter key found\n{} run `{bin} login` (add --device over SSH), \
+or set ANYROUTER_API_KEY",
+            crate::term::dim("hint:")
+        ),
     )
 }
 

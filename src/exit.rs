@@ -97,6 +97,7 @@ fn name(code: i32) -> &'static str {
 /// `{"error":{"code","exit","message","hint"}}` in JSON mode.
 pub fn print(code: i32, message: &str) {
     let (_, message) = classify(message);
+    let message = with_next_step(&message);
     let message = message.as_str();
     if message.trim().is_empty() {
         return;
@@ -105,12 +106,39 @@ pub fn print(code: i32, message: &str) {
         eprintln!("{}", json_line(code, message));
     } else {
         let message = crate::key::mask_secrets(message);
-        if code == USAGE || has_prefix(&message) {
+        if has_prefix(&message) || (code == USAGE && !is_single_sentence(&message)) {
             eprintln!("{message}");
         } else {
             eprintln!("{} {message}", crate::term::err("error:"));
         }
     }
+}
+
+/// A one-line message that ends in `Run: x`, `Try: x` or `Use: x` becomes the
+/// message plus a `hint:` line, the shape `anyr bogus` already prints.
+fn with_next_step(message: &str) -> String {
+    let t = message.trim_end();
+    if t.contains('\n') || has_prefix(t) {
+        return message.to_string();
+    }
+    for (marker, hint) in [
+        (". Run: ", "run `{}`"),
+        (". Try: ", "one of {}"),
+        (". Use: ", "usage: {}"),
+    ] {
+        if let Some((head, rest)) = t.split_once(marker) {
+            let hint = hint.replace("{}", rest.trim());
+            return format!("{head}\n{} {hint}", crate::term::dim("hint:"));
+        }
+    }
+    message.to_string()
+}
+
+/// Plain sentences get the `error:` prefix. Usage lines and multi-line help
+/// text print as they are.
+fn is_single_sentence(message: &str) -> bool {
+    let first = message.trim_start();
+    !message.trim_end().contains('\n') && !first.starts_with("Usage") && !first.starts_with("usage")
 }
 
 fn has_prefix(message: &str) -> bool {
@@ -215,6 +243,32 @@ mod tests {
         assert_eq!(v["error"]["code"], "auth");
         assert_eq!(v["error"]["message"], "key rejected");
         assert_eq!(v["error"]["hint"], "sign in again: anyr login");
+    }
+
+    #[test]
+    fn next_step_sentences_become_a_hint_line() {
+        let out = strip_ansi(&with_next_step("Unknown model \"x\". Run: anyr models"));
+        assert_eq!(out, "Unknown model \"x\"\nhint: run `anyr models`");
+        let out = strip_ansi(&with_next_step(
+            "Unknown keys subcommand \"x\". Try: list | show",
+        ));
+        assert_eq!(
+            out,
+            "Unknown keys subcommand \"x\"\nhint: one of list | show"
+        );
+        assert_eq!(with_next_step("plain failure"), "plain failure");
+        assert_eq!(
+            with_next_step("error: a\nhint: b"),
+            "error: a\nhint: b",
+            "an already formed error is left alone"
+        );
+    }
+
+    #[test]
+    fn only_plain_sentences_get_the_error_prefix() {
+        assert!(is_single_sentence("Unknown model \"x\""));
+        assert!(!is_single_sentence("Usage: anyr x [flags]"));
+        assert!(!is_single_sentence("line one\nline two"));
     }
 
     #[test]

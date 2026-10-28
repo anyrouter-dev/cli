@@ -2941,7 +2941,7 @@ fn whoami_and_keys_fail_loud_without_config() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_ne!(out.status.code().unwrap_or(1), 0, "{stderr}");
     assert!(
-        stderr.contains("No AnyRouter config") || stderr.contains("no key"),
+        stderr.contains("not signed in") && stderr.contains("hint: run `anyr login`"),
         "{stderr}"
     );
     let _ = std::fs::remove_dir_all(&dir);

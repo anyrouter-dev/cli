@@ -307,24 +307,24 @@ Print a key with `{bin} auth token` and the base URL with `{bin} onboard impl`.\
 const AUTH: &str = "\
 Authenticate with AnyRouter.
 
-USAGE
+Usage:
   {bin} auth <command> [flags]
 
-AVAILABLE COMMANDS
+Commands:
   login:       Log in to an AnyRouter account
   logout:      Log out of an AnyRouter account
   status:      View authentication status
   switch:      Switch the active account
   token:       Print the API key
 
-FLAGS
+Options:
   -h, --help   Show help for command
 ";
 
 const LOGIN: &str = "\
 Log in to an AnyRouter account.
 
-USAGE
+Usage:
   {bin} auth login [flags]
 
 Interactive (TTY): opens a login URL with the code already in it (browser
@@ -337,7 +337,7 @@ shell history.
 
 After login, `{bin} claude` starts Claude Code (the default agent).
 
-FLAGS
+Options:
   --key -                  Read the API key from stdin (safest non-interactive)
   --key sk-ar-v1-...       AnyRouter API key as an argument (warns: visible in argv)
   --device, --device-code  Force the device-code flow (headless / SSH)
@@ -349,12 +349,12 @@ Also available as `{bin} login`.
 const TOKEN: &str = "\
 Print the API key stored for the active account.
 
-USAGE
+Usage:
   {bin} auth token [flags]
 
 Prints the full secret to stdout (for scripts). Use --masked in a log.
 
-FLAGS
+Options:
   --masked     Print a redacted key
   --json       Print as JSON
   --profile    Use a named account
@@ -363,7 +363,7 @@ FLAGS
 const SWITCH: &str = "\
 Switch the active AnyRouter account.
 
-USAGE
+Usage:
   {bin} auth switch [<account>]
 
 With no account on a TTY, pick from stored accounts.
@@ -386,7 +386,7 @@ Options:
 const DECISION: &str = "\
 {bin} decision — call the typed Decisions API (not chat)
 
-USAGE
+Usage:
   {bin} decision --model <id> --state <text|json> --questions <json> [flags]
   cat request.json | {bin} decision [flags]
 
@@ -395,7 +395,7 @@ question object map. Responses contain structured `answers`, not chat text.
 Decision models such as `typesafe/jev`, `fastino/gliner2.5-multi-v1`, and
 `anyrouter/decision` cannot be launched through the chat-agent commands.
 
-FLAGS
+Options:
   --model <id>         Decision model id (required unless stdin supplies it)
   --state <text|json>  Application state; plain text or JSON object/array
   --questions <json>   Non-empty question map (noul / choice / score)
@@ -406,26 +406,26 @@ FLAGS
   --base-url <url>     Override the configured API base URL
   --config <path>      Override the config file path
 
-EXAMPLE
+Examples:
   {bin} decision --model typesafe/jev \\
     --state 'Help! My payouts have been failing for 3 days.' \\
     --questions '{\"is_urgent\":{\"type\":\"noul\",\"instructions\":\"Is this urgent?\"}}'
 
-ALIASES
+Aliases:
   decisions, systemone
 ";
 
 const WHOAMI: &str = "\
 View authentication status.
 
-USAGE
+Usage:
   {bin} auth status [flags]
 
 Shows who is signed in (name and email), the account, the masked key and
 the default model. In a terminal it then offers to switch account, change the
 default model, log out or open the dashboard.
 
-FLAGS
+Options:
   --json       Print as JSON: account, user, key_masked, default_model,
                config_path, base_url (identity_error if the lookup failed)
   --profile    Use a named account
@@ -495,7 +495,7 @@ Options:
 const CONFIG: &str = "\
 Print current settings. Interactive picker only when asked.
 
-USAGE
+Usage:
   {bin} config                 Print account / model / agent / credits
   {bin} config --pick          Open the settings TUI (TTY)
   {bin} config get [--json]    Same dump; `--json` for scripts
@@ -505,7 +505,7 @@ USAGE
   {bin} config set <key> <v>   Save one setting
   {bin} config unset <key>     Clear one setting
 
-SETTINGS
+Settings:
   launcher.agent               Agent a bare `{bin}` starts (else the last one)
   launcher.<agent>.model       Model that agent launches with
   launcher.<agent>.args        Flags passed to that agent on every launch
@@ -556,7 +556,7 @@ this machine's key, the CLI asks before revoking the old one.
 const LOGOUT: &str = "\
 Log out of an AnyRouter account.
 
-USAGE
+Usage:
   {bin} auth logout [flags]
 
 Removes stored keys for the active account (or --profile).
