@@ -1224,28 +1224,44 @@ pub fn fx_settings_path(env: &dyn Fn(&str) -> Option<String>) -> Option<PathBuf>
 }
 
 /// The `providers.anyrouter` connection: Chat Completions at `base_url`, the
-/// key read from `key_env`, and the selected model's limits so fx can compact.
+/// key read from `key_env`, and `model_metadata` for the selected model plus
+/// every catalog chat model with tool calls. fx's `/model` picker lists only
+/// the ids declared there, and the context window lets fx compact. No output
+/// cap: fx sends it as `max_tokens` on every request, and the catalog cap is
+/// not one every route accepts.
 pub fn fx_connection(
     base_url: &str,
     key_env: &str,
     model: &str,
     catalog: &[crate::http::CatalogModel],
 ) -> serde_json::Value {
+    let has = |m: &crate::http::CatalogModel, cap: &str| m.capabilities.iter().any(|c| c == cap);
     let selected = catalog_model_id(model);
-    let mut meta = serde_json::json!({ "supports_tool_use": true });
-    if let Some(row) = catalog.iter().find(|m| catalog_model_id(&m.id) == selected) {
+    let mut metadata = serde_json::Map::new();
+    metadata.insert(
+        selected.clone(),
+        serde_json::json!({ "supports_tool_use": true }),
+    );
+    for row in catalog {
+        let id = catalog_model_id(&row.id);
+        if id != selected && !(has(row, "chat") && has(row, "function-calling")) {
+            continue;
+        }
+        let meta = metadata
+            .entry(id)
+            .or_insert_with(|| serde_json::json!({ "supports_tool_use": true }));
         if let Some(n) = row.context_length.filter(|n| *n > 0) {
             meta["context_window"] = n.into();
         }
-        if let Some(n) = row.max_completion_tokens.filter(|n| *n > 0) {
-            meta["max_output_tokens"] = n.into();
+        if has(row, "vision") {
+            meta["supports_vision"] = true.into();
         }
     }
     serde_json::json!({
         "protocol": "openai-chat-completions",
         "base_url": base_url,
         "auth": { "type": "bearer", "env": key_env },
-        "model_metadata": { selected: meta },
+        "model_metadata": metadata,
     })
 }
 
