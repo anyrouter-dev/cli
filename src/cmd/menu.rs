@@ -16,8 +16,9 @@ use crate::cmd::config_tui::{
 #[cfg(feature = "native")]
 use crate::cmd::dispatch::kick_credits_refresh;
 use crate::cmd::dispatch::{
-    config_path, launcher_last_tool, launcher_uses_palette, persist_tool_command,
-    pick_palette_action, tool_command_for, tui_dump_palette, tui_wants_dump, CreditsCache,
+    catalog_lookup_enabled, config_path, launcher_last_tool, launcher_uses_palette,
+    persist_tool_command, pick_palette_action, tool_command_for, tui_dump_palette, tui_wants_dump,
+    CreditsCache,
 };
 
 #[cfg(not(feature = "native"))]
@@ -728,6 +729,11 @@ pub(crate) fn bind_agent_model(
     let key = resolve_api_key(&parsed.flags, env, profile);
     let base = resolve_base_url(&parsed.flags, profile);
     let models = models_for_picker(path.parent(), &base, key.as_deref(), env);
+    if models.models.is_empty() && catalog_lookup_enabled(env) {
+        return Err(
+            "Could not load the model catalog. Check your connection and try again.".into(),
+        );
+    }
     let current = existing
         .as_ref()
         .and_then(|c| c.agent_binding(agent))
