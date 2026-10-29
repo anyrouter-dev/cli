@@ -3,7 +3,9 @@ use std::io::IsTerminal;
 use std::path::Path;
 
 use crate::config::{write_config, Profile};
-use crate::http::{fetch_credits, fetch_models, format_models_list, CatalogModel};
+use crate::http::{
+    fetch_credits, fetch_intelligence, fetch_models, format_models_list, CatalogModel,
+};
 use crate::install::KNOWN_AGENTS;
 use crate::key::{load_config_if_present, no_key_error, resolve_api_key, resolve_base_url};
 use crate::parse::{get_string_flag, ParsedArgs};
@@ -13,23 +15,6 @@ use crate::spawn::{
 use crate::term;
 
 use crate::cmd::dispatch::{catalog_lookup_enabled, config_path, hint, tui_wants_dump};
-
-pub(crate) fn model_pick_label(id: &str, models: &[CatalogModel]) -> String {
-    if is_auto_model(id) {
-        // The selectable preset id — never a "most used" ranking stand-in.
-        return display_model_id(id);
-    }
-    if models
-        .iter()
-        .find(|m| catalog_model_id(&m.id) == id)
-        .and_then(|m| m.context_length)
-        .is_some_and(|n| n >= 1_000_000)
-    {
-        format!("{id}  ·  1M")
-    } else {
-        id.to_string()
-    }
-}
 
 pub(crate) fn pick_ids(models: &[CatalogModel]) -> Vec<String> {
     let mut ids = vec!["anyrouter/auto".into()];
@@ -48,39 +33,62 @@ pub(crate) fn pick_ids(models: &[CatalogModel]) -> Vec<String> {
     ids
 }
 
-pub(crate) fn picker_choice_list(models: &[CatalogModel]) -> (Vec<String>, Vec<String>) {
-    let ids = pick_ids(models);
-    let labels = ids.iter().map(|id| model_pick_label(id, models)).collect();
-    (ids, labels)
+/// What the model picker shows: the catalog plus intelligence scores by id.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct PickerCatalog {
+    pub(crate) models: Vec<CatalogModel>,
+    /// Read only by the native table; the browser demo lists ids.
+    #[cfg_attr(not(feature = "native"), allow(dead_code))]
+    pub(crate) smart: BTreeMap<String, f64>,
+}
+
+impl PickerCatalog {
+    /// The catalog plus scores from the public benchmarks feed, when lookups are on.
+    pub(crate) fn new(
+        base: &str,
+        models: Vec<CatalogModel>,
+        env: &BTreeMap<String, String>,
+    ) -> Self {
+        let smart = if catalog_lookup_enabled(env) {
+            fetch_intelligence(base).unwrap_or_default()
+        } else {
+            BTreeMap::new()
+        };
+        Self { models, smart }
+    }
 }
 
 pub(crate) fn models_for_picker(
     base: &str,
     key: Option<&str>,
     env: &BTreeMap<String, String>,
-) -> Vec<CatalogModel> {
+) -> PickerCatalog {
     if !catalog_lookup_enabled(env) {
-        return Vec::new();
+        return PickerCatalog::default();
     }
-    fetch_models(base, key).unwrap_or_default()
+    PickerCatalog::new(base, fetch_models(base, key).unwrap_or_default(), env)
+}
+
+fn shown_index(ids: &[String], current: Option<&str>) -> Option<usize> {
+    let id = catalog_model_id(current?);
+    ids.iter()
+        .position(|s| s == &id || (is_auto_model(&id) && is_auto_model(s)))
 }
 
 pub(crate) fn render_model_picker_dump(
-    models: &[CatalogModel],
+    catalog: &PickerCatalog,
     current: Option<&str>,
     env: &BTreeMap<String, String>,
 ) -> String {
-    let (ids, labels) = picker_choice_list(models);
-    let current_id = current.map(catalog_model_id);
-    let shown_idx = current_id.and_then(|id| {
-        ids.iter()
-            .position(|s| s == &id || (is_auto_model(&id) && is_auto_model(s)))
-    });
+    let ids = pick_ids(&catalog.models);
+    let shown_idx = shown_index(&ids, current);
     #[cfg(feature = "native")]
     {
-        crate::tui::dump_pick(
+        let rows = crate::cmd::model_picker::model_rows(&ids, catalog, crate::civil::now_secs());
+        crate::tui::dump_pick_table(
             "Default model",
-            &labels,
+            &ids,
+            crate::cmd::model_picker::model_table(&rows),
             shown_idx,
             crate::tui::dump_cols(env),
         )
@@ -88,7 +96,7 @@ pub(crate) fn render_model_picker_dump(
     #[cfg(not(feature = "native"))]
     {
         let _ = (env, shown_idx);
-        format!("{}\n", labels.join("\n"))
+        format!("{}\n", ids.join("\n"))
     }
 }
 
@@ -110,25 +118,24 @@ pub(crate) fn pick_list(
 }
 
 pub(crate) fn pick_model(
-    models: &[CatalogModel],
+    catalog: &PickerCatalog,
     current: Option<&str>,
     title: &str,
 ) -> Result<String, String> {
-    let (ids, labels) = picker_choice_list(models);
-    if ids.is_empty() {
-        return Err("No models in catalog.".into());
-    }
-    let current_id = current.map(catalog_model_id);
-    let shown_idx = current_id.and_then(|id| {
-        ids.iter()
-            .position(|s| s == &id || (is_auto_model(&id) && is_auto_model(s)))
-    });
-    let idx = pick_list(
-        title,
-        &["type to search · anyrouter/auto is pinned · enter to select".into()],
-        &labels,
-        shown_idx,
-    )?;
+    let ids = pick_ids(&catalog.models);
+    let shown_idx = shown_index(&ids, current);
+    #[cfg(feature = "native")]
+    let idx = {
+        let rows = crate::cmd::model_picker::model_rows(&ids, catalog, crate::civil::now_secs());
+        crate::tui::pick_table(
+            title,
+            &ids,
+            crate::cmd::model_picker::model_table(&rows),
+            shown_idx,
+        )?
+    };
+    #[cfg(not(feature = "native"))]
+    let idx = { term::pick(title, &ids, shown_idx)? };
     Ok(ids[idx].clone())
 }
 
@@ -489,7 +496,8 @@ pub(crate) fn run_models(
                 .transpose()?
                 .unwrap_or("default");
             let current = profile.map(|p| slot_current(p, slot).to_string());
-            pick_model(&models, current.as_deref(), slot_title(slot)).map(|id| (slot, id))
+            let catalog = PickerCatalog::new(&base, models.clone(), env);
+            pick_model(&catalog, current.as_deref(), slot_title(slot)).map(|id| (slot, id))
         } else {
             Err(hint(
                 "Usage: {bin} models use <id>   or   {bin} models use --haiku|--sonnet|--opus <id>",
@@ -638,63 +646,5 @@ mod picker_catalog_tests {
     #[test]
     fn pick_ids_empty_catalog_still_has_preset() {
         assert_eq!(pick_ids(&[]), vec!["anyrouter/auto"]);
-    }
-
-    #[test]
-    fn model_pick_label_shows_preset_id_not_most_used() {
-        let models = vec![cm("stealth/ox-alpha", Some(1_000_000))];
-        let label = model_pick_label("anyrouter/auto", &models);
-        assert_eq!(label, "anyrouter/auto");
-        assert!(!label.contains("most used"), "{label}");
-        assert!(!label.contains("stealth/ox-alpha"), "{label}");
-        assert_eq!(
-            model_pick_label("stealth/ox-alpha", &models),
-            "stealth/ox-alpha  ·  1M"
-        );
-    }
-
-    #[cfg(feature = "native")]
-    #[test]
-    fn picker_typeahead_selects_anyrouter_auto() {
-        use crate::tui::{drive_picker, Action, Outcome, PickerState};
-        let models = vec![
-            cm("stealth/ox-alpha", Some(1_000_000)),
-            cm("openai/gpt-5.4-mini", None),
-        ];
-        let (ids, labels) = picker_choice_list(&models);
-        assert_eq!(ids[0], "anyrouter/auto");
-        assert_eq!(labels[0], "anyrouter/auto");
-        assert!(
-            labels.iter().all(|l| !l.contains("most used")),
-            "{labels:?}"
-        );
-        let mut state = PickerState::new("Default model", labels, Some(0));
-        let typed: Vec<Action> = "anyrouter/auto".chars().map(Action::Char).collect();
-        let out = drive_picker(&mut state, &typed);
-        assert_eq!(out, Outcome::Continue);
-        assert_eq!(state.filtered()[0].1, "anyrouter/auto");
-        assert_eq!(state.apply(Action::Enter), Outcome::Selected(0));
-        assert_eq!(ids[0], "anyrouter/auto");
-    }
-
-    #[cfg(feature = "native")]
-    #[test]
-    fn picker_dump_leads_with_preset_not_usage_ranking() {
-        let models = vec![
-            cm("stealth/ox-alpha", Some(1_000_000)),
-            cm("openai/gpt-5.4-mini", None),
-        ];
-        let env = BTreeMap::new();
-        let frame = render_model_picker_dump(&models, Some("auto"), &env);
-        assert!(frame.contains("anyrouter/auto"), "{frame}");
-        assert!(!frame.contains("most used"), "{frame}");
-        let auto_at = frame.find("anyrouter/auto").expect("preset");
-        let usage_at = frame.find("stealth/ox-alpha");
-        if let Some(usage_at) = usage_at {
-            assert!(
-                auto_at < usage_at,
-                "preset must appear before catalog dump:\n{frame}"
-            );
-        }
     }
 }

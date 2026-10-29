@@ -28,7 +28,7 @@ use crate::cmd::launch::run_launch;
 use crate::cmd::login::run_login;
 use crate::cmd::models::{
     palette_bind_detail, pick_list, pick_model, routing_toggle_detail, run_models,
-    save_agent_account, save_agent_model, toggle_agent_routing_field, RoutingField,
+    save_agent_account, save_agent_model, toggle_agent_routing_field, PickerCatalog, RoutingField,
 };
 use crate::cmd::usage::run_usage;
 
@@ -721,7 +721,7 @@ pub(crate) fn bind_agent_model(
         .and_then(|c| c.profiles.get(&c.active_profile));
     let key = resolve_api_key(&parsed.flags, env, profile);
     let base = resolve_base_url(&parsed.flags, profile);
-    let models = fetch_models(&base, key.as_deref())?;
+    let models = PickerCatalog::new(&base, fetch_models(&base, key.as_deref())?, env);
     let current = existing
         .as_ref()
         .and_then(|c| c.agent_binding(agent))

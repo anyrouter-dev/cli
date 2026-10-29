@@ -20,6 +20,8 @@ pub(crate) mod login;
 pub(crate) mod logs;
 pub(crate) mod mcp;
 pub(crate) mod menu;
+#[cfg(feature = "native")]
+pub(crate) mod model_picker;
 pub(crate) mod models;
 pub(crate) mod pool;
 pub(crate) mod portable;

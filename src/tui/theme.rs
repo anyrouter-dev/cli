@@ -53,6 +53,15 @@ pub fn selected() -> Style {
     style.add_modifier(Modifier::BOLD)
 }
 
+/// The selected row's background under a cell's own color.
+pub fn on_selected(style: Style) -> Style {
+    if plain() {
+        style
+    } else {
+        style.bg(rgb(46, 46, 51))
+    }
+}
+
 pub fn warn() -> Style {
     fg(rgb(230, 160, 60))
 }
