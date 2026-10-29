@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 #[cfg(feature = "native")]
 use crate::VERSION;
 
@@ -456,6 +458,22 @@ pub struct CatalogModel {
     pub context_length: Option<i64>,
     pub max_completion_tokens: Option<i64>,
     pub capabilities: Vec<String>,
+    pub pricing: Option<ModelPricing>,
+    /// Unix seconds the model joined the catalog.
+    pub created: Option<i64>,
+}
+
+/// USD per 1M tokens, as the catalog lists it.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ModelPricing {
+    pub input: f64,
+    pub output: f64,
+    /// Cache-read price of an upstream that charges exactly `input`/`output`.
+    pub cached_input: Option<f64>,
+    pub list_input: Option<f64>,
+    pub list_output: Option<f64>,
+    /// `free`, `byok` or `credits`.
+    pub billing: Option<String>,
 }
 
 pub fn fetch_models(base_url: &str, api_key: Option<&str>) -> Result<Vec<CatalogModel>, String> {
@@ -543,7 +561,66 @@ pub(crate) fn parse_models_body(body: &str) -> Result<Vec<CatalogModel>, String>
                             .collect()
                     })
                     .unwrap_or_default(),
+                pricing: parse_pricing(&item),
+                created: item.get("created").and_then(|v| v.as_i64()),
             })
+        })
+        .collect())
+}
+
+fn parse_pricing(item: &serde_json::Value) -> Option<ModelPricing> {
+    let p = item.get("pricing")?;
+    let num = |v: &serde_json::Value, k: &str| v.get(k).and_then(|n| n.as_f64());
+    let input = num(p, "input_per_1m")?;
+    let output = num(p, "output_per_1m")?;
+    let list = p.get("list_pricing");
+    let cached_input = item
+        .get("per_upstream")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|u| u.get("pricing"))
+        .filter(|u| {
+            num(u, "input_per_1m") == Some(input) && num(u, "output_per_1m") == Some(output)
+        })
+        .filter_map(|u| num(u, "input_cache_read_per_1m"))
+        .reduce(f64::min);
+    Some(ModelPricing {
+        input,
+        output,
+        cached_input,
+        list_input: list.and_then(|l| num(l, "input_per_1m")),
+        list_output: list.and_then(|l| num(l, "output_per_1m")),
+        billing: p
+            .get("billing")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+    })
+}
+
+/// Artificial Analysis intelligence index by catalog id. Public and optional:
+/// the picker shows a dash for every model this misses.
+pub fn fetch_intelligence(base_url: &str) -> Result<BTreeMap<String, f64>, String> {
+    let url = join_api(base_url, "/v1/analytics/model-benchmarks");
+    let (status, body) = http_get_timeout(&url, None, std::time::Duration::from_secs(2))?;
+    if !(200..300).contains(&status) {
+        return Err(format!("Could not fetch model benchmarks (HTTP {status})."));
+    }
+    parse_intelligence_body(&body)
+}
+
+pub(crate) fn parse_intelligence_body(body: &str) -> Result<BTreeMap<String, f64>, String> {
+    let value: serde_json::Value =
+        serde_json::from_str(body).map_err(|e| format!("Invalid benchmarks response: {e}"))?;
+    Ok(value
+        .get("models")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|m| {
+            let id = m.get("model_id")?.as_str()?.to_string();
+            let score = m.get("intelligence_index")?.as_f64()?;
+            Some((id, score))
         })
         .collect())
 }
@@ -1071,6 +1148,42 @@ mod tests {
         assert_eq!(me.plan.as_deref(), Some("payg"));
         let me = parse_me(r#"{"email":"a@b.c","plan":""}"#).unwrap();
         assert_eq!(me.plan, None);
+    }
+
+    #[test]
+    fn catalog_pricing_takes_cached_input_only_from_a_matching_upstream() {
+        // WHY: a cache price from a pricier upstream is a price no route
+        // at the headline rate charges; the picker must show a dash instead.
+        let body = r#"{"data":[
+          {"id":"a/x","created":1790000000,"pricing":{"input_per_1m":4,"output_per_1m":20,
+            "billing":"byok","list_pricing":{"input_per_1m":5,"output_per_1m":20}},
+           "per_upstream":[
+            {"pricing":{"input_per_1m":5,"output_per_1m":25,"input_cache_read_per_1m":0.5}},
+            {"pricing":{"input_per_1m":4,"output_per_1m":20,"input_cache_read_per_1m":0.4}}]},
+          {"id":"b/y","pricing":{"input_per_1m":1,"output_per_1m":2},
+           "per_upstream":[{"pricing":{"input_per_1m":3,"output_per_1m":4,"input_cache_read_per_1m":0.3}}]},
+          {"id":"c/z"}
+        ]}"#;
+        let models = parse_models_body(body).unwrap();
+        let p = models[0].pricing.clone().unwrap();
+        assert_eq!((p.input, p.output, p.cached_input), (4.0, 20.0, Some(0.4)));
+        assert_eq!(
+            (p.list_input, p.billing.as_deref()),
+            (Some(5.0), Some("byok"))
+        );
+        assert_eq!(models[0].created, Some(1_790_000_000));
+        assert_eq!(models[1].pricing.as_ref().unwrap().cached_input, None);
+        assert_eq!(models[2].pricing, None);
+    }
+
+    #[test]
+    fn intelligence_skips_entries_without_a_score() {
+        let body = r#"{"models":[
+          {"model_id":"a/x","intelligence_index":59.9},
+          {"model_id":"b/y","output_tokens_per_second":0}]}"#;
+        let scores = parse_intelligence_body(body).unwrap();
+        assert_eq!(scores.len(), 1);
+        assert_eq!(scores.get("a/x"), Some(&59.9));
     }
 
     #[test]

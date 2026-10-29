@@ -1,6 +1,7 @@
 //! Pure picker / launcher state. Drive with `apply()` in tests — no terminal I/O.
 
 use super::keys::{hint_line, Action, Surface};
+use super::table::PickTable;
 use crate::term::rank_ids;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,6 +22,8 @@ pub struct PickerState {
     pub cursor: usize,
     /// Original index pre-selected when query is empty.
     pub initial: Option<usize>,
+    /// Aligned columns and a detail block per item; `items` stay the search keys.
+    pub table: Option<PickTable>,
 }
 
 impl PickerState {
@@ -33,11 +36,17 @@ impl PickerState {
             query: String::new(),
             cursor,
             initial: current,
+            table: None,
         }
     }
 
     pub fn with_header(mut self, header: Vec<String>) -> Self {
         self.header = header;
+        self
+    }
+
+    pub fn with_table(mut self, table: PickTable) -> Self {
+        self.table = Some(table);
         self
     }
 
@@ -115,7 +124,9 @@ impl PickerState {
     }
 
     pub fn hint(&self) -> &'static str {
-        hint_line(Surface::Picker)
+        self.table
+            .as_ref()
+            .map_or_else(|| hint_line(Surface::Picker), |t| t.keys)
     }
 }
 

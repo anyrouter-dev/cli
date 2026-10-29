@@ -8,6 +8,7 @@
 pub mod keys;
 pub mod live;
 pub mod state;
+pub mod table;
 pub mod theme;
 pub mod view;
 
@@ -135,4 +136,37 @@ pub fn run_palette_select_idle(
 
 pub fn dump_pick(title: &str, items: &[String], current: Option<usize>, cols: usize) -> String {
     dump_picker(&PickerState::new(title, items.to_vec(), current), cols)
+}
+
+/// Picker over `items` (the search keys) drawn as aligned `table` rows.
+pub fn pick_table(
+    title: &str,
+    items: &[String],
+    table: table::PickTable,
+    current: Option<usize>,
+) -> Result<usize, String> {
+    if items.is_empty() {
+        return Err("Nothing to pick.".into());
+    }
+    if !is_interactive() {
+        return Err("Cancelled.".into());
+    }
+    let state = PickerState::new(title, items.to_vec(), current).with_table(table);
+    match run_picker_live(state)? {
+        Outcome::Selected(i) => Ok(i),
+        Outcome::Cancelled | Outcome::Quit | Outcome::Continue => Err("Cancelled.".into()),
+    }
+}
+
+pub fn dump_pick_table(
+    title: &str,
+    items: &[String],
+    table: table::PickTable,
+    current: Option<usize>,
+    cols: usize,
+) -> String {
+    dump_picker(
+        &PickerState::new(title, items.to_vec(), current).with_table(table),
+        cols,
+    )
 }

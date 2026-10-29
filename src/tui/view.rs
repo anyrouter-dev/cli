@@ -13,6 +13,7 @@ use ratatui::Frame;
 use super::state::{
     MenuState, PaletteEntry, PaletteState, PickerState, SettingRow, SettingsState, Tone,
 };
+use super::table::{self, PickTable, Styled};
 use super::theme;
 use crate::term::{label_lines, text_width, truncate, LabelLine};
 
@@ -155,6 +156,9 @@ fn picker_chunks(area: Rect, state: &PickerState) -> Vec<Rect> {
 }
 
 pub fn render_picker(frame: &mut Frame, state: &PickerState) {
+    if let Some(t) = &state.table {
+        return render_table_picker(frame, state, t);
+    }
     let area = frame.area();
     let chunks = picker_chunks(area, state);
     let width = area.width as usize;
@@ -199,6 +203,128 @@ pub fn render_picker(frame: &mut Frame, state: &PickerState) {
         .with_selected(Some(state.cursor.min(filtered.len().saturating_sub(1))));
     frame.render_stateful_widget(List::new(items), chunks[PK_LIST], &mut list_state);
     frame.render_widget(hint(state.hint(), area.width), chunks[PK_HINT]);
+}
+
+// Table picker: title, header, search, line, column titles, list, gap, then
+// detail, gap and legend when the terminal is tall enough, then keys.
+const TB_SEARCH: usize = 1;
+const TB_RULE: usize = 2;
+const TB_COLS: usize = 3;
+const TB_LIST: usize = 4;
+const TB_DETAIL: usize = 6;
+const TB_LEGEND: usize = 8;
+/// The list keeps at least this many rows before the detail block hides.
+const TB_LIST_MIN: u16 = 5;
+
+fn detail_height(t: &PickTable) -> u16 {
+    t.details.iter().map(Vec::len).max().unwrap_or(0) as u16
+}
+
+/// Layout rects, and whether the detail block and legend fit.
+fn table_chunks(area: Rect, state: &PickerState, t: &PickTable) -> (Vec<Rect>, bool) {
+    let head = 1 + state.header.len() as u16;
+    let full = [head, 1, 1, 1, TB_LIST_MIN, 1, detail_height(t), 1, 1, 1];
+    if area.height >= full.iter().sum::<u16>() {
+        (split(area, &full, TB_LIST), true)
+    } else {
+        (split(area, &[head, 1, 1, 1, 1, 1, 1], TB_LIST), false)
+    }
+}
+
+/// First filtered row on screen, rows shown, and whether more sit below.
+fn table_window(state: &PickerState, rows: usize) -> (usize, usize, bool) {
+    let n = state.filtered().len();
+    if n <= rows {
+        return (0, n, false);
+    }
+    let (start, vis) = palette_window(state.cursor, n, rows.saturating_sub(1).max(1));
+    (start, vis, start + vis < n)
+}
+
+fn styled_line(styled: &Styled) -> Line<'static> {
+    Line::from(
+        styled
+            .iter()
+            .map(|(text, tone)| Span::styled(text.clone(), tone_style(*tone)))
+            .collect::<Vec<_>>(),
+    )
+}
+
+fn render_table_picker(frame: &mut Frame, state: &PickerState, t: &PickTable) {
+    let area = frame.area();
+    let width = area.width as usize;
+    let (chunks, detail) = table_chunks(area, state, t);
+
+    let mut head = vec![title_line(&state.title)];
+    for h in &state.header {
+        head.push(Line::from(Span::styled(truncate(h, width), theme::muted())));
+    }
+    frame.render_widget(Paragraph::new(head), chunks[0]);
+
+    let mut search = vec![Span::styled("⌕ ", theme::accent())];
+    if state.query.is_empty() {
+        search.push(Span::styled("█", theme::accent()));
+        search.push(Span::styled(" type to search", theme::muted()));
+    } else {
+        search.push(Span::styled(state.query.clone(), theme::white()));
+        search.push(Span::styled("█", theme::accent()));
+    }
+    frame.render_widget(Paragraph::new(Line::from(search)), chunks[TB_SEARCH]);
+    frame.render_widget(rule(area.width), chunks[TB_RULE]);
+
+    let widths = table::layout(t, width);
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            truncate(&format!("  {}", table::header(t, &widths)), width),
+            theme::muted(),
+        )),
+        chunks[TB_COLS],
+    );
+
+    let filtered = state.filtered();
+    let list = chunks[TB_LIST];
+    let mut lines: Vec<Line> = Vec::new();
+    if filtered.is_empty() {
+        lines.push(Line::from(Span::styled("  no matches", theme::muted())));
+    }
+    let (start, vis, more) = table_window(state, list.height as usize);
+    for (i, (item, _)) in filtered.iter().enumerate().skip(start).take(vis) {
+        let selected = i == state.cursor;
+        let mut spans = vec![Span::styled(
+            if selected { "❯ " } else { "  " },
+            theme::accent(),
+        )];
+        for (n, (text, tone)) in table::row(t, *item, &widths).into_iter().enumerate() {
+            let style = match (n, selected) {
+                (0, true) => theme::selected(),
+                (0, false) => theme::white(),
+                (_, true) => theme::on_selected(tone_style(tone)),
+                (_, false) => tone_style(tone),
+            };
+            spans.push(Span::styled(text, style));
+        }
+        lines.push(Line::from(spans));
+    }
+    if more {
+        lines.push(Line::from(Span::styled("  ↓ more below", theme::muted())));
+    }
+    frame.render_widget(Paragraph::new(lines), list);
+
+    if detail {
+        let current = filtered.get(state.cursor).map(|(i, _)| *i);
+        let rows: Vec<Line> = current
+            .and_then(|i| t.details.get(i))
+            .into_iter()
+            .flatten()
+            .map(|l| styled_line(&table::fit(l, width)))
+            .collect();
+        frame.render_widget(Paragraph::new(rows), chunks[TB_DETAIL]);
+        frame.render_widget(
+            Paragraph::new(styled_line(&table::fit(&t.legend, width))),
+            chunks[TB_LEGEND],
+        );
+    }
+    frame.render_widget(hint(state.hint(), area.width), chunks[chunks.len() - 1]);
 }
 
 // Menu: title, status, line, items, gap, hint.
@@ -603,6 +729,15 @@ pub fn hit_menu(area: Rect, state: &MenuState, col: u16, row: u16) -> Option<usi
 }
 
 pub fn hit_picker(area: Rect, state: &PickerState, col: u16, row: u16) -> Option<usize> {
+    if let Some(t) = &state.table {
+        let list = table_chunks(area, state, t).0[TB_LIST];
+        if !in_rect(list, col, row) {
+            return None;
+        }
+        let (start, vis, _) = table_window(state, list.height as usize);
+        let i = (row - list.y) as usize;
+        return (i < vis).then_some(start + i);
+    }
     let list = picker_chunks(area, state)[PK_LIST];
     if !in_rect(list, col, row) {
         return None;
@@ -692,6 +827,9 @@ fn dump_width(cols: usize) -> usize {
 
 /// ANSI-free plain frame for `--dump-tui` and unit tests.
 pub fn plain_picker_lines(state: &PickerState, cols: usize) -> Vec<String> {
+    if let Some(t) = &state.table {
+        return plain_table_picker_lines(state, t, cols);
+    }
     let width = dump_width(cols);
     let mut lines = vec![truncate(&state.title, width)];
     for h in &state.header {
@@ -709,6 +847,37 @@ pub fn plain_picker_lines(state: &PickerState, cols: usize) -> Vec<String> {
         }
     }
     lines.push(String::new());
+    lines.push(truncate(state.hint(), width));
+    lines
+}
+
+fn plain_table_picker_lines(state: &PickerState, t: &PickTable, cols: usize) -> Vec<String> {
+    let width = dump_width(cols);
+    let mut lines = vec![truncate(&state.title, width)];
+    for h in &state.header {
+        lines.push(truncate(h, width));
+    }
+    lines.push(truncate(&format!("search: {}", state.query), width));
+    lines.push(rule_text(width));
+    let widths = table::layout(t, width);
+    lines.push(truncate(&format!("  {}", table::header(t, &widths)), width));
+    let filtered = state.filtered();
+    if filtered.is_empty() {
+        lines.push(truncate("  no matches", width));
+    }
+    for (i, (item, _)) in filtered.iter().enumerate() {
+        let marker = if i == state.cursor { "❯" } else { " " };
+        let row = table::plain(&table::row(t, *item, &widths));
+        lines.push(format!("{marker} {}", row.trim_end()));
+    }
+    lines.push(String::new());
+    if let Some((item, _)) = filtered.get(state.cursor) {
+        for l in t.details.get(*item).into_iter().flatten() {
+            lines.push(table::plain(&table::fit(l, width)));
+        }
+        lines.push(String::new());
+    }
+    lines.push(table::plain(&table::fit(&t.legend, width)));
     lines.push(truncate(state.hint(), width));
     lines
 }

@@ -275,6 +275,7 @@ mod tests {
             context_length: Some(ctx),
             max_completion_tokens: Some(8192),
             capabilities: vec!["tools".into()],
+            ..Default::default()
         }
     }
 
