@@ -1,11 +1,13 @@
 //! Local copies of what a launch would otherwise ask for every time: the
 //! model catalog (`GET /v1/models`) and the opencode major version
-//! (`opencode --version`). A warm launch reads both from disk.
+//! (`opencode --version`). A warm launch, and the model picker, read both
+//! from disk.
 //!
 //! The catalog is fresh for 5 minutes, the gateway's `max-age`. An older copy,
 //! up to a day, is still used and refreshed in the background while the agent
 //! runs, the gateway's `stale-while-revalidate`.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
@@ -13,6 +15,10 @@ use serde_json::{json, Value};
 use crate::http::CatalogModel;
 
 const CATALOG_FILE: &str = "models-cache.json";
+const SCORES_FILE: &str = "model-scores.json";
+/// Rows written before the picker read prices and dates from the cache lack
+/// them, so a row from another version is ignored.
+const CATALOG_VERSION: u64 = 2;
 #[cfg(feature = "native")]
 const VERSIONS_FILE: &str = "tool-versions.json";
 const FRESH_SECS: u64 = 300;
@@ -34,7 +40,8 @@ pub(crate) enum Age {
     Stale,
 }
 
-/// The catalog rows for one gateway and key, on disk next to the config.
+/// One row of a cache file on disk next to the config: the catalog for one
+/// gateway and key, or the benchmark scores for one gateway.
 pub(crate) struct CatalogCache {
     path: PathBuf,
     row: String,
@@ -48,25 +55,43 @@ impl CatalogCache {
         }
     }
 
+    fn scores(dir: &Path, base: &str) -> Self {
+        Self {
+            path: dir.join(SCORES_FILE),
+            row: base.to_string(),
+        }
+    }
+
+    #[cfg(test)]
     pub(crate) fn load(&self, now: u64) -> Option<(Vec<CatalogModel>, Age)> {
+        let (data, age) = self.load_value(now)?;
+        Some((decode_models(data)?, age))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn save(&self, models: &[CatalogModel], now: u64) {
+        self.save_value(encode_models(models), now);
+    }
+
+    fn load_value(&self, now: u64) -> Option<(Value, Age)> {
         let rows = read_json(&self.path)?;
         let row = rows.get(&self.row)?;
         let at = row.get("at")?.as_u64()?;
-        if at > now || now - at >= STALE_SECS {
+        if row.get("v").and_then(Value::as_u64) != Some(CATALOG_VERSION)
+            || at > now
+            || now - at >= STALE_SECS
+        {
             return None;
         }
-        let models =
-            crate::http::parse_models_body(&json!({ "data": row.get("data")? }).to_string())
-                .ok()?;
         let age = if now - at < FRESH_SECS {
             Age::Fresh
         } else {
             Age::Stale
         };
-        Some((models, age))
+        Some((row.get("data")?.clone(), age))
     }
 
-    pub(crate) fn save(&self, models: &[CatalogModel], now: u64) {
+    fn save_value(&self, data: Value, now: u64) {
         let mut rows = read_json(&self.path)
             .filter(Value::is_object)
             .unwrap_or_else(|| json!({}));
@@ -76,15 +101,33 @@ impl CatalogCache {
                     .and_then(Value::as_u64)
                     .is_some_and(|at| now.saturating_sub(at) < STALE_SECS)
             });
-            let data: Vec<Value> = models.iter().map(model_row).collect();
-            map.insert(self.row.clone(), json!({ "at": now, "data": data }));
+            map.insert(
+                self.row.clone(),
+                json!({ "at": now, "v": CATALOG_VERSION, "data": data }),
+            );
         }
         write_json(&self.path, &rows);
     }
 }
 
-/// The catalog fields a launch reads, in the API's own shape so the
-/// gateway's parser reads them back.
+fn encode_models(models: &[CatalogModel]) -> Value {
+    Value::Array(models.iter().map(model_row).collect())
+}
+
+fn decode_models(data: Value) -> Option<Vec<CatalogModel>> {
+    crate::http::parse_models_body(&json!({ "data": data }).to_string()).ok()
+}
+
+fn encode_scores(scores: &BTreeMap<String, f64>) -> Value {
+    json!(scores)
+}
+
+fn decode_scores(data: Value) -> Option<BTreeMap<String, f64>> {
+    serde_json::from_value(data).ok()
+}
+
+/// The catalog fields a launch and the picker read, in the API's own shape so
+/// the gateway's parser reads them back.
 fn model_row(m: &CatalogModel) -> Value {
     let mut row = json!({ "id": m.id, "capabilities": m.capabilities });
     if let Some(name) = &m.name {
@@ -98,6 +141,26 @@ fn model_row(m: &CatalogModel) -> Value {
     }
     if let Some(max) = m.max_completion_tokens {
         row["top_provider"] = json!({ "max_completion_tokens": max });
+    }
+    if let Some(created) = m.created {
+        row["created"] = json!(created);
+    }
+    if let Some(p) = &m.pricing {
+        row["pricing"] = json!({ "input_per_1m": p.input, "output_per_1m": p.output });
+        if let Some(billing) = &p.billing {
+            row["pricing"]["billing"] = json!(billing);
+        }
+        if p.list_input.is_some() || p.list_output.is_some() {
+            row["pricing"]["list_pricing"] =
+                json!({ "input_per_1m": p.list_input, "output_per_1m": p.list_output });
+        }
+        if let Some(cached) = p.cached_input {
+            row["per_upstream"] = json!([{ "pricing": {
+                "input_per_1m": p.input,
+                "output_per_1m": p.output,
+                "input_cache_read_per_1m": cached,
+            } }]);
+        }
     }
     row
 }
@@ -134,9 +197,11 @@ fn fetch(base: &str, key: Option<&str>) -> Result<Vec<CatalogModel>, String> {
     crate::http::fetch_models(base, key)
 }
 
-type Fetch = dyn Fn(&str, Option<&str>) -> Result<Vec<CatalogModel>, String> + Sync;
+pub(crate) type Fetch = dyn Fn(&str, Option<&str>) -> Result<Vec<CatalogModel>, String> + Sync;
 
-fn catalog_with(
+pub(crate) type ScoresFetch = dyn Fn(&str) -> Result<BTreeMap<String, f64>, String> + Sync;
+
+pub(crate) fn catalog_with(
     dir: Option<&Path>,
     base: &str,
     key: Option<&str>,
@@ -144,46 +209,91 @@ fn catalog_with(
     now: u64,
     fetch: &'static Fetch,
 ) -> LaunchCatalog {
-    let cache = dir.map(|d| CatalogCache::new(d, base, key));
-    let cached = cache.as_ref().and_then(|c| c.load(now));
-    let (models, stale) = match cached {
-        Some((models, age)) => (Some(models), age == Age::Stale),
-        None if dry_run => (None, false),
-        None => {
-            let fetched = fetch(base, key).ok();
-            if let (Some(c), Some(m)) = (&cache, &fetched) {
-                c.save(m, now);
-            }
-            (fetched, false)
-        }
-    };
-    let refresh = match cache {
-        Some(cache) if stale && !dry_run => spawn_refresh(cache, base, key, fetch),
-        _ => None,
-    };
+    let (base_owned, key_owned) = (base.to_string(), key.map(str::to_string));
+    let (models, refresh) = cached(
+        dir.map(|d| CatalogCache::new(d, base, key)),
+        dry_run,
+        now,
+        move || fetch(&base_owned, key_owned.as_deref()),
+        |m: &Vec<CatalogModel>| encode_models(m),
+        decode_models,
+    );
     LaunchCatalog { models, refresh }
 }
 
-#[cfg(feature = "native")]
-fn spawn_refresh(
-    cache: CatalogCache,
+/// Benchmark scores for the picker, with the catalog's freshness rules. An
+/// empty map when there is no copy and the fetch fails.
+pub(crate) fn scores_with(
+    dir: Option<&Path>,
     base: &str,
-    key: Option<&str>,
-    fetch: &'static Fetch,
+    now: u64,
+    fetch: &'static ScoresFetch,
+) -> BTreeMap<String, f64> {
+    let base_owned = base.to_string();
+    cached(
+        dir.map(|d| CatalogCache::scores(d, base)),
+        false,
+        now,
+        move || fetch(&base_owned),
+        encode_scores,
+        decode_scores,
+    )
+    .0
+    .unwrap_or_default()
+}
+
+/// A fresh copy is used as is. A stale one is used while `fetch` refreshes it
+/// in the background. With no copy, `fetch` runs now, except on a dry run.
+fn cached<T: Send + 'static>(
+    cache: Option<CatalogCache>,
+    dry_run: bool,
+    now: u64,
+    fetch: impl FnOnce() -> Result<T, String> + Send + 'static,
+    encode: fn(&T) -> Value,
+    decode: fn(Value) -> Option<T>,
+) -> (Option<T>, Refresh) {
+    let copy = cache
+        .as_ref()
+        .and_then(|c| c.load_value(now))
+        .and_then(|(data, age)| Some((decode(data)?, age)));
+    match (copy, cache) {
+        (Some((value, Age::Stale)), Some(cache)) if !dry_run => {
+            (Some(value), spawn_refresh(cache, fetch, encode))
+        }
+        (Some((value, _)), _) => (Some(value), None),
+        (None, _) if dry_run => (None, None),
+        (None, cache) => {
+            let fetched = fetch().ok();
+            if let (Some(c), Some(v)) = (&cache, &fetched) {
+                c.save_value(encode(v), now);
+            }
+            (fetched, None)
+        }
+    }
+}
+
+#[cfg(feature = "native")]
+fn spawn_refresh<T: 'static>(
+    cache: CatalogCache,
+    fetch: impl FnOnce() -> Result<T, String> + Send + 'static,
+    encode: fn(&T) -> Value,
 ) -> Refresh {
-    let (base, key) = (base.to_string(), key.map(str::to_string));
     std::thread::Builder::new()
         .name("anyr-catalog".into())
         .spawn(move || {
-            if let Ok(models) = fetch(&base, key.as_deref()) {
-                cache.save(&models, now_secs());
+            if let Ok(value) = fetch() {
+                cache.save_value(encode(&value), now_secs());
             }
         })
         .ok()
 }
 
 #[cfg(not(feature = "native"))]
-fn spawn_refresh(_: CatalogCache, _: &str, _: Option<&str>, _: &'static Fetch) -> Refresh {
+fn spawn_refresh<T: 'static>(
+    _: CatalogCache,
+    _: impl FnOnce() -> Result<T, String>,
+    _: fn(&T) -> Value,
+) -> Refresh {
     None
 }
 
@@ -275,7 +385,19 @@ mod tests {
             context_length: Some(ctx),
             max_completion_tokens: Some(8192),
             capabilities: vec!["tools".into()],
-            ..Default::default()
+            pricing: Some(pricing()),
+            created: Some(1_700_000_000),
+        }
+    }
+
+    fn pricing() -> crate::http::ModelPricing {
+        crate::http::ModelPricing {
+            input: 0.3,
+            output: 1.2,
+            cached_input: Some(0.03),
+            list_input: Some(0.6),
+            list_output: Some(2.4),
+            billing: Some("credits".into()),
         }
     }
 
@@ -313,10 +435,31 @@ mod tests {
             (Some(262_144), Some(8192))
         );
         assert_eq!(m.capabilities, vec!["tools".to_string()]);
+        assert_eq!(
+            (m.pricing.as_ref(), m.created),
+            (Some(&pricing()), Some(1_700_000_000)),
+            "the picker's price, free and new columns survive the cache"
+        );
         assert_eq!(cache.load(1_000 + FRESH_SECS).unwrap().1, Age::Stale);
         assert!(
             cache.load(1_000 + STALE_SECS).is_none(),
             "a day-old copy is dropped"
+        );
+    }
+
+    #[test]
+    fn a_row_from_an_older_cache_version_is_ignored() {
+        let d = dir("version");
+        let cache = CatalogCache::new(&d, BASE, Some(KEY));
+        cache.save(&[model("a/b", 1)], 1_000);
+        let mut rows = read_json(&d.join(CATALOG_FILE)).unwrap();
+        for row in rows.as_object_mut().unwrap().values_mut() {
+            row.as_object_mut().unwrap().remove("v");
+        }
+        write_json(&d.join(CATALOG_FILE), &rows);
+        assert!(
+            cache.load(1_001).is_none(),
+            "a row without prices is refetched"
         );
     }
 
