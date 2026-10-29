@@ -66,7 +66,11 @@ pub(crate) fn model_rows(ids: &[String], catalog: &PickerCatalog, now: i64) -> V
         .collect()
 }
 
+/// A short price for a column cell. The detail block shows the exact one.
 fn fmt_usd(v: f64) -> String {
+    if v > 0.0 && v < 0.0005 {
+        return "<$0.001".into();
+    }
     let digits = if v >= 1.0 { 2 } else { 3 };
     let s = format!("{v:.digits$}");
     let s = s.trim_end_matches('0').trim_end_matches('.');
@@ -77,6 +81,8 @@ fn fmt_context(n: i64) -> String {
     if n >= 1_000_000 {
         let m = format!("{:.1}", n as f64 / 1_000_000.0);
         format!("{}M", m.trim_end_matches(".0"))
+    } else if n >= 999_500 {
+        "1M".into()
     } else if n >= 1_000 {
         format!("{}K", (n as f64 / 1_000.0).round())
     } else {
@@ -147,7 +153,7 @@ fn detail(row: &ModelRow, rows: &[ModelRow]) -> Vec<Styled> {
         Some(v) => (v, Tone::Normal),
         None => ("—".into(), Tone::Muted),
     };
-    let per_m = |v: Option<f64>| value(v.map(|v| format!("{} / 1M", fmt_usd(v))));
+    let per_m = |v: Option<f64>| value(v.map(|v| format!("${v} / 1M")));
     let p = row.pricing.as_ref();
     let mut prices = Styled::new();
     for (label, v) in [
@@ -324,7 +330,13 @@ mod tests {
         assert_eq!(fmt_context(1_048_576), "1M");
         assert_eq!(fmt_context(2_000_000), "2M");
         assert_eq!(fmt_context(262_144), "262K");
+        assert_eq!(fmt_context(999_999), "1M");
         assert_eq!(fmt_tokens(1_048_576), "1,048,576 tokens");
+        assert_eq!(
+            fmt_usd(0.0004),
+            "<$0.001",
+            "a paid price must not read as $0"
+        );
     }
 
     #[test]
@@ -495,6 +507,14 @@ mod tests {
         assert!(frame.contains("output $20 / 1M"), "{frame}");
         assert!(frame.contains("context 200,000 tokens"), "{frame}");
         assert!(frame.contains("cost  low ━"), "{frame}");
+        let mut c = wide_catalog();
+        c.models[1].pricing.as_mut().unwrap().output = 1.875;
+        let frame = render_model_picker_dump(&c, Some("anthropic/claude-opus-5-5"), &env);
+        assert!(frame.contains("$1.88"), "the column rounds: {frame}");
+        assert!(
+            frame.contains("output $1.875 / 1M"),
+            "the detail is exact: {frame}"
+        );
         assert!(frame.contains(KEYS), "{frame}");
     }
 }

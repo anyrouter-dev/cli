@@ -160,7 +160,7 @@ pub fn fit(styled: &Styled, width: usize) -> Styled {
             out.push((text.clone(), *tone));
             left -= w;
         } else {
-            out.push((truncate(text, left), *tone));
+            out.push((truncate(&format!("{text}…"), left), *tone));
             break;
         }
     }
@@ -265,5 +265,10 @@ mod tests {
         let cut = fit(&styled, 5);
         assert_eq!(plain(&cut), "abcd…");
         assert_eq!(cut[1].1, Tone::Good);
+        assert_eq!(
+            plain(&fit(&styled, 3)),
+            "ab…",
+            "an exact fit before more pieces still shows the cut"
+        );
     }
 }
