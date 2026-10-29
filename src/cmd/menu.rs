@@ -2,7 +2,6 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use crate::http::fetch_models;
 use crate::install::{available_agents, ensure_tool_installed, missing_agents, Install};
 use crate::key::{
     load_config_if_present, mask_api_key, no_key_error, resolve_api_key, resolve_base_url,
@@ -17,8 +16,9 @@ use crate::cmd::config_tui::{
 #[cfg(feature = "native")]
 use crate::cmd::dispatch::kick_credits_refresh;
 use crate::cmd::dispatch::{
-    config_path, launcher_last_tool, launcher_uses_palette, persist_tool_command,
-    pick_palette_action, tool_command_for, tui_dump_palette, tui_wants_dump, CreditsCache,
+    catalog_lookup_enabled, config_path, launcher_last_tool, launcher_uses_palette,
+    persist_tool_command, pick_palette_action, tool_command_for, tui_dump_palette, tui_wants_dump,
+    CreditsCache,
 };
 
 #[cfg(not(feature = "native"))]
@@ -27,8 +27,8 @@ use crate::cmd::keys::stored_api_key;
 use crate::cmd::launch::run_launch;
 use crate::cmd::login::run_login;
 use crate::cmd::models::{
-    palette_bind_detail, pick_list, pick_model, routing_toggle_detail, run_models,
-    save_agent_account, save_agent_model, toggle_agent_routing_field, PickerCatalog, RoutingField,
+    models_for_picker, palette_bind_detail, pick_list, pick_model, routing_toggle_detail,
+    run_models, save_agent_account, save_agent_model, toggle_agent_routing_field, RoutingField,
 };
 use crate::cmd::usage::run_usage;
 
@@ -335,6 +335,7 @@ pub(crate) fn run_menu(parsed: &ParsedArgs, env: &BTreeMap<String, String>) -> R
         let profile = cfg.profiles.get(&cfg.active_profile);
         let base = resolve_base_url(&parsed.flags, profile);
         let key = resolve_api_key(&parsed.flags, env, profile);
+        crate::cmd::models::warm_picker_catalog(path.parent(), base.clone(), key.clone(), env);
         kick_credits_refresh(&cache, base, key);
     }
     let inline = !launcher_uses_palette(env);
@@ -602,8 +603,14 @@ pub(crate) fn launcher_dispatch(
         return Ok(LauncherNext::Continue);
     }
     if action == "Models" {
-        if let Err(err) = run_models(parsed, env) {
-            eprintln!("{}", term::err(&err));
+        // The picker, not the plain list: the launcher redraws over scrollback.
+        let mut next = parsed.clone();
+        next.command = "models".into();
+        next.flags.insert("pick".into(), FlagValue::Bool(true));
+        match run_models(&next, env) {
+            Ok(_) => {}
+            Err(err) if err == "Cancelled." => {}
+            Err(err) => eprintln!("{}", term::err(&err)),
         }
         return Ok(LauncherNext::Continue);
     }
@@ -721,7 +728,12 @@ pub(crate) fn bind_agent_model(
         .and_then(|c| c.profiles.get(&c.active_profile));
     let key = resolve_api_key(&parsed.flags, env, profile);
     let base = resolve_base_url(&parsed.flags, profile);
-    let models = PickerCatalog::new(&base, fetch_models(&base, key.as_deref())?, env);
+    let models = models_for_picker(path.parent(), &base, key.as_deref(), env);
+    if models.models.is_empty() && catalog_lookup_enabled(env) {
+        return Err(
+            "Could not load the model catalog. Check your connection and try again.".into(),
+        );
+    }
     let current = existing
         .as_ref()
         .and_then(|c| c.agent_binding(agent))

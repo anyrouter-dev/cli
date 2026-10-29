@@ -420,7 +420,7 @@ fn run_status_action(
         }
         StatusAction::ChangeModel => {
             change_default_model(parsed, env, path, |profile, key, base| {
-                let models = models_for_picker(base, key, env);
+                let models = models_for_picker(path.parent(), base, key, env);
                 pick_model(&models, Some(profile.default_model()), "Default model")
             })
         }

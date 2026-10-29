@@ -799,7 +799,7 @@ pub(crate) fn config_edit_row(
                 .and_then(|c| c.profiles.get(&c.active_profile));
             let key = resolve_api_key(&parsed.flags, env, profile);
             let base = resolve_base_url(&parsed.flags, profile);
-            let models = models_for_picker(&base, key.as_deref(), env);
+            let models = models_for_picker(path.parent(), &base, key.as_deref(), env);
             let current = profile.map(|p| slot_current(p, slot).to_string());
             let id = pick_model(&models, current.as_deref(), slot_title(slot))?;
             save_model_slot(existing, path, slot, &id)

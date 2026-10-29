@@ -8,6 +8,7 @@ use crate::http::{
 };
 use crate::install::KNOWN_AGENTS;
 use crate::key::{load_config_if_present, no_key_error, resolve_api_key, resolve_base_url};
+use crate::launch_cache::{catalog_with, now_secs, scores_with, Fetch, ScoresFetch};
 use crate::parse::{get_string_flag, ParsedArgs};
 use crate::spawn::{
     canonical_tool, catalog_model_id, display_model_id, is_auto_model, session_model_label,
@@ -42,23 +43,83 @@ pub(crate) struct PickerCatalog {
     pub(crate) smart: BTreeMap<String, f64>,
 }
 
+/// The launcher's background load of the picker catalog, joined by the first
+/// picker that opens while it still runs.
+#[cfg(feature = "native")]
+static WARMING: std::sync::Mutex<Option<std::thread::JoinHandle<()>>> = std::sync::Mutex::new(None);
+
 impl PickerCatalog {
     /// The catalog plus scores from the public benchmarks feed, when lookups are on.
     pub(crate) fn new(
+        dir: Option<&Path>,
         base: &str,
         models: Vec<CatalogModel>,
         env: &BTreeMap<String, String>,
     ) -> Self {
         let smart = if catalog_lookup_enabled(env) {
-            fetch_intelligence(base).unwrap_or_default()
+            scores_with(dir, base, now_secs(), &fetch_intelligence)
         } else {
             BTreeMap::new()
         };
         Self { models, smart }
     }
+
+    /// The catalog and scores from the disk cache, each fetched only when
+    /// there is no usable copy.
+    fn load(
+        dir: Option<&Path>,
+        base: &str,
+        key: Option<&str>,
+        now: u64,
+        fetch: &'static Fetch,
+        scores: &'static ScoresFetch,
+    ) -> Self {
+        let models = catalog_with(dir, base, key, false, now, fetch)
+            .models
+            .unwrap_or_default();
+        Self {
+            models,
+            smart: scores_with(dir, base, now, scores),
+        }
+    }
 }
 
+fn load_picker_catalog(dir: Option<&Path>, base: &str, key: Option<&str>) -> PickerCatalog {
+    PickerCatalog::load(
+        dir,
+        base,
+        key,
+        now_secs(),
+        &fetch_models,
+        &fetch_intelligence,
+    )
+}
+
+/// Load the picker catalog on a background thread so a picker opened from
+/// the launcher finds it ready.
+#[cfg(feature = "native")]
+pub(crate) fn warm_picker_catalog(
+    dir: Option<&Path>,
+    base: String,
+    key: Option<String>,
+    env: &BTreeMap<String, String>,
+) {
+    if !catalog_lookup_enabled(env) {
+        return;
+    }
+    let dir = dir.map(Path::to_path_buf);
+    let handle = std::thread::Builder::new()
+        .name("anyr-picker".into())
+        .spawn(move || {
+            load_picker_catalog(dir.as_deref(), &base, key.as_deref());
+        })
+        .ok();
+    *WARMING.lock().unwrap_or_else(|p| p.into_inner()) = handle;
+}
+
+/// `dir` holds the catalog cache: the config file's directory.
 pub(crate) fn models_for_picker(
+    dir: Option<&Path>,
     base: &str,
     key: Option<&str>,
     env: &BTreeMap<String, String>,
@@ -66,7 +127,17 @@ pub(crate) fn models_for_picker(
     if !catalog_lookup_enabled(env) {
         return PickerCatalog::default();
     }
-    PickerCatalog::new(base, fetch_models(base, key).unwrap_or_default(), env)
+    #[cfg(feature = "native")]
+    {
+        let warming = WARMING.lock().unwrap_or_else(|p| p.into_inner()).take();
+        if let Some(warming) = warming {
+            if !warming.is_finished() && term::is_interactive() {
+                eprintln!("{}", term::dim("Loading models…"));
+            }
+            let _ = warming.join();
+        }
+    }
+    load_picker_catalog(dir, base, key)
 }
 
 fn shown_index(ids: &[String], current: Option<&str>) -> Option<usize> {
@@ -401,7 +472,7 @@ pub(crate) fn run_models(
     ];
     let has_alias_flags = flag_slots.iter().any(|(_, v)| v.is_some());
     if tui_wants_dump(parsed, env) {
-        let models = models_for_picker(&base, key.as_deref(), env);
+        let models = models_for_picker(path.parent(), &base, key.as_deref(), env);
         let current = profile.map(|p| slot_current(p, "default").to_string());
         print!(
             "{}",
@@ -419,7 +490,7 @@ pub(crate) fn run_models(
         }
     }
     if parsed.flag_true("pick") && term::is_interactive() {
-        let models = models_for_picker(&base, key.as_deref(), env);
+        let models = models_for_picker(path.parent(), &base, key.as_deref(), env);
         if let Some(agent) = agent.as_deref() {
             let current = existing
                 .as_ref()
@@ -441,7 +512,7 @@ pub(crate) fn run_models(
     if sub == Some("use") && !has_alias_flags {
         if let Some(agent) = agent.as_deref() {
             if term::is_interactive() {
-                let models = models_for_picker(&base, key.as_deref(), env);
+                let models = models_for_picker(path.parent(), &base, key.as_deref(), env);
                 let current = existing
                     .as_ref()
                     .and_then(|c| c.agent_binding(agent))
@@ -496,7 +567,7 @@ pub(crate) fn run_models(
                 .transpose()?
                 .unwrap_or("default");
             let current = profile.map(|p| slot_current(p, slot).to_string());
-            let catalog = PickerCatalog::new(&base, models.clone(), env);
+            let catalog = PickerCatalog::new(path.parent(), &base, models.clone(), env);
             pick_model(&catalog, current.as_deref(), slot_title(slot)).map(|id| (slot, id))
         } else {
             Err(hint(
@@ -646,5 +717,71 @@ mod picker_catalog_tests {
     #[test]
     fn pick_ids_empty_catalog_still_has_preset() {
         assert_eq!(pick_ids(&[]), vec!["anyrouter/auto"]);
+    }
+
+    const KEY: &str = "sk-ar-v1-pickertest";
+
+    fn cache_dir(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("anyr-picker-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn offline_models(_: &str, _: Option<&str>) -> Result<Vec<CatalogModel>, String> {
+        panic!("a cached catalog must not touch the network")
+    }
+
+    fn one_score(_: &str) -> Result<BTreeMap<String, f64>, String> {
+        Ok([("cached/m".to_string(), 42.0)].into())
+    }
+
+    fn offline_scores(_: &str) -> Result<BTreeMap<String, f64>, String> {
+        panic!("cached scores must not touch the network")
+    }
+
+    #[test]
+    fn a_warm_picker_reads_catalog_and_scores_from_disk_only() {
+        let d = cache_dir("offline");
+        let base = "https://picker-offline.test/api";
+        crate::launch_cache::CatalogCache::new(&d, base, Some(KEY))
+            .save(&[cm("cached/m", Some(8192))], now_secs());
+        let first = PickerCatalog::load(
+            Some(&d),
+            base,
+            Some(KEY),
+            now_secs(),
+            &offline_models,
+            &one_score,
+        );
+        let again = PickerCatalog::load(
+            Some(&d),
+            base,
+            Some(KEY),
+            now_secs(),
+            &offline_models,
+            &offline_scores,
+        );
+        for catalog in [first, again] {
+            assert_eq!(
+                pick_ids(&catalog.models),
+                vec!["anyrouter/auto", "cached/m"]
+            );
+            assert_eq!(catalog.smart.get("cached/m"), Some(&42.0));
+        }
+    }
+
+    #[test]
+    fn the_launcher_pickers_read_the_disk_cache() {
+        let d = cache_dir("launcher");
+        // Nothing listens here, so a live fetch would come back empty.
+        let base = "http://127.0.0.1:1/api";
+        crate::launch_cache::CatalogCache::new(&d, base, Some(KEY))
+            .save(&[cm("cached/m", Some(8192))], now_secs());
+        let catalog = models_for_picker(Some(&d), base, Some(KEY), &BTreeMap::new());
+        assert_eq!(
+            pick_ids(&catalog.models),
+            vec!["anyrouter/auto", "cached/m"]
+        );
     }
 }
